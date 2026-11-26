@@ -10,29 +10,29 @@
       --out .artifacts/reports/2026-11-25-layout-review-analyzer-findings-tier2.toml
   ```
 
-  `findings.toml` beside this file is the source of truth; this report is generated from it by `--emit-md`. Metric/region fields reproduce byte-identically on re-run (the corpus is byte-deterministic per G1); `grade` fields are hand-applied per the D5 rubric after the run (grades applied deterministically per the recorded grading rules below) and the accept-as-legacy grades name explained debt — the grade never silences the detector.
+  `findings.toml` beside this file is the source of truth; this report is generated from it by `--emit-md`. Metric/region fields reproduce byte-identically on re-run (the corpus is byte-deterministic per G1); `grade` fields are applied deterministically per the recorded grading rules below (grade_for — the toml grades re-derive from the metric fields) and the accept-as-legacy grades name explained debt — the grade never silences the detector.
 
 - **Calibration note** (D7): thresholds calibrated once on this corpus before grading — corner-sampled background flat at RGB ≈ (29,32,40) with ±2/255 anti-aliasing noise; content floor 12/255 sits above the noise and below the dimmest ink; edge floor 8 logical px sits above hairlines and below every real block boundary; text tolerance ±15% absorbs ≤1 px line-height slop at every corpus scale without overlapping ladder rungs (closest separation 12%, 12.5→14). Thresholds were not widened after grading.
 
-## Headline counts — 2133 findings over the corpus
+## Headline counts — 2153 findings over the corpus
 
 | invariant | accept-as-legacy | fix-now | fix-later | total |
 |---|---|---|---|---|
-| A1 | 561 | 0 | 57 | 618 |
-| A2 | 190 | 0 | 182 | 372 |
-| T1 | 184 | 0 | 70 | 254 |
+| A1 | 581 | 0 | 61 | 642 |
+| A2 | 178 | 0 | 187 | 365 |
+| T1 | 185 | 0 | 71 | 256 |
 | M1 | 7 | 0 | 3 | 10 |
 | C1 | 29 | 27 | 0 | 56 |
 | Q1 | 766 | 1 | 0 | 767 |
-| I1 | 0 | 0 | 56 | 56 |
-| **total** | **1737** | **28** | **368** | **2133** |
+| I1 | 0 | 0 | 57 | 57 |
+| **total** | **1746** | **28** | **379** | **2153** |
 
 Grading rubric (D5): **fix-now** — a defect class the project already tracks as a bug (C1 clip signatures); **fix-later** — real drift from the invariant with no open issue (the finding is the intake record for a future backlog issue); **accept-as-legacy** — the deviation is load-bearing in the committed golden or the manifest's state note explains it.
 
 Grading rules applied to this run (deterministic, recorded per D5 — the rubric absorbs legacy noise, never the detector):
 
 - C1: extent ≥ 12 px → fix-now (flush panels, the open severing class #1365/#1378); extent < 12 px → accept-as-legacy (scrollbar thumbs at 8 px and window-chrome specks at 3 px — deliberate small flush elements).
-- A1: delta to the nearest shared grid column ≤ 6 px → fix-later (near-miss drift); larger → accept-as-legacy (a distinct layout region, not a near-miss of the grid).
+- A1: delta to the nearest shared grid column ≤ 6 px → fix-later (near-miss drift); larger → accept-as-legacy (a distinct layout region, not a near-miss of the grid); no shared column at all (a singleton left edge) → accept-as-legacy (the grid judgment needs a neighbour to be a near-miss of — a lone edge is recorded, not graded fixable).
 - A2: |gap − median| ≤ 8 px → fix-later (token-adjacent drift, the #1334 one-row-offset class); larger → accept-as-legacy (deliberate section breaks and spacers).
 - T1: em ≥ 20 logical px → fix-later (genuine off-ladder text between the title and display rungs); em < 20 → accept-as-legacy (genuinely small off-ladder text — the tier-2 connected-component estimator classifies hairline rules and divider rows out at the component level, so the old hairline class no longer reaches the findings).
 - Q1: a sub-floor contrast ratio is fix-now — the accessibility defect class (a floor is binary: 4.5 ≤ ratio is clean, below it is fix-now; there is no fix-later band inside a floor) — except the scrim-blend ink class → accept-as-legacy: overlay goldens render backdrop content under the modal scrim (measured ink modes sit on the 50% blend of the text tokens, max channel ≤ 140 vs ≥ 166 for unscrimmed text), which is deliberate de-emphasis, not a token defect.
@@ -60,16 +60,19 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 
 | invariant | grade | region (phys px) | logical | metric |
 |---|---|---|---|---|
-| A1 | accept-as-legacy | x=499 y=60 w=180 h=784 | x=499 y=60 w=180 h=784 | left edge at 499 px; nearest shared grid column 686 px (delta 187 px) |
-| A1 | accept-as-legacy | x=512 y=864 w=71 h=32 | x=512 y=864 w=71 h=32 | left edge at 512 px; nearest shared grid column 686 px (delta 174 px) |
-| A1 | accept-as-legacy | x=605 y=60 w=74 h=784 | x=605 y=60 w=74 h=784 | left edge at 605 px; nearest shared grid column 686 px (delta 81 px) |
-| A1 | accept-as-legacy | x=652 y=60 w=27 h=784 | x=652 y=60 w=27 h=784 | left edge at 652 px; nearest shared grid column 686 px (delta 34 px) |
-| A1 | accept-as-legacy | x=695 y=8 w=37 h=48 | x=695 y=8 w=37 h=48 | left edge at 695 px; nearest shared grid column 688 px (delta 7 px) |
-| A1 | accept-as-legacy | x=742 y=8 w=57 h=48 | x=742 y=8 w=57 h=48 | left edge at 742 px; nearest shared grid column 721 px (delta 21 px) |
-| A1 | accept-as-legacy | x=755 y=60 w=56 h=784 | x=755 y=60 w=56 h=784 | left edge at 755 px; nearest shared grid column 721 px (delta 34 px) |
-| A1 | accept-as-legacy | x=799 y=60 w=12 h=784 | x=799 y=60 w=12 h=784 | left edge at 799 px; nearest shared grid column 721 px (delta 78 px) |
-| A1 | accept-as-legacy | x=878 y=60 w=20 h=784 | x=878 y=60 w=20 h=784 | left edge at 878 px; nearest shared grid column 721 px (delta 157 px) |
-| A1 | accept-as-legacy | x=886 y=60 w=12 h=784 | x=886 y=60 w=12 h=784 | left edge at 886 px; nearest shared grid column 721 px (delta 165 px) |
+| A1 | accept-as-legacy | x=233 y=60 w=74 h=784 | x=233 y=60 w=74 h=784 | left edge at 233 px; nearest shared grid column 57 px (delta 176 px) |
+| A1 | accept-as-legacy | x=280 y=60 w=27 h=784 | x=280 y=60 w=27 h=784 | left edge at 280 px; nearest shared grid column 57 px (delta 223 px) |
+| A1 | accept-as-legacy | x=383 y=60 w=56 h=784 | x=383 y=60 w=56 h=784 | left edge at 383 px; nearest shared grid column 57 px (delta 326 px) |
+| A1 | accept-as-legacy | x=427 y=60 w=12 h=784 | x=427 y=60 w=12 h=784 | left edge at 427 px; nearest shared grid column 57 px (delta 370 px) |
+| A1 | accept-as-legacy | x=499 y=60 w=260 h=784 | x=499 y=60 w=260 h=784 | left edge at 499 px; nearest shared grid column 57 px (delta 442 px) |
+| A1 | accept-as-legacy | x=506 y=60 w=253 h=784 | x=506 y=60 w=253 h=784 | left edge at 506 px; nearest shared grid column 57 px (delta 449 px) |
+| A1 | accept-as-legacy | x=512 y=864 w=71 h=32 | x=512 y=864 w=71 h=32 | left edge at 512 px; nearest shared grid column 57 px (delta 455 px) |
+| A1 | accept-as-legacy | x=516 y=60 w=243 h=784 | x=516 y=60 w=243 h=784 | left edge at 516 px; nearest shared grid column 57 px (delta 459 px) |
+| A1 | accept-as-legacy | x=695 y=8 w=37 h=48 | x=695 y=8 w=37 h=48 | left edge at 695 px; nearest shared grid column 1051 px (delta 356 px) |
+| A1 | accept-as-legacy | x=720 y=8 w=12 h=48 | x=720 y=8 w=12 h=48 | left edge at 720 px; nearest shared grid column 1051 px (delta 331 px) |
+| A1 | accept-as-legacy | x=742 y=8 w=57 h=48 | x=742 y=8 w=57 h=48 | left edge at 742 px; nearest shared grid column 1051 px (delta 309 px) |
+| A1 | accept-as-legacy | x=878 y=60 w=20 h=784 | x=878 y=60 w=20 h=784 | left edge at 878 px; nearest shared grid column 1051 px (delta 173 px) |
+| A1 | accept-as-legacy | x=886 y=60 w=12 h=784 | x=886 y=60 w=12 h=784 | left edge at 886 px; nearest shared grid column 1051 px (delta 165 px) |
 | A1 | accept-as-legacy | x=1036 y=60 w=12 h=784 | x=1036 y=60 w=12 h=784 | left edge at 1036 px; nearest shared grid column 1051 px (delta 15 px) |
 | A2 | fix-later | x=0 y=844 w=1500 h=11 | x=0 y=844 w=1500 h=11 | gap 11 px vs section median 4 px (delta 7 px) |
 | T1 | fix-later | x=16 y=864 w=32 h=32 | x=16 y=864 w=32 h=32 | text line height 32 px (1 component) → em ≈ 45.7 logical px; nearest ladder rung 30 px |
@@ -361,32 +364,29 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 
 | invariant | grade | region (phys px) | logical | metric |
 |---|---|---|---|---|
-| A1 | fix-later | x=33 y=123 w=32 h=12 | x=33 y=123 w=32 h=12 | left edge at 33 px; nearest shared grid column 30 px (delta 3 px) |
+| A1 | fix-later | x=16 y=864 w=32 h=32 | x=16 y=864 w=32 h=32 | left edge at 16 px; nearest shared grid column 20 px (delta 4 px) |
+| A1 | accept-as-legacy | x=33 y=123 w=32 h=12 | x=33 y=123 w=32 h=12 | left edge at 33 px; nearest shared grid column 23 px (delta 10 px) |
 | A1 | accept-as-legacy | x=74 y=123 w=19 h=12 | x=74 y=123 w=19 h=12 | left edge at 74 px; nearest shared grid column 57 px (delta 17 px) |
-| A1 | accept-as-legacy | x=470 y=384 w=560 h=92 | x=470 y=384 w=560 h=92 | left edge at 470 px; nearest shared grid column 680 px (delta 210 px) |
-| A1 | accept-as-legacy | x=511 y=123 w=16 h=12 | x=511 y=123 w=16 h=12 | left edge at 511 px; nearest shared grid column 680 px (delta 169 px) |
-| A1 | accept-as-legacy | x=529 y=123 w=570 h=12 | x=529 y=123 w=570 h=12 | left edge at 529 px; nearest shared grid column 680 px (delta 151 px) |
-| A1 | accept-as-legacy | x=538 y=123 w=561 h=12 | x=538 y=123 w=561 h=12 | left edge at 538 px; nearest shared grid column 680 px (delta 142 px) |
-| A1 | accept-as-legacy | x=695 y=24 w=37 h=19 | x=695 y=24 w=37 h=19 | left edge at 695 px; nearest shared grid column 688 px (delta 7 px) |
-| A1 | accept-as-legacy | x=779 y=205 w=23 h=12 | x=779 y=205 w=23 h=12 | left edge at 779 px; nearest shared grid column 755 px (delta 24 px) |
-| A1 | accept-as-legacy | x=1109 y=123 w=28 h=12 | x=1109 y=123 w=28 h=12 | left edge at 1109 px; nearest shared grid column 755 px (delta 354 px) |
-| A1 | accept-as-legacy | x=1115 y=123 w=22 h=12 | x=1115 y=123 w=22 h=12 | left edge at 1115 px; nearest shared grid column 755 px (delta 360 px) |
-| A1 | accept-as-legacy | x=1367 y=123 w=121 h=12 | x=1367 y=123 w=121 h=12 | left edge at 1367 px; nearest shared grid column 755 px (delta 612 px) |
-| A2 | accept-as-legacy | x=0 y=10 w=1500 h=2 | x=0 y=10 w=1500 h=2 | gap 2 px vs section median 11 px (delta 9 px) |
-| A2 | accept-as-legacy | x=0 y=13 w=1500 h=1 | x=0 y=13 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | accept-as-legacy | x=0 y=16 w=1500 h=1 | x=0 y=16 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | accept-as-legacy | x=0 y=19 w=1500 h=2 | x=0 y=19 w=1500 h=2 | gap 2 px vs section median 11 px (delta 9 px) |
-| A2 | accept-as-legacy | x=0 y=23 w=1500 h=1 | x=0 y=23 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | accept-as-legacy | x=0 y=56 w=1500 h=31 | x=0 y=56 w=1500 h=31 | gap 31 px vs section median 11 px (delta 20 px) |
-| A2 | fix-later | x=0 y=96 w=1500 h=16 | x=0 y=96 w=1500 h=16 | gap 16 px vs section median 11 px (delta 5 px) |
-| A2 | fix-later | x=0 y=135 w=1500 h=8 | x=0 y=135 w=1500 h=8 | gap 8 px vs section median 11 px (delta 3 px) |
-| A2 | accept-as-legacy | x=0 y=145 w=1500 h=23 | x=0 y=145 w=1500 h=23 | gap 23 px vs section median 11 px (delta 12 px) |
-| A2 | accept-as-legacy | x=0 y=177 w=1500 h=28 | x=0 y=177 w=1500 h=28 | gap 28 px vs section median 11 px (delta 17 px) |
-| A2 | accept-as-legacy | x=0 y=217 w=1500 h=1 | x=0 y=217 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | accept-as-legacy | x=0 y=241 w=1500 h=1 | x=0 y=241 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | fix-later | x=0 y=243 w=1500 h=17 | x=0 y=243 w=1500 h=17 | gap 17 px vs section median 11 px (delta 6 px) |
-| A2 | fix-later | x=0 y=269 w=1500 h=19 | x=0 y=269 w=1500 h=19 | gap 19 px vs section median 11 px (delta 8 px) |
-| A2 | accept-as-legacy | x=0 y=298 w=1500 h=86 | x=0 y=298 w=1500 h=86 | gap 86 px vs section median 11 px (delta 75 px) |
+| A1 | accept-as-legacy | x=407 y=226 w=23 h=16 | x=407 y=226 w=23 h=16 | left edge at 407 px; nearest shared grid column 383 px (delta 24 px) |
+| A1 | fix-later | x=511 y=123 w=16 h=12 | x=511 y=123 w=16 h=12 | left edge at 511 px; nearest shared grid column 508 px (delta 3 px) |
+| A1 | accept-as-legacy | x=529 y=123 w=570 h=12 | x=529 y=123 w=570 h=12 | left edge at 529 px; nearest shared grid column 508 px (delta 21 px) |
+| A1 | accept-as-legacy | x=538 y=123 w=561 h=12 | x=538 y=123 w=561 h=12 | left edge at 538 px; nearest shared grid column 508 px (delta 30 px) |
+| A1 | accept-as-legacy | x=695 y=24 w=37 h=19 | x=695 y=24 w=37 h=19 | left edge at 695 px; nearest shared grid column 508 px (delta 187 px) |
+| A1 | accept-as-legacy | x=720 y=24 w=12 h=19 | x=720 y=24 w=12 h=19 | left edge at 720 px; nearest shared grid column 508 px (delta 212 px) |
+| A1 | accept-as-legacy | x=1109 y=123 w=28 h=12 | x=1109 y=123 w=28 h=12 | left edge at 1109 px; nearest shared grid column 508 px (delta 601 px) |
+| A1 | accept-as-legacy | x=1115 y=123 w=22 h=12 | x=1115 y=123 w=22 h=12 | left edge at 1115 px; nearest shared grid column 508 px (delta 607 px) |
+| A1 | accept-as-legacy | x=1367 y=123 w=121 h=12 | x=1367 y=123 w=121 h=12 | left edge at 1367 px; nearest shared grid column 508 px (delta 859 px) |
+| A2 | fix-later | x=0 y=10 w=1500 h=2 | x=0 y=10 w=1500 h=2 | gap 2 px vs section median 9 px (delta 7 px) |
+| A2 | fix-later | x=0 y=13 w=1500 h=1 | x=0 y=13 w=1500 h=1 | gap 1 px vs section median 9 px (delta 8 px) |
+| A2 | fix-later | x=0 y=16 w=1500 h=1 | x=0 y=16 w=1500 h=1 | gap 1 px vs section median 9 px (delta 8 px) |
+| A2 | fix-later | x=0 y=19 w=1500 h=2 | x=0 y=19 w=1500 h=2 | gap 2 px vs section median 9 px (delta 7 px) |
+| A2 | fix-later | x=0 y=23 w=1500 h=1 | x=0 y=23 w=1500 h=1 | gap 1 px vs section median 9 px (delta 8 px) |
+| A2 | accept-as-legacy | x=0 y=56 w=1500 h=31 | x=0 y=56 w=1500 h=31 | gap 31 px vs section median 9 px (delta 22 px) |
+| A2 | fix-later | x=0 y=96 w=1500 h=16 | x=0 y=96 w=1500 h=16 | gap 16 px vs section median 9 px (delta 7 px) |
+| A2 | fix-later | x=0 y=145 w=1500 h=16 | x=0 y=145 w=1500 h=16 | gap 16 px vs section median 9 px (delta 7 px) |
+| A2 | accept-as-legacy | x=0 y=170 w=1500 h=19 | x=0 y=170 w=1500 h=19 | gap 19 px vs section median 9 px (delta 10 px) |
+| A2 | accept-as-legacy | x=0 y=199 w=1500 h=27 | x=0 y=199 w=1500 h=27 | gap 27 px vs section median 9 px (delta 18 px) |
+| A2 | fix-later | x=0 y=262 w=1500 h=1 | x=0 y=262 w=1500 h=1 | gap 1 px vs section median 9 px (delta 8 px) |
 | T1 | accept-as-legacy | x=795 y=8 w=4 h=3 | x=795 y=8 w=4 h=3 | text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=795 y=53 w=4 h=3 | x=795 y=53 w=4 h=3 | text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px |
 | T1 | fix-later | x=16 y=864 w=32 h=32 | x=16 y=864 w=32 h=32 | text line height 32 px (1 component) → em ≈ 45.7 logical px; nearest ladder rung 30 px |
@@ -407,35 +407,35 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | Q1 | accept-as-legacy | x=1133 y=121 w=6 h=15 | x=1133 y=121 w=6 h=15 | ink RGB (88, 90, 97) on background RGB (23, 26, 35) → contrast 2.5:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=1344 y=121 w=41 h=15 | x=1344 y=121 w=41 h=15 | ink RGB (87, 91, 103) on background RGB (19, 21, 28) → contrast 2.7:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=506 y=124 w=6 h=12 | x=506 y=124 w=6 h=12 | ink RGB (82, 86, 97) on background RGB (23, 26, 35) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1464 y=165 w=12 h=12 | x=1464 y=165 w=12 h=12 | ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=11 y=166 w=18 h=13 | x=11 y=166 w=18 h=13 | ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=26 y=166 w=24 h=13 | x=26 y=166 w=24 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=55 y=166 w=11 h=13 | x=55 y=166 w=11 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=678 y=203 w=24 h=16 | x=678 y=203 w=24 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=699 y=203 w=42 h=20 | x=699 y=203 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
-| Q1 | accept-as-legacy | x=743 y=203 w=32 h=16 | x=743 y=203 w=32 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=781 y=203 w=42 h=20 | x=781 y=203 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
-| Q1 | accept-as-legacy | x=775 y=204 w=10 h=15 | x=775 y=204 w=10 h=15 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=587 y=230 w=58 h=16 | x=587 y=230 w=58 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=645 y=230 w=36 h=16 | x=645 y=230 w=36 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=678 y=230 w=15 h=13 | x=678 y=230 w=15 h=13 | ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=692 y=230 w=64 h=16 | x=692 y=230 w=64 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=753 y=230 w=28 h=13 | x=753 y=230 w=28 h=13 | ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=797 y=230 w=30 h=13 | x=797 y=230 w=30 h=13 | ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=824 y=230 w=30 h=13 | x=824 y=230 w=30 h=13 | ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=854 y=230 w=21 h=13 | x=854 y=230 w=21 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=876 y=230 w=13 h=13 | x=876 y=230 w=13 h=13 | ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=886 y=230 w=24 h=13 | x=886 y=230 w=24 h=13 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=609 y=231 w=8 h=12 | x=609 y=231 w=8 h=12 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=10 y=258 w=29 h=13 | x=10 y=258 w=29 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=36 y=258 w=23 h=13 | x=36 y=258 w=23 h=13 | ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1099 y=258 w=26 h=13 | x=1099 y=258 w=26 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1129 y=258 w=18 h=13 | x=1129 y=258 w=18 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=31 y=285 w=18 h=15 | x=31 y=285 w=18 h=15 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=52 y=285 w=8 h=15 | x=52 y=285 w=8 h=15 | ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=18 y=286 w=16 h=14 | x=18 y=286 w=16 h=14 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1434 y=287 w=25 h=13 | x=1434 y=287 w=25 h=13 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1464 y=287 w=17 h=13 | x=1464 y=287 w=17 h=13 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=10 y=159 w=29 h=13 | x=10 y=159 w=29 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=36 y=159 w=23 h=13 | x=36 y=159 w=23 h=13 | ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1099 y=159 w=26 h=13 | x=1099 y=159 w=26 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1129 y=159 w=18 h=13 | x=1129 y=159 w=18 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=31 y=186 w=18 h=15 | x=31 y=186 w=18 h=15 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=52 y=186 w=8 h=15 | x=52 y=186 w=8 h=15 | ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=18 y=187 w=16 h=14 | x=18 y=187 w=16 h=14 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1434 y=188 w=25 h=13 | x=1434 y=188 w=25 h=13 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1464 y=188 w=17 h=13 | x=1464 y=188 w=17 h=13 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=306 y=224 w=24 h=16 | x=306 y=224 w=24 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=327 y=224 w=42 h=20 | x=327 y=224 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
+| Q1 | accept-as-legacy | x=371 y=224 w=32 h=16 | x=371 y=224 w=32 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=409 y=224 w=42 h=20 | x=409 y=224 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
+| Q1 | accept-as-legacy | x=403 y=225 w=10 h=15 | x=403 y=225 w=10 h=15 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1464 y=230 w=12 h=12 | x=1464 y=230 w=12 h=12 | ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=755 y=231 w=18 h=13 | x=755 y=231 w=18 h=13 | ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=770 y=231 w=24 h=13 | x=770 y=231 w=24 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=799 y=231 w=11 h=13 | x=799 y=231 w=11 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=215 y=251 w=58 h=16 | x=215 y=251 w=58 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=273 y=251 w=36 h=16 | x=273 y=251 w=36 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=306 y=251 w=15 h=13 | x=306 y=251 w=15 h=13 | ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=320 y=251 w=64 h=16 | x=320 y=251 w=64 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=381 y=251 w=28 h=13 | x=381 y=251 w=28 h=13 | ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=425 y=251 w=30 h=13 | x=425 y=251 w=30 h=13 | ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=452 y=251 w=30 h=13 | x=452 y=251 w=30 h=13 | ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=482 y=251 w=21 h=13 | x=482 y=251 w=21 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=504 y=251 w=13 h=13 | x=504 y=251 w=13 h=13 | ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=514 y=251 w=24 h=13 | x=514 y=251 w=24 h=13 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=237 y=252 w=8 h=12 | x=237 y=252 w=8 h=12 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=14 y=862 w=36 h=36 | x=14 y=862 w=36 h=36 | ink RGB (87, 91, 103) on background RGB (19, 21, 28) → contrast 2.7:1; role class Large; scrim-blend ink |
 | Q1 | accept-as-legacy | x=55 y=873 w=23 h=13 | x=55 y=873 w=23 h=13 | ink RGB (83, 86, 98) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=555 y=873 w=25 h=13 | x=555 y=873 w=25 h=13 | ink RGB (120, 122, 128) on background RGB (23, 26, 35) → contrast 4.0:1; role class Body; scrim-blend ink |
@@ -615,9 +615,9 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | invariant | grade | region (phys px) | logical | metric |
 |---|---|---|---|---|
 | M1 | accept-as-legacy | x=0 y=26 w=392 h=1 | x=0 y=52 w=784 h=2 | top margin 52.0 logical px (26 px at scale 0.5); nearest rung 48 px |
-| M1 | accept-as-legacy | x=0 y=392 w=392 h=1 | x=0 y=784 w=784 h=2 | bottom margin 54.0 logical px (27 px at scale 0.5); nearest rung 48 px |
-| M1 | accept-as-legacy | x=17 y=0 w=1 h=420 | x=34 y=0 w=2 h=840 | left margin 34.0 logical px (17 px at scale 0.5); nearest rung 32 px |
-| M1 | accept-as-legacy | x=370 y=0 w=1 h=420 | x=740 y=0 w=2 h=840 | right margin 42.0 logical px (21 px at scale 0.5); nearest rung 48 px |
+| M1 | accept-as-legacy | x=0 y=440 w=392 h=1 | x=0 y=880 w=784 h=2 | bottom margin 54.0 logical px (27 px at scale 0.5); nearest rung 48 px |
+| M1 | accept-as-legacy | x=17 y=0 w=1 h=468 | x=34 y=0 w=2 h=936 | left margin 34.0 logical px (17 px at scale 0.5); nearest rung 32 px |
+| M1 | accept-as-legacy | x=370 y=0 w=1 h=468 | x=740 y=0 w=2 h=936 | right margin 42.0 logical px (21 px at scale 0.5); nearest rung 48 px |
 | A1 | accept-as-legacy | x=104 y=60 w=44 h=44 | x=208 y=120 w=88 h=88 | left edge at 104 px; nearest shared grid column 75 px (delta 29 px) |
 | A1 | accept-as-legacy | x=123 y=387 w=6 h=6 | x=246 y=774 w=12 h=12 | left edge at 123 px; nearest shared grid column 75 px (delta 48 px) |
 | A1 | accept-as-legacy | x=152 y=60 w=44 h=44 | x=304 y=120 w=88 h=88 | left edge at 152 px; nearest shared grid column 171 px (delta 19 px) |
@@ -646,7 +646,7 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | invariant | grade | region (phys px) | logical | metric |
 |---|---|---|---|---|
 | M1 | accept-as-legacy | x=0 y=26 w=392 h=1 | x=0 y=26 w=392 h=1 | top margin 26.0 logical px (26 px at scale 1.0); nearest rung 24 px |
-| M1 | accept-as-legacy | x=371 y=0 w=1 h=420 | x=371 y=0 w=1 h=420 | right margin 20.0 logical px (20 px at scale 1.0); nearest rung 16 px |
+| M1 | accept-as-legacy | x=371 y=0 w=1 h=468 | x=371 y=0 w=1 h=468 | right margin 20.0 logical px (20 px at scale 1.0); nearest rung 16 px |
 | A1 | accept-as-legacy | x=104 y=60 w=44 h=44 | x=104 y=60 w=44 h=44 | left edge at 104 px; nearest shared grid column 73 px (delta 31 px) |
 | A1 | accept-as-legacy | x=152 y=60 w=44 h=44 | x=152 y=60 w=44 h=44 | left edge at 152 px; nearest shared grid column 73 px (delta 79 px) |
 | A2 | accept-as-legacy | x=0 y=33 w=392 h=27 | x=0 y=33 w=392 h=27 | gap 27 px vs section median 36 px (delta 9 px) |
@@ -657,6 +657,7 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | A2 | accept-as-legacy | x=0 y=275 w=392 h=13 | x=0 y=275 w=392 h=13 | gap 13 px vs section median 36 px (delta 23 px) |
 | T1 | accept-as-legacy | x=27 y=132 w=6 h=4 | x=27 y=132 w=6 h=4 | text line height 4 px (1 component) → em ≈ 5.7 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=74 y=340 w=8 h=4 | x=74 y=340 w=8 h=4 | text line height 4 px (1 component) → em ≈ 5.7 logical px; nearest ladder rung 11 px |
+| T1 | accept-as-legacy | x=81 y=433 w=3 h=3 | x=81 y=433 w=3 h=3 | text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px |
 | Q1 | accept-as-legacy | x=266 y=240 w=9 h=12 | x=266 y=240 w=9 h=12 | ink RGB (94, 97, 110) on background RGB (20, 22, 28) → contrast 2.9:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=25 y=288 w=9 h=12 | x=25 y=288 w=9 h=12 | ink RGB (110, 114, 127) on background RGB (20, 22, 28) → contrast 3.8:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=22 y=334 w=16 h=16 | x=22 y=334 w=16 h=16 | ink RGB (112, 116, 130) on background RGB (20, 22, 28) → contrast 3.9:1; role class Body; scrim-blend ink |
@@ -691,11 +692,9 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | A1 | accept-as-legacy | x=104 y=60 w=44 h=44 | x=35 y=20 w=15 h=15 | left edge at 104 px; nearest shared grid column 63 px (delta 41 px) |
 | A1 | accept-as-legacy | x=152 y=60 w=44 h=44 | x=51 y=20 w=15 h=15 | left edge at 152 px; nearest shared grid column 63 px (delta 89 px) |
 | A1 | accept-as-legacy | x=162 y=229 w=75 h=82 | x=54 y=76 w=25 h=27 | left edge at 162 px; nearest shared grid column 63 px (delta 99 px) |
-| A2 | fix-later | x=0 y=104 w=392 h=19 | x=0 y=35 w=131 h=6 | gap 19 px vs section median 27 px (delta 8 px) |
-| A2 | accept-as-legacy | x=0 y=143 w=392 h=42 | x=0 y=48 w=131 h=14 | gap 42 px vs section median 27 px (delta 15 px) |
-| A2 | accept-as-legacy | x=0 y=188 w=392 h=41 | x=0 y=63 w=131 h=14 | gap 41 px vs section median 27 px (delta 14 px) |
-| A2 | accept-as-legacy | x=0 y=311 w=392 h=14 | x=0 y=104 w=131 h=5 | gap 14 px vs section median 27 px (delta 13 px) |
-| A2 | accept-as-legacy | x=0 y=359 w=392 h=13 | x=0 y=120 w=131 h=4 | gap 13 px vs section median 27 px (delta 14 px) |
+| A2 | fix-later | x=0 y=33 w=392 h=27 | x=0 y=11 w=131 h=9 | gap 27 px vs section median 19 px (delta 8 px) |
+| A2 | accept-as-legacy | x=0 y=143 w=392 h=42 | x=0 y=48 w=131 h=14 | gap 42 px vs section median 19 px (delta 23 px) |
+| A2 | accept-as-legacy | x=0 y=188 w=392 h=41 | x=0 y=63 w=131 h=14 | gap 41 px vs section median 19 px (delta 22 px) |
 | T1 | accept-as-legacy | x=25 y=26 w=10 h=7 | x=8 y=9 w=3 h=2 | text line height 7 px (1 component) → em ≈ 3.3 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=73 y=26 w=10 h=7 | x=24 y=9 w=3 h=2 | text line height 7 px (1 component) → em ≈ 3.3 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=121 y=26 w=10 h=7 | x=40 y=9 w=3 h=2 | text line height 7 px (1 component) → em ≈ 3.3 logical px; nearest ladder rung 11 px |
@@ -717,6 +716,7 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | T1 | accept-as-legacy | x=67 y=336 w=22 h=12 | x=22 y=112 w=7 h=4 | text line height 12 px (1 component) → em ≈ 5.7 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=13 y=340 w=34 h=19 | x=4 y=113 w=11 h=6 | text line height 19 px (3 components) → em ≈ 9.0 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=26 y=402 w=8 h=5 | x=9 y=134 w=3 h=2 | text line height 5 px (1 component) → em ≈ 2.4 logical px; nearest ladder rung 11 px |
+| T1 | accept-as-legacy | x=87 y=423 w=8 h=8 | x=29 y=141 w=3 h=3 | text line height 8 px (1 component) → em ≈ 3.8 logical px; nearest ladder rung 11 px |
 | Q1 | accept-as-legacy | x=102 y=58 w=96 h=48 | x=34 y=19 w=32 h=16 | ink RGB (38, 42, 53) on background RGB (20, 22, 28) → contrast 1.3:1; role class Large; scrim-blend ink |
 | I1 | fix-later | x=25 y=26 w=10 h=7 | x=8 y=9 w=3 h=2 | icon bounding box 10 × 7 phys px → 3.3 × 2.3 logical px |
 | I1 | fix-later | x=73 y=26 w=10 h=7 | x=24 y=9 w=3 h=2 | icon bounding box 10 × 7 phys px → 3.3 × 2.3 logical px |
@@ -736,6 +736,7 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | I1 | fix-later | x=162 y=255 w=27 h=30 | x=54 y=85 w=9 h=10 | icon bounding box 27 × 30 phys px → 9.0 × 10.0 logical px |
 | I1 | fix-later | x=361 y=277 w=22 h=23 | x=120 y=92 w=7 h=8 | icon bounding box 22 × 23 phys px → 7.3 × 7.7 logical px |
 | I1 | fix-later | x=112 y=283 w=28 h=20 | x=37 y=94 w=9 h=7 | icon bounding box 28 × 20 phys px → 9.3 × 6.7 logical px |
+| I1 | fix-later | x=87 y=423 w=8 h=8 | x=29 y=141 w=3 h=3 | icon bounding box 8 × 8 phys px → 2.7 × 2.7 logical px |
 
 ### `kiosk-board-0.5-1000`
 
@@ -1310,36 +1311,34 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 
 | invariant | grade | region (phys px) | logical | metric |
 |---|---|---|---|---|
-| A1 | fix-later | x=33 y=123 w=32 h=12 | x=33 y=123 w=32 h=12 | left edge at 33 px; nearest shared grid column 30 px (delta 3 px) |
-| A1 | fix-later | x=41 y=350 w=17 h=152 | x=41 y=350 w=17 h=152 | left edge at 41 px; nearest shared grid column 38 px (delta 3 px) |
-| A1 | accept-as-legacy | x=74 y=123 w=19 h=12 | x=74 y=123 w=19 h=12 | left edge at 74 px; nearest shared grid column 64 px (delta 10 px) |
-| A1 | accept-as-legacy | x=227 y=231 w=66 h=12 | x=227 y=231 w=66 h=12 | left edge at 227 px; nearest shared grid column 64 px (delta 163 px) |
-| A1 | accept-as-legacy | x=358 y=231 w=1130 h=12 | x=358 y=231 w=1130 h=12 | left edge at 358 px; nearest shared grid column 64 px (delta 294 px) |
-| A1 | accept-as-legacy | x=388 y=231 w=1100 h=12 | x=388 y=231 w=1100 h=12 | left edge at 388 px; nearest shared grid column 680 px (delta 292 px) |
-| A1 | accept-as-legacy | x=470 y=350 w=560 h=152 | x=470 y=350 w=560 h=152 | left edge at 470 px; nearest shared grid column 680 px (delta 210 px) |
-| A1 | accept-as-legacy | x=511 y=123 w=16 h=12 | x=511 y=123 w=16 h=12 | left edge at 511 px; nearest shared grid column 680 px (delta 169 px) |
-| A1 | accept-as-legacy | x=529 y=123 w=570 h=12 | x=529 y=123 w=570 h=12 | left edge at 529 px; nearest shared grid column 680 px (delta 151 px) |
-| A1 | accept-as-legacy | x=538 y=123 w=561 h=12 | x=538 y=123 w=561 h=12 | left edge at 538 px; nearest shared grid column 680 px (delta 142 px) |
-| A1 | accept-as-legacy | x=695 y=24 w=38 h=19 | x=695 y=24 w=38 h=19 | left edge at 695 px; nearest shared grid column 688 px (delta 7 px) |
-| A1 | accept-as-legacy | x=779 y=267 w=23 h=12 | x=779 y=267 w=23 h=12 | left edge at 779 px; nearest shared grid column 755 px (delta 24 px) |
-| A1 | accept-as-legacy | x=1109 y=123 w=28 h=12 | x=1109 y=123 w=28 h=12 | left edge at 1109 px; nearest shared grid column 811 px (delta 298 px) |
-| A1 | accept-as-legacy | x=1115 y=123 w=22 h=12 | x=1115 y=123 w=22 h=12 | left edge at 1115 px; nearest shared grid column 811 px (delta 304 px) |
+| A1 | fix-later | x=16 y=864 w=32 h=32 | x=16 y=864 w=32 h=32 | left edge at 16 px; nearest shared grid column 20 px (delta 4 px) |
+| A1 | accept-as-legacy | x=33 y=123 w=32 h=12 | x=33 y=123 w=32 h=12 | left edge at 33 px; nearest shared grid column 23 px (delta 10 px) |
+| A1 | accept-as-legacy | x=74 y=123 w=19 h=12 | x=74 y=123 w=19 h=12 | left edge at 74 px; nearest shared grid column 57 px (delta 17 px) |
+| A1 | accept-as-legacy | x=407 y=226 w=23 h=16 | x=407 y=226 w=23 h=16 | left edge at 407 px; nearest shared grid column 383 px (delta 24 px) |
+| A1 | fix-later | x=511 y=123 w=16 h=12 | x=511 y=123 w=16 h=12 | left edge at 511 px; nearest shared grid column 508 px (delta 3 px) |
+| A1 | accept-as-legacy | x=529 y=123 w=570 h=12 | x=529 y=123 w=570 h=12 | left edge at 529 px; nearest shared grid column 508 px (delta 21 px) |
+| A1 | accept-as-legacy | x=538 y=123 w=561 h=12 | x=538 y=123 w=561 h=12 | left edge at 538 px; nearest shared grid column 508 px (delta 30 px) |
+| A1 | accept-as-legacy | x=695 y=24 w=38 h=19 | x=695 y=24 w=38 h=19 | left edge at 695 px; nearest shared grid column 686 px (delta 9 px) |
+| A1 | accept-as-legacy | x=721 y=24 w=12 h=19 | x=721 y=24 w=12 h=19 | left edge at 721 px; nearest shared grid column 754 px (delta 33 px) |
+| A1 | accept-as-legacy | x=811 y=8 w=629 h=15 | x=811 y=8 w=629 h=15 | left edge at 811 px; nearest shared grid column 757 px (delta 54 px) |
+| A1 | accept-as-legacy | x=971 y=296 w=66 h=12 | x=971 y=296 w=66 h=12 | left edge at 971 px; nearest shared grid column 757 px (delta 214 px) |
+| A1 | accept-as-legacy | x=1102 y=296 w=386 h=12 | x=1102 y=296 w=386 h=12 | left edge at 1102 px; nearest shared grid column 757 px (delta 345 px) |
+| A1 | accept-as-legacy | x=1109 y=123 w=28 h=12 | x=1109 y=123 w=28 h=12 | left edge at 1109 px; nearest shared grid column 757 px (delta 352 px) |
+| A1 | accept-as-legacy | x=1115 y=123 w=22 h=12 | x=1115 y=123 w=22 h=12 | left edge at 1115 px; nearest shared grid column 757 px (delta 358 px) |
+| A1 | accept-as-legacy | x=1132 y=296 w=356 h=12 | x=1132 y=296 w=356 h=12 | left edge at 1132 px; nearest shared grid column 1486 px (delta 354 px) |
 | A1 | accept-as-legacy | x=1367 y=123 w=121 h=12 | x=1367 y=123 w=121 h=12 | left edge at 1367 px; nearest shared grid column 1486 px (delta 119 px) |
-| A2 | accept-as-legacy | x=0 y=23 w=1500 h=1 | x=0 y=23 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | accept-as-legacy | x=0 y=56 w=1500 h=31 | x=0 y=56 w=1500 h=31 | gap 31 px vs section median 11 px (delta 20 px) |
-| A2 | fix-later | x=0 y=96 w=1500 h=16 | x=0 y=96 w=1500 h=16 | gap 16 px vs section median 11 px (delta 5 px) |
-| A2 | fix-later | x=0 y=135 w=1500 h=8 | x=0 y=135 w=1500 h=8 | gap 8 px vs section median 11 px (delta 3 px) |
-| A2 | accept-as-legacy | x=0 y=145 w=1500 h=23 | x=0 y=145 w=1500 h=23 | gap 23 px vs section median 11 px (delta 12 px) |
-| A2 | accept-as-legacy | x=0 y=177 w=1500 h=24 | x=0 y=177 w=1500 h=24 | gap 24 px vs section median 11 px (delta 13 px) |
-| A2 | fix-later | x=0 y=206 w=1500 h=6 | x=0 y=206 w=1500 h=6 | gap 6 px vs section median 11 px (delta 5 px) |
-| A2 | accept-as-legacy | x=0 y=221 w=1500 h=1 | x=0 y=221 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | fix-later | x=0 y=223 w=1500 h=8 | x=0 y=223 w=1500 h=8 | gap 8 px vs section median 11 px (delta 3 px) |
-| A2 | fix-later | x=0 y=243 w=1500 h=3 | x=0 y=243 w=1500 h=3 | gap 3 px vs section median 11 px (delta 8 px) |
-| A2 | fix-later | x=0 y=251 w=1500 h=16 | x=0 y=251 w=1500 h=16 | gap 16 px vs section median 11 px (delta 5 px) |
-| A2 | accept-as-legacy | x=0 y=279 w=1500 h=1 | x=0 y=279 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | accept-as-legacy | x=0 y=303 w=1500 h=1 | x=0 y=303 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | fix-later | x=0 y=305 w=1500 h=17 | x=0 y=305 w=1500 h=17 | gap 17 px vs section median 11 px (delta 6 px) |
-| A2 | fix-later | x=0 y=331 w=1500 h=19 | x=0 y=331 w=1500 h=19 | gap 19 px vs section median 11 px (delta 8 px) |
+| A2 | fix-later | x=0 y=23 w=1500 h=1 | x=0 y=23 w=1500 h=1 | gap 1 px vs section median 9 px (delta 8 px) |
+| A2 | accept-as-legacy | x=0 y=56 w=1500 h=31 | x=0 y=56 w=1500 h=31 | gap 31 px vs section median 9 px (delta 22 px) |
+| A2 | fix-later | x=0 y=96 w=1500 h=16 | x=0 y=96 w=1500 h=16 | gap 16 px vs section median 9 px (delta 7 px) |
+| A2 | fix-later | x=0 y=145 w=1500 h=16 | x=0 y=145 w=1500 h=16 | gap 16 px vs section median 9 px (delta 7 px) |
+| A2 | accept-as-legacy | x=0 y=170 w=1500 h=19 | x=0 y=170 w=1500 h=19 | gap 19 px vs section median 9 px (delta 10 px) |
+| A2 | accept-as-legacy | x=0 y=199 w=1500 h=27 | x=0 y=199 w=1500 h=27 | gap 27 px vs section median 9 px (delta 18 px) |
+| A2 | fix-later | x=0 y=262 w=1500 h=1 | x=0 y=262 w=1500 h=1 | gap 1 px vs section median 9 px (delta 8 px) |
+| A2 | fix-later | x=0 y=264 w=1500 h=2 | x=0 y=264 w=1500 h=2 | gap 2 px vs section median 9 px (delta 7 px) |
+| A2 | fix-later | x=0 y=271 w=1500 h=6 | x=0 y=271 w=1500 h=6 | gap 6 px vs section median 9 px (delta 3 px) |
+| A2 | fix-later | x=0 y=286 w=1500 h=1 | x=0 y=286 w=1500 h=1 | gap 1 px vs section median 9 px (delta 8 px) |
+| A2 | fix-later | x=0 y=308 w=1500 h=3 | x=0 y=308 w=1500 h=3 | gap 3 px vs section median 9 px (delta 6 px) |
+| A2 | accept-as-legacy | x=0 y=316 w=1500 h=42 | x=0 y=316 w=1500 h=42 | gap 42 px vs section median 9 px (delta 33 px) |
 | T1 | accept-as-legacy | x=795 y=8 w=4 h=3 | x=795 y=8 w=4 h=3 | text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=795 y=53 w=4 h=3 | x=795 y=53 w=4 h=3 | text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px |
 | T1 | fix-later | x=16 y=864 w=32 h=32 | x=16 y=864 w=32 h=32 | text line height 32 px (1 component) → em ≈ 45.7 logical px; nearest ladder rung 30 px |
@@ -1360,47 +1359,47 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | Q1 | accept-as-legacy | x=1133 y=121 w=6 h=15 | x=1133 y=121 w=6 h=15 | ink RGB (88, 90, 97) on background RGB (23, 26, 35) → contrast 2.5:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=1344 y=121 w=41 h=15 | x=1344 y=121 w=41 h=15 | ink RGB (87, 91, 103) on background RGB (19, 21, 28) → contrast 2.7:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=506 y=124 w=6 h=12 | x=506 y=124 w=6 h=12 | ink RGB (82, 86, 97) on background RGB (23, 26, 35) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1464 y=165 w=12 h=12 | x=1464 y=165 w=12 h=12 | ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=11 y=166 w=18 h=13 | x=11 y=166 w=18 h=13 | ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=26 y=166 w=24 h=13 | x=26 y=166 w=24 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=55 y=166 w=11 h=13 | x=55 y=166 w=11 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=19 y=210 w=46 h=16 | x=19 y=210 w=46 h=16 | ink RGB (114, 116, 122) on background RGB (19, 21, 28) → contrast 3.9:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=62 y=210 w=22 h=13 | x=62 y=210 w=22 h=13 | ink RGB (114, 116, 122) on background RGB (19, 21, 28) → contrast 3.9:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=18 y=229 w=53 h=13 | x=18 y=229 w=53 h=13 | ink RGB (83, 86, 98) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=70 y=229 w=20 h=13 | x=70 y=229 w=20 h=13 | ink RGB (81, 84, 96) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=90 y=229 w=33 h=13 | x=90 y=229 w=33 h=13 | ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=125 y=229 w=13 h=13 | x=125 y=229 w=13 h=13 | ink RGB (72, 75, 86) on background RGB (19, 21, 28) → contrast 2.1:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=140 y=229 w=63 h=16 | x=140 y=229 w=63 h=16 | ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=218 y=229 w=25 h=13 | x=218 y=229 w=25 h=13 | ink RGB (82, 85, 97) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=323 y=229 w=66 h=16 | x=323 y=229 w=66 h=16 | ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=240 y=230 w=62 h=12 | x=240 y=230 w=62 h=12 | ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=299 y=230 w=27 h=12 | x=299 y=230 w=27 h=12 | ink RGB (80, 84, 95) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=386 y=230 w=20 h=15 | x=386 y=230 w=20 h=15 | ink RGB (80, 84, 95) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=678 y=265 w=24 h=16 | x=678 y=265 w=24 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=699 y=265 w=42 h=20 | x=699 y=265 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
-| Q1 | accept-as-legacy | x=743 y=265 w=32 h=16 | x=743 y=265 w=32 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=781 y=265 w=42 h=20 | x=781 y=265 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
-| Q1 | accept-as-legacy | x=775 y=266 w=10 h=15 | x=775 y=266 w=10 h=15 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=587 y=292 w=58 h=16 | x=587 y=292 w=58 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=645 y=292 w=36 h=16 | x=645 y=292 w=36 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=678 y=292 w=15 h=13 | x=678 y=292 w=15 h=13 | ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=692 y=292 w=64 h=16 | x=692 y=292 w=64 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=753 y=292 w=28 h=13 | x=753 y=292 w=28 h=13 | ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=797 y=292 w=30 h=13 | x=797 y=292 w=30 h=13 | ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=824 y=292 w=30 h=13 | x=824 y=292 w=30 h=13 | ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=854 y=292 w=21 h=13 | x=854 y=292 w=21 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=876 y=292 w=13 h=13 | x=876 y=292 w=13 h=13 | ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=886 y=292 w=24 h=13 | x=886 y=292 w=24 h=13 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=609 y=293 w=8 h=12 | x=609 y=293 w=8 h=12 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=10 y=320 w=29 h=13 | x=10 y=320 w=29 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=36 y=320 w=23 h=13 | x=36 y=320 w=23 h=13 | ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1099 y=320 w=26 h=13 | x=1099 y=320 w=26 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1129 y=320 w=18 h=13 | x=1129 y=320 w=18 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=31 y=347 w=18 h=15 | x=31 y=347 w=18 h=15 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=52 y=347 w=8 h=15 | x=52 y=347 w=8 h=15 | ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=18 y=348 w=16 h=14 | x=18 y=348 w=16 h=14 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1434 y=349 w=25 h=13 | x=1434 y=349 w=25 h=13 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1464 y=349 w=17 h=13 | x=1464 y=349 w=17 h=13 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=10 y=159 w=29 h=13 | x=10 y=159 w=29 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=36 y=159 w=23 h=13 | x=36 y=159 w=23 h=13 | ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1099 y=159 w=26 h=13 | x=1099 y=159 w=26 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1129 y=159 w=18 h=13 | x=1129 y=159 w=18 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=31 y=186 w=18 h=15 | x=31 y=186 w=18 h=15 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=52 y=186 w=8 h=15 | x=52 y=186 w=8 h=15 | ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=18 y=187 w=16 h=14 | x=18 y=187 w=16 h=14 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1434 y=188 w=25 h=13 | x=1434 y=188 w=25 h=13 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1464 y=188 w=17 h=13 | x=1464 y=188 w=17 h=13 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=306 y=224 w=24 h=16 | x=306 y=224 w=24 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=327 y=224 w=42 h=20 | x=327 y=224 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
+| Q1 | accept-as-legacy | x=371 y=224 w=32 h=16 | x=371 y=224 w=32 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=409 y=224 w=42 h=20 | x=409 y=224 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
+| Q1 | accept-as-legacy | x=403 y=225 w=10 h=15 | x=403 y=225 w=10 h=15 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1464 y=230 w=12 h=12 | x=1464 y=230 w=12 h=12 | ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=755 y=231 w=18 h=13 | x=755 y=231 w=18 h=13 | ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=770 y=231 w=24 h=13 | x=770 y=231 w=24 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=799 y=231 w=11 h=13 | x=799 y=231 w=11 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=215 y=251 w=58 h=16 | x=215 y=251 w=58 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=273 y=251 w=36 h=16 | x=273 y=251 w=36 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=306 y=251 w=15 h=13 | x=306 y=251 w=15 h=13 | ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=320 y=251 w=64 h=16 | x=320 y=251 w=64 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=381 y=251 w=28 h=13 | x=381 y=251 w=28 h=13 | ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=425 y=251 w=30 h=13 | x=425 y=251 w=30 h=13 | ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=452 y=251 w=30 h=13 | x=452 y=251 w=30 h=13 | ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=482 y=251 w=21 h=13 | x=482 y=251 w=21 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=504 y=251 w=13 h=13 | x=504 y=251 w=13 h=13 | ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=514 y=251 w=24 h=13 | x=514 y=251 w=24 h=13 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=237 y=252 w=8 h=12 | x=237 y=252 w=8 h=12 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=763 y=275 w=46 h=16 | x=763 y=275 w=46 h=16 | ink RGB (114, 116, 122) on background RGB (19, 21, 28) → contrast 3.9:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=806 y=275 w=22 h=13 | x=806 y=275 w=22 h=13 | ink RGB (114, 116, 122) on background RGB (19, 21, 28) → contrast 3.9:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=762 y=294 w=53 h=13 | x=762 y=294 w=53 h=13 | ink RGB (83, 86, 98) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=814 y=294 w=20 h=13 | x=814 y=294 w=20 h=13 | ink RGB (81, 84, 96) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=834 y=294 w=33 h=13 | x=834 y=294 w=33 h=13 | ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=869 y=294 w=13 h=13 | x=869 y=294 w=13 h=13 | ink RGB (72, 75, 86) on background RGB (19, 21, 28) → contrast 2.1:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=884 y=294 w=63 h=16 | x=884 y=294 w=63 h=16 | ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=962 y=294 w=25 h=13 | x=962 y=294 w=25 h=13 | ink RGB (82, 85, 97) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1067 y=294 w=66 h=16 | x=1067 y=294 w=66 h=16 | ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=984 y=295 w=62 h=12 | x=984 y=295 w=62 h=12 | ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1043 y=295 w=27 h=12 | x=1043 y=295 w=27 h=12 | ink RGB (80, 84, 95) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1130 y=295 w=20 h=15 | x=1130 y=295 w=20 h=15 | ink RGB (80, 84, 95) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=14 y=862 w=36 h=36 | x=14 y=862 w=36 h=36 | ink RGB (87, 91, 103) on background RGB (19, 21, 28) → contrast 2.7:1; role class Large; scrim-blend ink |
 | Q1 | accept-as-legacy | x=55 y=873 w=23 h=13 | x=55 y=873 w=23 h=13 | ink RGB (83, 86, 98) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=555 y=873 w=25 h=13 | x=555 y=873 w=25 h=13 | ink RGB (120, 122, 128) on background RGB (23, 26, 35) → contrast 4.0:1; role class Body; scrim-blend ink |
@@ -1587,21 +1586,21 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 
 | invariant | grade | region (phys px) | logical | metric |
 |---|---|---|---|---|
-| A1 | fix-later | x=33 y=123 w=32 h=12 | x=33 y=123 w=32 h=12 | left edge at 33 px; nearest shared grid column 30 px (delta 3 px) |
+| A1 | fix-later | x=16 y=864 w=32 h=32 | x=16 y=864 w=32 h=32 | left edge at 16 px; nearest shared grid column 20 px (delta 4 px) |
+| A1 | accept-as-legacy | x=33 y=123 w=32 h=12 | x=33 y=123 w=32 h=12 | left edge at 33 px; nearest shared grid column 23 px (delta 10 px) |
 | A1 | accept-as-legacy | x=74 y=123 w=19 h=12 | x=74 y=123 w=19 h=12 | left edge at 74 px; nearest shared grid column 57 px (delta 17 px) |
-| A1 | accept-as-legacy | x=470 y=317 w=18 h=227 | x=470 y=317 w=18 h=227 | left edge at 470 px; nearest shared grid column 528 px (delta 58 px) |
-| A1 | accept-as-legacy | x=495 y=317 w=396 h=227 | x=495 y=317 w=396 h=227 | left edge at 495 px; nearest shared grid column 528 px (delta 33 px) |
-| A1 | accept-as-legacy | x=511 y=123 w=16 h=12 | x=511 y=123 w=16 h=12 | left edge at 511 px; nearest shared grid column 528 px (delta 17 px) |
-| A1 | accept-as-legacy | x=515 y=317 w=376 h=227 | x=515 y=317 w=376 h=227 | left edge at 515 px; nearest shared grid column 528 px (delta 13 px) |
+| A1 | accept-as-legacy | x=407 y=226 w=23 h=16 | x=407 y=226 w=23 h=16 | left edge at 407 px; nearest shared grid column 383 px (delta 24 px) |
+| A1 | accept-as-legacy | x=495 y=317 w=396 h=227 | x=495 y=317 w=396 h=227 | left edge at 495 px; nearest shared grid column 506 px (delta 11 px) |
+| A1 | fix-later | x=511 y=123 w=16 h=12 | x=511 y=123 w=16 h=12 | left edge at 511 px; nearest shared grid column 508 px (delta 3 px) |
 | A1 | accept-as-legacy | x=538 y=123 w=561 h=12 | x=538 y=123 w=561 h=12 | left edge at 538 px; nearest shared grid column 529 px (delta 9 px) |
-| A1 | accept-as-legacy | x=695 y=24 w=37 h=19 | x=695 y=24 w=37 h=19 | left edge at 695 px; nearest shared grid column 688 px (delta 7 px) |
-| A1 | accept-as-legacy | x=779 y=205 w=23 h=12 | x=779 y=205 w=23 h=12 | left edge at 779 px; nearest shared grid column 755 px (delta 24 px) |
-| A1 | accept-as-legacy | x=795 y=317 w=96 h=227 | x=795 y=317 w=96 h=227 | left edge at 795 px; nearest shared grid column 755 px (delta 40 px) |
-| A1 | accept-as-legacy | x=855 y=317 w=36 h=227 | x=855 y=317 w=36 h=227 | left edge at 855 px; nearest shared grid column 755 px (delta 100 px) |
-| A1 | accept-as-legacy | x=1012 y=317 w=18 h=227 | x=1012 y=317 w=18 h=227 | left edge at 1012 px; nearest shared grid column 755 px (delta 257 px) |
-| A1 | accept-as-legacy | x=1109 y=123 w=28 h=12 | x=1109 y=123 w=28 h=12 | left edge at 1109 px; nearest shared grid column 755 px (delta 354 px) |
-| A1 | accept-as-legacy | x=1115 y=123 w=22 h=12 | x=1115 y=123 w=22 h=12 | left edge at 1115 px; nearest shared grid column 755 px (delta 360 px) |
-| A1 | accept-as-legacy | x=1367 y=123 w=121 h=12 | x=1367 y=123 w=121 h=12 | left edge at 1367 px; nearest shared grid column 755 px (delta 612 px) |
+| A1 | accept-as-legacy | x=695 y=24 w=37 h=19 | x=695 y=24 w=37 h=19 | left edge at 695 px; nearest shared grid column 529 px (delta 166 px) |
+| A1 | accept-as-legacy | x=720 y=24 w=12 h=19 | x=720 y=24 w=12 h=19 | left edge at 720 px; nearest shared grid column 529 px (delta 191 px) |
+| A1 | accept-as-legacy | x=795 y=317 w=96 h=227 | x=795 y=317 w=96 h=227 | left edge at 795 px; nearest shared grid column 529 px (delta 266 px) |
+| A1 | accept-as-legacy | x=855 y=317 w=36 h=227 | x=855 y=317 w=36 h=227 | left edge at 855 px; nearest shared grid column 529 px (delta 326 px) |
+| A1 | accept-as-legacy | x=1012 y=317 w=18 h=227 | x=1012 y=317 w=18 h=227 | left edge at 1012 px; nearest shared grid column 529 px (delta 483 px) |
+| A1 | accept-as-legacy | x=1109 y=123 w=28 h=12 | x=1109 y=123 w=28 h=12 | left edge at 1109 px; nearest shared grid column 529 px (delta 580 px) |
+| A1 | accept-as-legacy | x=1115 y=123 w=22 h=12 | x=1115 y=123 w=22 h=12 | left edge at 1115 px; nearest shared grid column 529 px (delta 586 px) |
+| A1 | accept-as-legacy | x=1367 y=123 w=121 h=12 | x=1367 y=123 w=121 h=12 | left edge at 1367 px; nearest shared grid column 529 px (delta 838 px) |
 | A2 | accept-as-legacy | x=0 y=10 w=1500 h=2 | x=0 y=10 w=1500 h=2 | gap 2 px vs section median 11 px (delta 9 px) |
 | A2 | accept-as-legacy | x=0 y=13 w=1500 h=1 | x=0 y=13 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
 | A2 | accept-as-legacy | x=0 y=16 w=1500 h=1 | x=0 y=16 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
@@ -1610,13 +1609,11 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | A2 | accept-as-legacy | x=0 y=56 w=1500 h=31 | x=0 y=56 w=1500 h=31 | gap 31 px vs section median 11 px (delta 20 px) |
 | A2 | fix-later | x=0 y=96 w=1500 h=16 | x=0 y=96 w=1500 h=16 | gap 16 px vs section median 11 px (delta 5 px) |
 | A2 | fix-later | x=0 y=135 w=1500 h=8 | x=0 y=135 w=1500 h=8 | gap 8 px vs section median 11 px (delta 3 px) |
-| A2 | accept-as-legacy | x=0 y=145 w=1500 h=23 | x=0 y=145 w=1500 h=23 | gap 23 px vs section median 11 px (delta 12 px) |
-| A2 | accept-as-legacy | x=0 y=177 w=1500 h=28 | x=0 y=177 w=1500 h=28 | gap 28 px vs section median 11 px (delta 17 px) |
-| A2 | accept-as-legacy | x=0 y=217 w=1500 h=1 | x=0 y=217 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | accept-as-legacy | x=0 y=241 w=1500 h=1 | x=0 y=241 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
-| A2 | fix-later | x=0 y=243 w=1500 h=17 | x=0 y=243 w=1500 h=17 | gap 17 px vs section median 11 px (delta 6 px) |
-| A2 | fix-later | x=0 y=269 w=1500 h=19 | x=0 y=269 w=1500 h=19 | gap 19 px vs section median 11 px (delta 8 px) |
-| A2 | fix-later | x=0 y=298 w=1500 h=19 | x=0 y=298 w=1500 h=19 | gap 19 px vs section median 11 px (delta 8 px) |
+| A2 | fix-later | x=0 y=145 w=1500 h=16 | x=0 y=145 w=1500 h=16 | gap 16 px vs section median 11 px (delta 5 px) |
+| A2 | fix-later | x=0 y=170 w=1500 h=19 | x=0 y=170 w=1500 h=19 | gap 19 px vs section median 11 px (delta 8 px) |
+| A2 | accept-as-legacy | x=0 y=199 w=1500 h=27 | x=0 y=199 w=1500 h=27 | gap 27 px vs section median 11 px (delta 16 px) |
+| A2 | accept-as-legacy | x=0 y=262 w=1500 h=1 | x=0 y=262 w=1500 h=1 | gap 1 px vs section median 11 px (delta 10 px) |
+| A2 | accept-as-legacy | x=0 y=264 w=1500 h=53 | x=0 y=264 w=1500 h=53 | gap 53 px vs section median 11 px (delta 42 px) |
 | T1 | accept-as-legacy | x=795 y=8 w=4 h=3 | x=795 y=8 w=4 h=3 | text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=795 y=53 w=4 h=3 | x=795 y=53 w=4 h=3 | text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=812 y=381 w=3 h=3 | x=812 y=381 w=3 h=3 | text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px |
@@ -1638,35 +1635,35 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | Q1 | accept-as-legacy | x=1133 y=121 w=6 h=15 | x=1133 y=121 w=6 h=15 | ink RGB (88, 90, 97) on background RGB (23, 26, 35) → contrast 2.5:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=1344 y=121 w=41 h=15 | x=1344 y=121 w=41 h=15 | ink RGB (87, 91, 103) on background RGB (19, 21, 28) → contrast 2.7:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=506 y=124 w=6 h=12 | x=506 y=124 w=6 h=12 | ink RGB (82, 86, 97) on background RGB (23, 26, 35) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1464 y=165 w=12 h=12 | x=1464 y=165 w=12 h=12 | ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=11 y=166 w=18 h=13 | x=11 y=166 w=18 h=13 | ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=26 y=166 w=24 h=13 | x=26 y=166 w=24 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=55 y=166 w=11 h=13 | x=55 y=166 w=11 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=678 y=203 w=24 h=16 | x=678 y=203 w=24 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=699 y=203 w=42 h=20 | x=699 y=203 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
-| Q1 | accept-as-legacy | x=743 y=203 w=32 h=16 | x=743 y=203 w=32 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=781 y=203 w=42 h=20 | x=781 y=203 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
-| Q1 | accept-as-legacy | x=775 y=204 w=10 h=15 | x=775 y=204 w=10 h=15 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=587 y=230 w=58 h=16 | x=587 y=230 w=58 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=645 y=230 w=36 h=16 | x=645 y=230 w=36 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=678 y=230 w=15 h=13 | x=678 y=230 w=15 h=13 | ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=692 y=230 w=64 h=16 | x=692 y=230 w=64 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=753 y=230 w=28 h=13 | x=753 y=230 w=28 h=13 | ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=797 y=230 w=30 h=13 | x=797 y=230 w=30 h=13 | ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=824 y=230 w=30 h=13 | x=824 y=230 w=30 h=13 | ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=854 y=230 w=21 h=13 | x=854 y=230 w=21 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=876 y=230 w=13 h=13 | x=876 y=230 w=13 h=13 | ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=886 y=230 w=24 h=13 | x=886 y=230 w=24 h=13 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=609 y=231 w=8 h=12 | x=609 y=231 w=8 h=12 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=10 y=258 w=29 h=13 | x=10 y=258 w=29 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=36 y=258 w=23 h=13 | x=36 y=258 w=23 h=13 | ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1099 y=258 w=26 h=13 | x=1099 y=258 w=26 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1129 y=258 w=18 h=13 | x=1129 y=258 w=18 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=31 y=285 w=18 h=15 | x=31 y=285 w=18 h=15 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=52 y=285 w=8 h=15 | x=52 y=285 w=8 h=15 | ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=18 y=286 w=16 h=14 | x=18 y=286 w=16 h=14 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1434 y=287 w=25 h=13 | x=1434 y=287 w=25 h=13 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
-| Q1 | accept-as-legacy | x=1464 y=287 w=17 h=13 | x=1464 y=287 w=17 h=13 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=10 y=159 w=29 h=13 | x=10 y=159 w=29 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=36 y=159 w=23 h=13 | x=36 y=159 w=23 h=13 | ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1099 y=159 w=26 h=13 | x=1099 y=159 w=26 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1129 y=159 w=18 h=13 | x=1129 y=159 w=18 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=31 y=186 w=18 h=15 | x=31 y=186 w=18 h=15 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=52 y=186 w=8 h=15 | x=52 y=186 w=8 h=15 | ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=18 y=187 w=16 h=14 | x=18 y=187 w=16 h=14 | ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1434 y=188 w=25 h=13 | x=1434 y=188 w=25 h=13 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1464 y=188 w=17 h=13 | x=1464 y=188 w=17 h=13 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=306 y=224 w=24 h=16 | x=306 y=224 w=24 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=327 y=224 w=42 h=20 | x=327 y=224 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
+| Q1 | accept-as-legacy | x=371 y=224 w=32 h=16 | x=371 y=224 w=32 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=409 y=224 w=42 h=20 | x=409 y=224 w=42 h=20 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink |
+| Q1 | accept-as-legacy | x=403 y=225 w=10 h=15 | x=403 y=225 w=10 h=15 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=1464 y=230 w=12 h=12 | x=1464 y=230 w=12 h=12 | ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=755 y=231 w=18 h=13 | x=755 y=231 w=18 h=13 | ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=770 y=231 w=24 h=13 | x=770 y=231 w=24 h=13 | ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=799 y=231 w=11 h=13 | x=799 y=231 w=11 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=215 y=251 w=58 h=16 | x=215 y=251 w=58 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=273 y=251 w=36 h=16 | x=273 y=251 w=36 h=16 | ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=306 y=251 w=15 h=13 | x=306 y=251 w=15 h=13 | ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=320 y=251 w=64 h=16 | x=320 y=251 w=64 h=16 | ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=381 y=251 w=28 h=13 | x=381 y=251 w=28 h=13 | ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=425 y=251 w=30 h=13 | x=425 y=251 w=30 h=13 | ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=452 y=251 w=30 h=13 | x=452 y=251 w=30 h=13 | ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=482 y=251 w=21 h=13 | x=482 y=251 w=21 h=13 | ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=504 y=251 w=13 h=13 | x=504 y=251 w=13 h=13 | ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=514 y=251 w=24 h=13 | x=514 y=251 w=24 h=13 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
+| Q1 | accept-as-legacy | x=237 y=252 w=8 h=12 | x=237 y=252 w=8 h=12 | ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=14 y=862 w=36 h=36 | x=14 y=862 w=36 h=36 | ink RGB (87, 91, 103) on background RGB (19, 21, 28) → contrast 2.7:1; role class Large; scrim-blend ink |
 | Q1 | accept-as-legacy | x=55 y=873 w=23 h=13 | x=55 y=873 w=23 h=13 | ink RGB (83, 86, 98) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink |
 | Q1 | accept-as-legacy | x=555 y=873 w=25 h=13 | x=555 y=873 w=25 h=13 | ink RGB (120, 122, 128) on background RGB (23, 26, 35) → contrast 4.0:1; role class Body; scrim-blend ink |
@@ -2232,16 +2229,17 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 |---|---|---|---|---|
 | A1 | fix-later | x=12 y=867 w=19 h=6 | x=24 y=1734 w=38 h=12 | left edge at 12 px; nearest shared grid column 10 px (delta 2 px) |
 | A1 | fix-later | x=14 y=4 w=12 h=24 | x=28 y=8 w=24 h=48 | left edge at 14 px; nearest shared grid column 10 px (delta 4 px) |
-| A1 | fix-later | x=35 y=849 w=9 h=7 | x=70 y=1698 w=18 h=14 | left edge at 35 px; nearest shared grid column 30 px (delta 5 px) |
-| A1 | accept-as-legacy | x=51 y=849 w=15 h=7 | x=102 y=1698 w=30 h=14 | left edge at 51 px; nearest shared grid column 30 px (delta 21 px) |
-| A1 | accept-as-legacy | x=68 y=849 w=19 h=7 | x=136 y=1698 w=38 h=14 | left edge at 68 px; nearest shared grid column 30 px (delta 38 px) |
-| A1 | accept-as-legacy | x=127 y=849 w=23 h=7 | x=254 y=1698 w=46 h=14 | left edge at 127 px; nearest shared grid column 30 px (delta 97 px) |
-| A1 | accept-as-legacy | x=176 y=849 w=24 h=7 | x=352 y=1698 w=48 h=14 | left edge at 176 px; nearest shared grid column 30 px (delta 146 px) |
-| A1 | accept-as-legacy | x=210 y=849 w=8 h=7 | x=420 y=1698 w=16 h=14 | left edge at 210 px; nearest shared grid column 30 px (delta 180 px) |
-| A1 | accept-as-legacy | x=499 y=56 w=490 h=17 | x=998 y=112 w=980 h=34 | left edge at 499 px; nearest shared grid column 30 px (delta 469 px) |
-| A1 | accept-as-legacy | x=506 y=882 w=36 h=16 | x=1012 y=1764 w=72 h=32 | left edge at 506 px; nearest shared grid column 30 px (delta 476 px) |
-| A1 | accept-as-legacy | x=722 y=4 w=12 h=24 | x=1444 y=8 w=24 h=48 | left edge at 722 px; nearest shared grid column 30 px (delta 692 px) |
-| A1 | accept-as-legacy | x=735 y=4 w=6 h=24 | x=1470 y=8 w=12 h=48 | left edge at 735 px; nearest shared grid column 30 px (delta 705 px) |
+| A1 | accept-as-legacy | x=28 y=882 w=514 h=16 | x=56 y=1764 w=1028 h=32 | left edge at 28 px; nearest shared grid column 10 px (delta 18 px) |
+| A1 | accept-as-legacy | x=35 y=849 w=9 h=7 | x=70 y=1698 w=18 h=14 | left edge at 35 px; nearest shared grid column 10 px (delta 25 px) |
+| A1 | accept-as-legacy | x=51 y=849 w=15 h=7 | x=102 y=1698 w=30 h=14 | left edge at 51 px; nearest shared grid column 10 px (delta 41 px) |
+| A1 | accept-as-legacy | x=68 y=849 w=19 h=7 | x=136 y=1698 w=38 h=14 | left edge at 68 px; nearest shared grid column 10 px (delta 58 px) |
+| A1 | accept-as-legacy | x=127 y=849 w=23 h=7 | x=254 y=1698 w=46 h=14 | left edge at 127 px; nearest shared grid column 10 px (delta 117 px) |
+| A1 | accept-as-legacy | x=176 y=849 w=24 h=7 | x=352 y=1698 w=48 h=14 | left edge at 176 px; nearest shared grid column 10 px (delta 166 px) |
+| A1 | accept-as-legacy | x=210 y=849 w=8 h=7 | x=420 y=1698 w=16 h=14 | left edge at 210 px; nearest shared grid column 10 px (delta 200 px) |
+| A1 | accept-as-legacy | x=499 y=56 w=490 h=17 | x=998 y=112 w=980 h=34 | left edge at 499 px; nearest shared grid column 10 px (delta 489 px) |
+| A1 | accept-as-legacy | x=506 y=882 w=36 h=16 | x=1012 y=1764 w=72 h=32 | left edge at 506 px; nearest shared grid column 10 px (delta 496 px) |
+| A1 | accept-as-legacy | x=722 y=4 w=12 h=24 | x=1444 y=8 w=24 h=48 | left edge at 722 px; nearest shared grid column 10 px (delta 712 px) |
+| A1 | accept-as-legacy | x=735 y=4 w=6 h=24 | x=1470 y=8 w=12 h=48 | left edge at 735 px; nearest shared grid column 10 px (delta 725 px) |
 | A1 | accept-as-legacy | x=746 y=4 w=29 h=24 | x=1492 y=8 w=58 h=48 | left edge at 746 px; nearest shared grid column 1460 px (delta 714 px) |
 | A1 | accept-as-legacy | x=784 y=882 w=6 h=16 | x=1568 y=1764 w=12 h=32 | left edge at 784 px; nearest shared grid column 1460 px (delta 676 px) |
 | A1 | accept-as-legacy | x=975 y=867 w=10 h=6 | x=1950 y=1734 w=20 h=12 | left edge at 975 px; nearest shared grid column 1460 px (delta 485 px) |
@@ -2250,13 +2248,10 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | A1 | accept-as-legacy | x=1371 y=56 w=8 h=17 | x=2742 y=112 w=16 h=34 | left edge at 1371 px; nearest shared grid column 1460 px (delta 89 px) |
 | A1 | accept-as-legacy | x=1480 y=4 w=6 h=24 | x=2960 y=8 w=12 h=48 | left edge at 1480 px; nearest shared grid column 1499 px (delta 19 px) |
 | A2 | fix-later | x=0 y=28 w=1500 h=4 | x=0 y=56 w=3000 h=8 | gap 4 px vs section median 8 px (delta 4 px) |
-| A2 | fix-later | x=0 y=73 w=1500 h=11 | x=0 y=146 w=3000 h=22 | gap 11 px vs section median 8 px (delta 3 px) |
-| A2 | fix-later | x=0 y=89 w=1500 h=14 | x=0 y=178 w=3000 h=28 | gap 14 px vs section median 8 px (delta 6 px) |
-| A2 | fix-later | x=0 y=123 w=1500 h=13 | x=0 y=246 w=3000 h=26 | gap 13 px vs section median 8 px (delta 5 px) |
-| A2 | fix-later | x=0 y=140 w=1500 h=4 | x=0 y=280 w=3000 h=8 | gap 4 px vs section median 8 px (delta 4 px) |
-| A2 | fix-later | x=0 y=170 w=1500 h=4 | x=0 y=340 w=3000 h=8 | gap 4 px vs section median 8 px (delta 4 px) |
-| A2 | fix-later | x=0 y=178 w=1500 h=2 | x=0 y=356 w=3000 h=4 | gap 2 px vs section median 8 px (delta 6 px) |
-| A2 | fix-later | x=0 y=213 w=1500 h=4 | x=0 y=426 w=3000 h=8 | gap 4 px vs section median 8 px (delta 4 px) |
+| A2 | fix-later | x=0 y=101 w=1500 h=12 | x=0 y=202 w=3000 h=24 | gap 12 px vs section median 8 px (delta 4 px) |
+| A2 | fix-later | x=0 y=148 w=1500 h=4 | x=0 y=296 w=3000 h=8 | gap 4 px vs section median 8 px (delta 4 px) |
+| A2 | fix-later | x=0 y=156 w=1500 h=2 | x=0 y=312 w=3000 h=4 | gap 2 px vs section median 8 px (delta 6 px) |
+| A2 | fix-later | x=0 y=191 w=1500 h=4 | x=0 y=382 w=3000 h=8 | gap 4 px vs section median 8 px (delta 4 px) |
 | T1 | fix-later | x=8 y=882 w=16 h=16 | x=16 y=1764 w=32 h=32 | text line height 16 px (1 component) → em ≈ 45.7 logical px; nearest ladder rung 30 px |
 
 ### `today-0.5-600`
@@ -2318,11 +2313,10 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 
 | invariant | grade | region (phys px) | logical | metric |
 |---|---|---|---|---|
-| A1 | accept-as-legacy | x=85 y=192 w=388 h=360 | x=28 y=64 w=129 h=120 | left edge at 85 px; nearest shared grid column 39 px (delta 46 px) |
 | A1 | accept-as-legacy | x=497 y=192 w=438 h=360 | x=166 y=64 w=146 h=120 | left edge at 497 px; nearest shared grid column 535 px (delta 38 px) |
 | A1 | accept-as-legacy | x=587 y=24 w=111 h=144 | x=196 y=8 w=37 h=48 | left edge at 587 px; nearest shared grid column 541 px (delta 46 px) |
 | A1 | accept-as-legacy | x=725 y=24 w=170 h=144 | x=242 y=8 w=57 h=48 | left edge at 725 px; nearest shared grid column 541 px (delta 184 px) |
-| A1 | accept-as-legacy | x=959 y=192 w=266 h=360 | x=320 y=64 w=89 h=120 | left edge at 959 px; nearest shared grid column 541 px (delta 418 px) |
+| A1 | accept-as-legacy | x=959 y=192 w=108 h=360 | x=320 y=64 w=36 h=120 | left edge at 959 px; nearest shared grid column 541 px (delta 418 px) |
 | A2 | accept-as-legacy | x=0 y=168 w=1500 h=24 | x=0 y=56 w=500 h=8 | gap 24 px vs section median 56 px (delta 32 px) |
 | A2 | accept-as-legacy | x=0 y=552 w=1500 h=37 | x=0 y=184 w=500 h=12 | gap 37 px vs section median 56 px (delta 19 px) |
 | T1 | accept-as-legacy | x=1384 y=54 w=28 h=3 | x=461 y=18 w=9 h=1 | text line height 3 px (1 component) → em ≈ 1.4 logical px; nearest ladder rung 11 px |
@@ -2330,7 +2324,6 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | T1 | accept-as-legacy | x=1384 y=75 w=28 h=3 | x=461 y=25 w=9 h=1 | text line height 3 px (1 component) → em ≈ 1.4 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=1285 y=253 w=10 h=4 | x=428 y=84 w=3 h=1 | text line height 4 px (1 component) → em ≈ 1.9 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=61 y=262 w=5 h=4 | x=20 y=87 w=2 h=1 | text line height 4 px (1 component) → em ≈ 1.9 logical px; nearest ladder rung 11 px |
-| T1 | accept-as-legacy | x=107 y=505 w=5 h=4 | x=36 y=168 w=2 h=1 | text line height 4 px (1 component) → em ≈ 1.9 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=376 y=595 w=16 h=6 | x=125 y=198 w=5 h=2 | text line height 6 px (2 components) → em ≈ 2.9 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=517 y=595 w=6 h=6 | x=172 y=198 w=2 h=2 | text line height 6 px (1 component) → em ≈ 2.9 logical px; nearest ladder rung 11 px |
 | T1 | accept-as-legacy | x=1394 y=618 w=8 h=5 | x=465 y=206 w=3 h=2 | text line height 5 px (1 component) → em ≈ 2.4 logical px; nearest ladder rung 11 px |
@@ -2451,6 +2444,38 @@ Grading rules applied to this run (deterministic, recorded per D5 — the rubric
 | A2 | fix-later | x=0 y=90 w=1000 h=1 | x=0 y=180 w=2000 h=2 | gap 1 px vs section median 8 px (delta 7 px) |
 | A2 | fix-later | x=0 y=109 w=1000 h=2 | x=0 y=218 w=2000 h=4 | gap 2 px vs section median 8 px (delta 6 px) |
 | A2 | fix-later | x=0 y=149 w=1000 h=5 | x=0 y=298 w=2000 h=10 | gap 5 px vs section median 8 px (delta 3 px) |
+
+### `today-two-column-1.0-1600`
+
+| invariant | grade | region (phys px) | logical | metric |
+|---|---|---|---|---|
+| A1 | fix-later | x=16 y=864 w=32 h=32 | x=16 y=864 w=32 h=32 | left edge at 16 px; nearest shared grid column 13 px (delta 3 px) |
+| A1 | fix-later | x=25 y=833 w=37 h=12 | x=25 y=833 w=37 h=12 | left edge at 25 px; nearest shared grid column 21 px (delta 4 px) |
+| A1 | accept-as-legacy | x=41 y=188 w=17 h=12 | x=41 y=188 w=17 h=12 | left edge at 41 px; nearest shared grid column 56 px (delta 15 px) |
+| A1 | accept-as-legacy | x=45 y=833 w=17 h=12 | x=45 y=833 w=17 h=12 | left edge at 45 px; nearest shared grid column 56 px (delta 11 px) |
+| A1 | fix-later | x=52 y=797 w=19 h=15 | x=52 y=797 w=19 h=15 | left edge at 52 px; nearest shared grid column 56 px (delta 4 px) |
+| A1 | accept-as-legacy | x=81 y=797 w=16 h=15 | x=81 y=797 w=16 h=15 | left edge at 81 px; nearest shared grid column 69 px (delta 12 px) |
+| A1 | accept-as-legacy | x=217 y=797 w=44 h=15 | x=217 y=797 w=44 h=15 | left edge at 217 px; nearest shared grid column 69 px (delta 148 px) |
+| A1 | accept-as-legacy | x=249 y=797 w=12 h=15 | x=249 y=797 w=12 h=15 | left edge at 249 px; nearest shared grid column 69 px (delta 180 px) |
+| A1 | accept-as-legacy | x=335 y=797 w=12 h=15 | x=335 y=797 w=12 h=15 | left edge at 335 px; nearest shared grid column 69 px (delta 266 px) |
+| A1 | accept-as-legacy | x=380 y=797 w=38 h=15 | x=380 y=797 w=38 h=15 | left edge at 380 px; nearest shared grid column 69 px (delta 311 px) |
+| A1 | accept-as-legacy | x=393 y=797 w=25 h=15 | x=393 y=797 w=25 h=15 | left edge at 393 px; nearest shared grid column 69 px (delta 324 px) |
+| A1 | accept-as-legacy | x=532 y=112 w=513 h=33 | x=532 y=112 w=513 h=33 | left edge at 532 px; nearest shared grid column 69 px (delta 463 px) |
+| A1 | accept-as-legacy | x=545 y=864 w=71 h=32 | x=545 y=864 w=71 h=32 | left edge at 545 px; nearest shared grid column 69 px (delta 476 px) |
+| A1 | accept-as-legacy | x=745 y=8 w=37 h=48 | x=745 y=8 w=37 h=48 | left edge at 745 px; nearest shared grid column 69 px (delta 676 px) |
+| A1 | accept-as-legacy | x=770 y=8 w=12 h=48 | x=770 y=8 w=12 h=48 | left edge at 770 px; nearest shared grid column 69 px (delta 701 px) |
+| A1 | accept-as-legacy | x=792 y=8 w=57 h=48 | x=792 y=8 w=57 h=48 | left edge at 792 px; nearest shared grid column 69 px (delta 723 px) |
+| A1 | accept-as-legacy | x=1053 y=112 w=272 h=33 | x=1053 y=112 w=272 h=33 | left edge at 1053 px; nearest shared grid column 1598 px (delta 545 px) |
+| A1 | accept-as-legacy | x=1459 y=112 w=129 h=33 | x=1459 y=112 w=129 h=33 | left edge at 1459 px; nearest shared grid column 1598 px (delta 139 px) |
+| A1 | accept-as-legacy | x=1464 y=112 w=124 h=33 | x=1464 y=112 w=124 h=33 | left edge at 1464 px; nearest shared grid column 1598 px (delta 134 px) |
+| A2 | fix-later | x=0 y=56 w=1600 h=8 | x=0 y=56 w=1600 h=8 | gap 8 px vs section median 15 px (delta 7 px) |
+| A2 | fix-later | x=0 y=170 w=1600 h=18 | x=0 y=170 w=1600 h=18 | gap 18 px vs section median 15 px (delta 3 px) |
+| A2 | accept-as-legacy | x=0 y=200 w=1600 h=25 | x=0 y=200 w=1600 h=25 | gap 25 px vs section median 15 px (delta 10 px) |
+| A2 | fix-later | x=0 y=291 w=1600 h=9 | x=0 y=291 w=1600 h=9 | gap 9 px vs section median 15 px (delta 6 px) |
+| A2 | accept-as-legacy | x=0 y=307 w=1600 h=3 | x=0 y=307 w=1600 h=3 | gap 3 px vs section median 15 px (delta 12 px) |
+| A2 | fix-later | x=0 y=374 w=1600 h=8 | x=0 y=374 w=1600 h=8 | gap 8 px vs section median 15 px (delta 7 px) |
+| A2 | fix-later | x=0 y=784 w=1600 h=13 | x=0 y=784 w=1600 h=13 | gap 13 px vs section median 19 px (delta 6 px) |
+| T1 | fix-later | x=16 y=864 w=32 h=32 | x=16 y=864 w=32 h=32 | text line height 32 px (1 component) → em ≈ 45.7 logical px; nearest ladder rung 30 px |
 
 ### `track-entries-1.0-1000`
 

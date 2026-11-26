@@ -3502,10 +3502,20 @@ threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block wid
 golden = "today-0.5-1500"
 surface = "today"
 invariant = "A1"
-grade = "fix-later"
+grade = "accept-as-legacy"
+region = { x = 28, y = 882, w = 514, h = 16 }
+logical_region = { x = 56, y = 1764, w = 1028, h = 32 }
+metric = "left edge at 28 px; nearest shared grid column 10 px (delta 18 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-0.5-1500"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
 region = { x = 35, y = 849, w = 9, h = 7 }
 logical_region = { x = 70, y = 1698, w = 18, h = 14 }
-metric = "left edge at 35 px; nearest shared grid column 30 px (delta 5 px)"
+metric = "left edge at 35 px; nearest shared grid column 10 px (delta 25 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3515,7 +3525,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 51, y = 849, w = 15, h = 7 }
 logical_region = { x = 102, y = 1698, w = 30, h = 14 }
-metric = "left edge at 51 px; nearest shared grid column 30 px (delta 21 px)"
+metric = "left edge at 51 px; nearest shared grid column 10 px (delta 41 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3525,7 +3535,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 68, y = 849, w = 19, h = 7 }
 logical_region = { x = 136, y = 1698, w = 38, h = 14 }
-metric = "left edge at 68 px; nearest shared grid column 30 px (delta 38 px)"
+metric = "left edge at 68 px; nearest shared grid column 10 px (delta 58 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3535,7 +3545,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 127, y = 849, w = 23, h = 7 }
 logical_region = { x = 254, y = 1698, w = 46, h = 14 }
-metric = "left edge at 127 px; nearest shared grid column 30 px (delta 97 px)"
+metric = "left edge at 127 px; nearest shared grid column 10 px (delta 117 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3545,7 +3555,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 176, y = 849, w = 24, h = 7 }
 logical_region = { x = 352, y = 1698, w = 48, h = 14 }
-metric = "left edge at 176 px; nearest shared grid column 30 px (delta 146 px)"
+metric = "left edge at 176 px; nearest shared grid column 10 px (delta 166 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3555,7 +3565,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 210, y = 849, w = 8, h = 7 }
 logical_region = { x = 420, y = 1698, w = 16, h = 14 }
-metric = "left edge at 210 px; nearest shared grid column 30 px (delta 180 px)"
+metric = "left edge at 210 px; nearest shared grid column 10 px (delta 200 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3565,7 +3575,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 499, y = 56, w = 490, h = 17 }
 logical_region = { x = 998, y = 112, w = 980, h = 34 }
-metric = "left edge at 499 px; nearest shared grid column 30 px (delta 469 px)"
+metric = "left edge at 499 px; nearest shared grid column 10 px (delta 489 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3575,7 +3585,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 506, y = 882, w = 36, h = 16 }
 logical_region = { x = 1012, y = 1764, w = 72, h = 32 }
-metric = "left edge at 506 px; nearest shared grid column 30 px (delta 476 px)"
+metric = "left edge at 506 px; nearest shared grid column 10 px (delta 496 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3585,7 +3595,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 722, y = 4, w = 12, h = 24 }
 logical_region = { x = 1444, y = 8, w = 24, h = 48 }
-metric = "left edge at 722 px; nearest shared grid column 30 px (delta 692 px)"
+metric = "left edge at 722 px; nearest shared grid column 10 px (delta 712 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3595,7 +3605,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 735, y = 4, w = 6, h = 24 }
 logical_region = { x = 1470, y = 8, w = 12, h = 48 }
-metric = "left edge at 735 px; nearest shared grid column 30 px (delta 705 px)"
+metric = "left edge at 735 px; nearest shared grid column 10 px (delta 725 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 0.5 = 1 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -3683,9 +3693,9 @@ golden = "today-0.5-1500"
 surface = "today"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 73, w = 1500, h = 11 }
-logical_region = { x = 0, y = 146, w = 3000, h = 22 }
-metric = "gap 11 px vs section median 8 px (delta 3 px)"
+region = { x = 0, y = 101, w = 1500, h = 12 }
+logical_region = { x = 0, y = 202, w = 3000, h = 24 }
+metric = "gap 12 px vs section median 8 px (delta 4 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 0.5 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -3693,28 +3703,8 @@ golden = "today-0.5-1500"
 surface = "today"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 89, w = 1500, h = 14 }
-logical_region = { x = 0, y = 178, w = 3000, h = 28 }
-metric = "gap 14 px vs section median 8 px (delta 6 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 0.5 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "today-0.5-1500"
-surface = "today"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 123, w = 1500, h = 13 }
-logical_region = { x = 0, y = 246, w = 3000, h = 26 }
-metric = "gap 13 px vs section median 8 px (delta 5 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 0.5 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "today-0.5-1500"
-surface = "today"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 140, w = 1500, h = 4 }
-logical_region = { x = 0, y = 280, w = 3000, h = 8 }
+region = { x = 0, y = 148, w = 1500, h = 4 }
+logical_region = { x = 0, y = 296, w = 3000, h = 8 }
 metric = "gap 4 px vs section median 8 px (delta 4 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 0.5 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
@@ -3723,18 +3713,8 @@ golden = "today-0.5-1500"
 surface = "today"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 170, w = 1500, h = 4 }
-logical_region = { x = 0, y = 340, w = 3000, h = 8 }
-metric = "gap 4 px vs section median 8 px (delta 4 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 0.5 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "today-0.5-1500"
-surface = "today"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 178, w = 1500, h = 2 }
-logical_region = { x = 0, y = 356, w = 3000, h = 4 }
+region = { x = 0, y = 156, w = 1500, h = 2 }
+logical_region = { x = 0, y = 312, w = 3000, h = 4 }
 metric = "gap 2 px vs section median 8 px (delta 6 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 0.5 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
@@ -3743,8 +3723,8 @@ golden = "today-0.5-1500"
 surface = "today"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 213, w = 1500, h = 4 }
-logical_region = { x = 0, y = 426, w = 3000, h = 8 }
+region = { x = 0, y = 191, w = 1500, h = 4 }
+logical_region = { x = 0, y = 382, w = 3000, h = 8 }
 metric = "gap 4 px vs section median 8 px (delta 4 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 0.5 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
@@ -5193,16 +5173,6 @@ golden = "today-3.0-1500"
 surface = "today"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 85, y = 192, w = 388, h = 360 }
-logical_region = { x = 28, y = 64, w = 129, h = 120 }
-metric = "left edge at 85 px; nearest shared grid column 39 px (delta 46 px)"
-threshold = "cluster tolerance 2.0 logical px × scale 3.0 = 6 px; min block width 12.0 logical px; grid min membership 2"
-
-[[finding]]
-golden = "today-3.0-1500"
-surface = "today"
-invariant = "A1"
-grade = "accept-as-legacy"
 region = { x = 497, y = 192, w = 438, h = 360 }
 logical_region = { x = 166, y = 64, w = 146, h = 120 }
 metric = "left edge at 497 px; nearest shared grid column 535 px (delta 38 px)"
@@ -5233,8 +5203,8 @@ golden = "today-3.0-1500"
 surface = "today"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 959, y = 192, w = 266, h = 360 }
-logical_region = { x = 320, y = 64, w = 89, h = 120 }
+region = { x = 959, y = 192, w = 108, h = 360 }
+logical_region = { x = 320, y = 64, w = 36, h = 120 }
 metric = "left edge at 959 px; nearest shared grid column 541 px (delta 418 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 3.0 = 6 px; min block width 12.0 logical px; grid min membership 2"
 
@@ -5313,16 +5283,6 @@ golden = "today-3.0-1500"
 surface = "today"
 invariant = "T1"
 grade = "accept-as-legacy"
-region = { x = 107, y = 505, w = 5, h = 4 }
-logical_region = { x = 36, y = 168, w = 2, h = 1 }
-metric = "text line height 4 px (1 component) → em ≈ 1.9 logical px; nearest ladder rung 11 px"
-threshold = "em within 15% of a TextRole rung [11, 12, 12.5, 14, 16, 20, 30]; em = line height / 0.7 ÷ scale 3.0 (connected-component glyph-line estimator)"
-
-[[finding]]
-golden = "today-3.0-1500"
-surface = "today"
-invariant = "T1"
-grade = "accept-as-legacy"
 region = { x = 376, y = 595, w = 16, h = 6 }
 logical_region = { x = 125, y = 198, w = 5, h = 2 }
 metric = "text line height 6 px (2 components) → em ≈ 2.9 logical px; nearest ladder rung 11 px"
@@ -5393,8 +5353,8 @@ golden = "icon-probe-1.0-392"
 surface = "icon"
 invariant = "M1"
 grade = "accept-as-legacy"
-region = { x = 371, y = 0, w = 1, h = 420 }
-logical_region = { x = 371, y = 0, w = 1, h = 420 }
+region = { x = 371, y = 0, w = 1, h = 468 }
+logical_region = { x = 371, y = 0, w = 1, h = 468 }
 metric = "right margin 20.0 logical px (20 px at scale 1.0); nearest rung 16 px"
 threshold = "margin within 1.5 logical px of a space-* rung [4, 8, 12, 16, 24, 32, 48, 64, 96]; full-bleed exempt ≤ 1.0 px"
 
@@ -5496,6 +5456,16 @@ grade = "accept-as-legacy"
 region = { x = 74, y = 340, w = 8, h = 4 }
 logical_region = { x = 74, y = 340, w = 8, h = 4 }
 metric = "text line height 4 px (1 component) → em ≈ 5.7 logical px; nearest ladder rung 11 px"
+threshold = "em within 15% of a TextRole rung [11, 12, 12.5, 14, 16, 20, 30]; em = line height / 0.7 ÷ scale 1.0 (connected-component glyph-line estimator)"
+
+[[finding]]
+golden = "icon-probe-1.0-392"
+surface = "icon"
+invariant = "T1"
+grade = "accept-as-legacy"
+region = { x = 81, y = 433, w = 3, h = 3 }
+logical_region = { x = 81, y = 433, w = 3, h = 3 }
+metric = "text line height 3 px (1 component) → em ≈ 4.3 logical px; nearest ladder rung 11 px"
 threshold = "em within 15% of a TextRole rung [11, 12, 12.5, 14, 16, 20, 30]; em = line height / 0.7 ÷ scale 1.0 (connected-component glyph-line estimator)"
 
 [[finding]]
@@ -10553,8 +10523,8 @@ golden = "icon-probe-0.5-392"
 surface = "icon"
 invariant = "M1"
 grade = "accept-as-legacy"
-region = { x = 0, y = 392, w = 392, h = 1 }
-logical_region = { x = 0, y = 784, w = 784, h = 2 }
+region = { x = 0, y = 440, w = 392, h = 1 }
+logical_region = { x = 0, y = 880, w = 784, h = 2 }
 metric = "bottom margin 54.0 logical px (27 px at scale 0.5); nearest rung 48 px"
 threshold = "margin within 1.5 logical px of a space-* rung [4, 8, 12, 16, 24, 32, 48, 64, 96]; full-bleed exempt ≤ 1.0 px"
 
@@ -10563,8 +10533,8 @@ golden = "icon-probe-0.5-392"
 surface = "icon"
 invariant = "M1"
 grade = "accept-as-legacy"
-region = { x = 17, y = 0, w = 1, h = 420 }
-logical_region = { x = 34, y = 0, w = 2, h = 840 }
+region = { x = 17, y = 0, w = 1, h = 468 }
+logical_region = { x = 34, y = 0, w = 2, h = 936 }
 metric = "left margin 34.0 logical px (17 px at scale 0.5); nearest rung 32 px"
 threshold = "margin within 1.5 logical px of a space-* rung [4, 8, 12, 16, 24, 32, 48, 64, 96]; full-bleed exempt ≤ 1.0 px"
 
@@ -10573,8 +10543,8 @@ golden = "icon-probe-0.5-392"
 surface = "icon"
 invariant = "M1"
 grade = "accept-as-legacy"
-region = { x = 370, y = 0, w = 1, h = 420 }
-logical_region = { x = 740, y = 0, w = 2, h = 840 }
+region = { x = 370, y = 0, w = 1, h = 468 }
+logical_region = { x = 740, y = 0, w = 2, h = 936 }
 metric = "right margin 42.0 logical px (21 px at scale 0.5); nearest rung 48 px"
 threshold = "margin within 1.5 logical px of a space-* rung [4, 8, 12, 16, 24, 32, 48, 64, 96]; full-bleed exempt ≤ 1.0 px"
 
@@ -10833,9 +10803,9 @@ golden = "icon-probe-3.0-392"
 surface = "icon"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 104, w = 392, h = 19 }
-logical_region = { x = 0, y = 35, w = 131, h = 6 }
-metric = "gap 19 px vs section median 27 px (delta 8 px)"
+region = { x = 0, y = 33, w = 392, h = 27 }
+logical_region = { x = 0, y = 11, w = 131, h = 9 }
+metric = "gap 27 px vs section median 19 px (delta 8 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 3.0 = 6 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -10845,7 +10815,7 @@ invariant = "A2"
 grade = "accept-as-legacy"
 region = { x = 0, y = 143, w = 392, h = 42 }
 logical_region = { x = 0, y = 48, w = 131, h = 14 }
-metric = "gap 42 px vs section median 27 px (delta 15 px)"
+metric = "gap 42 px vs section median 19 px (delta 23 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 3.0 = 6 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -10855,27 +10825,7 @@ invariant = "A2"
 grade = "accept-as-legacy"
 region = { x = 0, y = 188, w = 392, h = 41 }
 logical_region = { x = 0, y = 63, w = 131, h = 14 }
-metric = "gap 41 px vs section median 27 px (delta 14 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 3.0 = 6 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "icon-probe-3.0-392"
-surface = "icon"
-invariant = "A2"
-grade = "accept-as-legacy"
-region = { x = 0, y = 311, w = 392, h = 14 }
-logical_region = { x = 0, y = 104, w = 131, h = 5 }
-metric = "gap 14 px vs section median 27 px (delta 13 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 3.0 = 6 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "icon-probe-3.0-392"
-surface = "icon"
-invariant = "A2"
-grade = "accept-as-legacy"
-region = { x = 0, y = 359, w = 392, h = 13 }
-logical_region = { x = 0, y = 120, w = 131, h = 4 }
-metric = "gap 13 px vs section median 27 px (delta 14 px)"
+metric = "gap 41 px vs section median 19 px (delta 22 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 3.0 = 6 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -11091,6 +11041,16 @@ threshold = "em within 15% of a TextRole rung [11, 12, 12.5, 14, 16, 20, 30]; em
 [[finding]]
 golden = "icon-probe-3.0-392"
 surface = "icon"
+invariant = "T1"
+grade = "accept-as-legacy"
+region = { x = 87, y = 423, w = 8, h = 8 }
+logical_region = { x = 29, y = 141, w = 3, h = 3 }
+metric = "text line height 8 px (1 component) → em ≈ 3.8 logical px; nearest ladder rung 11 px"
+threshold = "em within 15% of a TextRole rung [11, 12, 12.5, 14, 16, 20, 30]; em = line height / 0.7 ÷ scale 3.0 (connected-component glyph-line estimator)"
+
+[[finding]]
+golden = "icon-probe-3.0-392"
+surface = "icon"
 invariant = "Q1"
 grade = "accept-as-legacy"
 region = { x = 102, y = 58, w = 96, h = 48 }
@@ -11276,6 +11236,16 @@ grade = "fix-later"
 region = { x = 112, y = 283, w = 28, h = 20 }
 logical_region = { x = 37, y = 94, w = 9, h = 7 }
 metric = "icon bounding box 28 × 20 phys px → 9.3 × 6.7 logical px"
+threshold = "icon-size 12.0 logical px × base-scale within ±2.0 logical px (tolerance floor 2.0 phys px; aspect band 0.6–1.67); scope: icon-probe goldens only"
+
+[[finding]]
+golden = "icon-probe-3.0-392"
+surface = "icon"
+invariant = "I1"
+grade = "fix-later"
+region = { x = 87, y = 423, w = 8, h = 8 }
+logical_region = { x = 29, y = 141, w = 3, h = 3 }
+metric = "icon bounding box 8 × 8 phys px → 2.7 × 2.7 logical px"
 threshold = "icon-size 12.0 logical px × base-scale within ±2.0 logical px (tolerance floor 2.0 phys px; aspect band 0.6–1.67); scope: icon-probe goldens only"
 
 [[finding]]
@@ -18153,9 +18123,19 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A1"
 grade = "fix-later"
+region = { x = 16, y = 864, w = 32, h = 32 }
+logical_region = { x = 16, y = 864, w = 32, h = 32 }
+metric = "left edge at 16 px; nearest shared grid column 20 px (delta 4 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "A1"
+grade = "accept-as-legacy"
 region = { x = 33, y = 123, w = 32, h = 12 }
 logical_region = { x = 33, y = 123, w = 32, h = 12 }
-metric = "left edge at 33 px; nearest shared grid column 30 px (delta 3 px)"
+metric = "left edge at 33 px; nearest shared grid column 23 px (delta 10 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18173,19 +18153,19 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 470, y = 384, w = 560, h = 92 }
-logical_region = { x = 470, y = 384, w = 560, h = 92 }
-metric = "left edge at 470 px; nearest shared grid column 680 px (delta 210 px)"
+region = { x = 407, y = 226, w = 23, h = 16 }
+logical_region = { x = 407, y = 226, w = 23, h = 16 }
+metric = "left edge at 407 px; nearest shared grid column 383 px (delta 24 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
 golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A1"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 511, y = 123, w = 16, h = 12 }
 logical_region = { x = 511, y = 123, w = 16, h = 12 }
-metric = "left edge at 511 px; nearest shared grid column 680 px (delta 169 px)"
+metric = "left edge at 511 px; nearest shared grid column 508 px (delta 3 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18195,7 +18175,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 529, y = 123, w = 570, h = 12 }
 logical_region = { x = 529, y = 123, w = 570, h = 12 }
-metric = "left edge at 529 px; nearest shared grid column 680 px (delta 151 px)"
+metric = "left edge at 529 px; nearest shared grid column 508 px (delta 21 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18205,7 +18185,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 538, y = 123, w = 561, h = 12 }
 logical_region = { x = 538, y = 123, w = 561, h = 12 }
-metric = "left edge at 538 px; nearest shared grid column 680 px (delta 142 px)"
+metric = "left edge at 538 px; nearest shared grid column 508 px (delta 30 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18215,7 +18195,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 695, y = 24, w = 37, h = 19 }
 logical_region = { x = 695, y = 24, w = 37, h = 19 }
-metric = "left edge at 695 px; nearest shared grid column 688 px (delta 7 px)"
+metric = "left edge at 695 px; nearest shared grid column 508 px (delta 187 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18223,9 +18203,9 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 779, y = 205, w = 23, h = 12 }
-logical_region = { x = 779, y = 205, w = 23, h = 12 }
-metric = "left edge at 779 px; nearest shared grid column 755 px (delta 24 px)"
+region = { x = 720, y = 24, w = 12, h = 19 }
+logical_region = { x = 720, y = 24, w = 12, h = 19 }
+metric = "left edge at 720 px; nearest shared grid column 508 px (delta 212 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18235,7 +18215,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1109, y = 123, w = 28, h = 12 }
 logical_region = { x = 1109, y = 123, w = 28, h = 12 }
-metric = "left edge at 1109 px; nearest shared grid column 755 px (delta 354 px)"
+metric = "left edge at 1109 px; nearest shared grid column 508 px (delta 601 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18245,7 +18225,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1115, y = 123, w = 22, h = 12 }
 logical_region = { x = 1115, y = 123, w = 22, h = 12 }
-metric = "left edge at 1115 px; nearest shared grid column 755 px (delta 360 px)"
+metric = "left edge at 1115 px; nearest shared grid column 508 px (delta 607 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18255,57 +18235,57 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1367, y = 123, w = 121, h = 12 }
 logical_region = { x = 1367, y = 123, w = 121, h = 12 }
-metric = "left edge at 1367 px; nearest shared grid column 755 px (delta 612 px)"
+metric = "left edge at 1367 px; nearest shared grid column 508 px (delta 859 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
 golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 0, y = 10, w = 1500, h = 2 }
 logical_region = { x = 0, y = 10, w = 1500, h = 2 }
-metric = "gap 2 px vs section median 11 px (delta 9 px)"
+metric = "gap 2 px vs section median 9 px (delta 7 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
 golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 0, y = 13, w = 1500, h = 1 }
 logical_region = { x = 0, y = 13, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
+metric = "gap 1 px vs section median 9 px (delta 8 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
 golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 0, y = 16, w = 1500, h = 1 }
 logical_region = { x = 0, y = 16, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
+metric = "gap 1 px vs section median 9 px (delta 8 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
 golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 0, y = 19, w = 1500, h = 2 }
 logical_region = { x = 0, y = 19, w = 1500, h = 2 }
-metric = "gap 2 px vs section median 11 px (delta 9 px)"
+metric = "gap 2 px vs section median 9 px (delta 7 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
 golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 0, y = 23, w = 1500, h = 1 }
 logical_region = { x = 0, y = 23, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
+metric = "gap 1 px vs section median 9 px (delta 8 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -18315,7 +18295,7 @@ invariant = "A2"
 grade = "accept-as-legacy"
 region = { x = 0, y = 56, w = 1500, h = 31 }
 logical_region = { x = 0, y = 56, w = 1500, h = 31 }
-metric = "gap 31 px vs section median 11 px (delta 20 px)"
+metric = "gap 31 px vs section median 9 px (delta 22 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -18325,7 +18305,7 @@ invariant = "A2"
 grade = "fix-later"
 region = { x = 0, y = 96, w = 1500, h = 16 }
 logical_region = { x = 0, y = 96, w = 1500, h = 16 }
-metric = "gap 16 px vs section median 11 px (delta 5 px)"
+metric = "gap 16 px vs section median 9 px (delta 7 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -18333,9 +18313,9 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 135, w = 1500, h = 8 }
-logical_region = { x = 0, y = 135, w = 1500, h = 8 }
-metric = "gap 8 px vs section median 11 px (delta 3 px)"
+region = { x = 0, y = 145, w = 1500, h = 16 }
+logical_region = { x = 0, y = 145, w = 1500, h = 16 }
+metric = "gap 16 px vs section median 9 px (delta 7 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -18343,9 +18323,9 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
 grade = "accept-as-legacy"
-region = { x = 0, y = 145, w = 1500, h = 23 }
-logical_region = { x = 0, y = 145, w = 1500, h = 23 }
-metric = "gap 23 px vs section median 11 px (delta 12 px)"
+region = { x = 0, y = 170, w = 1500, h = 19 }
+logical_region = { x = 0, y = 170, w = 1500, h = 19 }
+metric = "gap 19 px vs section median 9 px (delta 10 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -18353,29 +18333,9 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
 grade = "accept-as-legacy"
-region = { x = 0, y = 177, w = 1500, h = 28 }
-logical_region = { x = 0, y = 177, w = 1500, h = 28 }
-metric = "gap 28 px vs section median 11 px (delta 17 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "A2"
-grade = "accept-as-legacy"
-region = { x = 0, y = 217, w = 1500, h = 1 }
-logical_region = { x = 0, y = 217, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "A2"
-grade = "accept-as-legacy"
-region = { x = 0, y = 241, w = 1500, h = 1 }
-logical_region = { x = 0, y = 241, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
+region = { x = 0, y = 199, w = 1500, h = 27 }
+logical_region = { x = 0, y = 199, w = 1500, h = 27 }
+metric = "gap 27 px vs section median 9 px (delta 18 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -18383,29 +18343,9 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 243, w = 1500, h = 17 }
-logical_region = { x = 0, y = 243, w = 1500, h = 17 }
-metric = "gap 17 px vs section median 11 px (delta 6 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 269, w = 1500, h = 19 }
-logical_region = { x = 0, y = 269, w = 1500, h = 19 }
-metric = "gap 19 px vs section median 11 px (delta 8 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "A2"
-grade = "accept-as-legacy"
-region = { x = 0, y = 298, w = 1500, h = 86 }
-logical_region = { x = 0, y = 298, w = 1500, h = 86 }
-metric = "gap 86 px vs section median 11 px (delta 75 px)"
+region = { x = 0, y = 262, w = 1500, h = 1 }
+logical_region = { x = 0, y = 262, w = 1500, h = 1 }
+metric = "gap 1 px vs section median 9 px (delta 8 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -18613,28 +18553,8 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1464, y = 165, w = 12, h = 12 }
-logical_region = { x = 1464, y = 165, w = 12, h = 12 }
-metric = "ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 11, y = 166, w = 18, h = 13 }
-logical_region = { x = 11, y = 166, w = 18, h = 13 }
-metric = "ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 26, y = 166, w = 24, h = 13 }
-logical_region = { x = 26, y = 166, w = 24, h = 13 }
+region = { x = 10, y = 159, w = 29, h = 13 }
+logical_region = { x = 10, y = 159, w = 29, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -18643,188 +18563,8 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 55, y = 166, w = 11, h = 13 }
-logical_region = { x = 55, y = 166, w = 11, h = 13 }
-metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 678, y = 203, w = 24, h = 16 }
-logical_region = { x = 678, y = 203, w = 24, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 699, y = 203, w = 42, h = 20 }
-logical_region = { x = 699, y = 203, w = 42, h = 20 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 743, y = 203, w = 32, h = 16 }
-logical_region = { x = 743, y = 203, w = 32, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 781, y = 203, w = 42, h = 20 }
-logical_region = { x = 781, y = 203, w = 42, h = 20 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 775, y = 204, w = 10, h = 15 }
-logical_region = { x = 775, y = 204, w = 10, h = 15 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 587, y = 230, w = 58, h = 16 }
-logical_region = { x = 587, y = 230, w = 58, h = 16 }
-metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 645, y = 230, w = 36, h = 16 }
-logical_region = { x = 645, y = 230, w = 36, h = 16 }
-metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 678, y = 230, w = 15, h = 13 }
-logical_region = { x = 678, y = 230, w = 15, h = 13 }
-metric = "ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 692, y = 230, w = 64, h = 16 }
-logical_region = { x = 692, y = 230, w = 64, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 753, y = 230, w = 28, h = 13 }
-logical_region = { x = 753, y = 230, w = 28, h = 13 }
-metric = "ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 797, y = 230, w = 30, h = 13 }
-logical_region = { x = 797, y = 230, w = 30, h = 13 }
-metric = "ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 824, y = 230, w = 30, h = 13 }
-logical_region = { x = 824, y = 230, w = 30, h = 13 }
-metric = "ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 854, y = 230, w = 21, h = 13 }
-logical_region = { x = 854, y = 230, w = 21, h = 13 }
-metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 876, y = 230, w = 13, h = 13 }
-logical_region = { x = 876, y = 230, w = 13, h = 13 }
-metric = "ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 886, y = 230, w = 24, h = 13 }
-logical_region = { x = 886, y = 230, w = 24, h = 13 }
-metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 609, y = 231, w = 8, h = 12 }
-logical_region = { x = 609, y = 231, w = 8, h = 12 }
-metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 10, y = 258, w = 29, h = 13 }
-logical_region = { x = 10, y = 258, w = 29, h = 13 }
-metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "capture-overlay-1.0-1500"
-surface = "capture"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 36, y = 258, w = 23, h = 13 }
-logical_region = { x = 36, y = 258, w = 23, h = 13 }
+region = { x = 36, y = 159, w = 23, h = 13 }
+logical_region = { x = 36, y = 159, w = 23, h = 13 }
 metric = "ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -18833,8 +18573,8 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1099, y = 258, w = 26, h = 13 }
-logical_region = { x = 1099, y = 258, w = 26, h = 13 }
+region = { x = 1099, y = 159, w = 26, h = 13 }
+logical_region = { x = 1099, y = 159, w = 26, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -18843,8 +18583,8 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1129, y = 258, w = 18, h = 13 }
-logical_region = { x = 1129, y = 258, w = 18, h = 13 }
+region = { x = 1129, y = 159, w = 18, h = 13 }
+logical_region = { x = 1129, y = 159, w = 18, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -18853,8 +18593,8 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 31, y = 285, w = 18, h = 15 }
-logical_region = { x = 31, y = 285, w = 18, h = 15 }
+region = { x = 31, y = 186, w = 18, h = 15 }
+logical_region = { x = 31, y = 186, w = 18, h = 15 }
 metric = "ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -18863,8 +18603,8 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 52, y = 285, w = 8, h = 15 }
-logical_region = { x = 52, y = 285, w = 8, h = 15 }
+region = { x = 52, y = 186, w = 8, h = 15 }
+logical_region = { x = 52, y = 186, w = 8, h = 15 }
 metric = "ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -18873,8 +18613,8 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 18, y = 286, w = 16, h = 14 }
-logical_region = { x = 18, y = 286, w = 16, h = 14 }
+region = { x = 18, y = 187, w = 16, h = 14 }
+logical_region = { x = 18, y = 187, w = 16, h = 14 }
 metric = "ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -18883,8 +18623,8 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1434, y = 287, w = 25, h = 13 }
-logical_region = { x = 1434, y = 287, w = 25, h = 13 }
+region = { x = 1434, y = 188, w = 25, h = 13 }
+logical_region = { x = 1434, y = 188, w = 25, h = 13 }
 metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -18893,9 +18633,209 @@ golden = "capture-overlay-1.0-1500"
 surface = "capture"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1464, y = 287, w = 17, h = 13 }
-logical_region = { x = 1464, y = 287, w = 17, h = 13 }
+region = { x = 1464, y = 188, w = 17, h = 13 }
+logical_region = { x = 1464, y = 188, w = 17, h = 13 }
 metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 306, y = 224, w = 24, h = 16 }
+logical_region = { x = 306, y = 224, w = 24, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 327, y = 224, w = 42, h = 20 }
+logical_region = { x = 327, y = 224, w = 42, h = 20 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 371, y = 224, w = 32, h = 16 }
+logical_region = { x = 371, y = 224, w = 32, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 409, y = 224, w = 42, h = 20 }
+logical_region = { x = 409, y = 224, w = 42, h = 20 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 403, y = 225, w = 10, h = 15 }
+logical_region = { x = 403, y = 225, w = 10, h = 15 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 1464, y = 230, w = 12, h = 12 }
+logical_region = { x = 1464, y = 230, w = 12, h = 12 }
+metric = "ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 755, y = 231, w = 18, h = 13 }
+logical_region = { x = 755, y = 231, w = 18, h = 13 }
+metric = "ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 770, y = 231, w = 24, h = 13 }
+logical_region = { x = 770, y = 231, w = 24, h = 13 }
+metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 799, y = 231, w = 11, h = 13 }
+logical_region = { x = 799, y = 231, w = 11, h = 13 }
+metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 215, y = 251, w = 58, h = 16 }
+logical_region = { x = 215, y = 251, w = 58, h = 16 }
+metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 273, y = 251, w = 36, h = 16 }
+logical_region = { x = 273, y = 251, w = 36, h = 16 }
+metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 306, y = 251, w = 15, h = 13 }
+logical_region = { x = 306, y = 251, w = 15, h = 13 }
+metric = "ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 320, y = 251, w = 64, h = 16 }
+logical_region = { x = 320, y = 251, w = 64, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 381, y = 251, w = 28, h = 13 }
+logical_region = { x = 381, y = 251, w = 28, h = 13 }
+metric = "ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 425, y = 251, w = 30, h = 13 }
+logical_region = { x = 425, y = 251, w = 30, h = 13 }
+metric = "ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 452, y = 251, w = 30, h = 13 }
+logical_region = { x = 452, y = 251, w = 30, h = 13 }
+metric = "ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 482, y = 251, w = 21, h = 13 }
+logical_region = { x = 482, y = 251, w = 21, h = 13 }
+metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 504, y = 251, w = 13, h = 13 }
+logical_region = { x = 504, y = 251, w = 13, h = 13 }
+metric = "ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 514, y = 251, w = 24, h = 13 }
+logical_region = { x = 514, y = 251, w = 24, h = 13 }
+metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "capture-overlay-1.0-1500"
+surface = "capture"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 237, y = 252, w = 8, h = 12 }
+logical_region = { x = 237, y = 252, w = 8, h = 12 }
+metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
 [[finding]]
@@ -18953,9 +18893,19 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "A1"
 grade = "fix-later"
+region = { x = 16, y = 864, w = 32, h = 32 }
+logical_region = { x = 16, y = 864, w = 32, h = 32 }
+metric = "left edge at 16 px; nearest shared grid column 20 px (delta 4 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "A1"
+grade = "accept-as-legacy"
 region = { x = 33, y = 123, w = 32, h = 12 }
 logical_region = { x = 33, y = 123, w = 32, h = 12 }
-metric = "left edge at 33 px; nearest shared grid column 30 px (delta 3 px)"
+metric = "left edge at 33 px; nearest shared grid column 23 px (delta 10 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18973,9 +18923,9 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 470, y = 317, w = 18, h = 227 }
-logical_region = { x = 470, y = 317, w = 18, h = 227 }
-metric = "left edge at 470 px; nearest shared grid column 528 px (delta 58 px)"
+region = { x = 407, y = 226, w = 23, h = 16 }
+logical_region = { x = 407, y = 226, w = 23, h = 16 }
+metric = "left edge at 407 px; nearest shared grid column 383 px (delta 24 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -18985,27 +18935,17 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 495, y = 317, w = 396, h = 227 }
 logical_region = { x = 495, y = 317, w = 396, h = 227 }
-metric = "left edge at 495 px; nearest shared grid column 528 px (delta 33 px)"
+metric = "left edge at 495 px; nearest shared grid column 506 px (delta 11 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
 golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "A1"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 511, y = 123, w = 16, h = 12 }
 logical_region = { x = 511, y = 123, w = 16, h = 12 }
-metric = "left edge at 511 px; nearest shared grid column 528 px (delta 17 px)"
-threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "A1"
-grade = "accept-as-legacy"
-region = { x = 515, y = 317, w = 376, h = 227 }
-logical_region = { x = 515, y = 317, w = 376, h = 227 }
-metric = "left edge at 515 px; nearest shared grid column 528 px (delta 13 px)"
+metric = "left edge at 511 px; nearest shared grid column 508 px (delta 3 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19025,7 +18965,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 695, y = 24, w = 37, h = 19 }
 logical_region = { x = 695, y = 24, w = 37, h = 19 }
-metric = "left edge at 695 px; nearest shared grid column 688 px (delta 7 px)"
+metric = "left edge at 695 px; nearest shared grid column 529 px (delta 166 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19033,9 +18973,9 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 779, y = 205, w = 23, h = 12 }
-logical_region = { x = 779, y = 205, w = 23, h = 12 }
-metric = "left edge at 779 px; nearest shared grid column 755 px (delta 24 px)"
+region = { x = 720, y = 24, w = 12, h = 19 }
+logical_region = { x = 720, y = 24, w = 12, h = 19 }
+metric = "left edge at 720 px; nearest shared grid column 529 px (delta 191 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19045,7 +18985,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 795, y = 317, w = 96, h = 227 }
 logical_region = { x = 795, y = 317, w = 96, h = 227 }
-metric = "left edge at 795 px; nearest shared grid column 755 px (delta 40 px)"
+metric = "left edge at 795 px; nearest shared grid column 529 px (delta 266 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19055,7 +18995,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 855, y = 317, w = 36, h = 227 }
 logical_region = { x = 855, y = 317, w = 36, h = 227 }
-metric = "left edge at 855 px; nearest shared grid column 755 px (delta 100 px)"
+metric = "left edge at 855 px; nearest shared grid column 529 px (delta 326 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19065,7 +19005,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1012, y = 317, w = 18, h = 227 }
 logical_region = { x = 1012, y = 317, w = 18, h = 227 }
-metric = "left edge at 1012 px; nearest shared grid column 755 px (delta 257 px)"
+metric = "left edge at 1012 px; nearest shared grid column 529 px (delta 483 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19075,7 +19015,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1109, y = 123, w = 28, h = 12 }
 logical_region = { x = 1109, y = 123, w = 28, h = 12 }
-metric = "left edge at 1109 px; nearest shared grid column 755 px (delta 354 px)"
+metric = "left edge at 1109 px; nearest shared grid column 529 px (delta 580 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19085,7 +19025,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1115, y = 123, w = 22, h = 12 }
 logical_region = { x = 1115, y = 123, w = 22, h = 12 }
-metric = "left edge at 1115 px; nearest shared grid column 755 px (delta 360 px)"
+metric = "left edge at 1115 px; nearest shared grid column 529 px (delta 586 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19095,7 +19035,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1367, y = 123, w = 121, h = 12 }
 logical_region = { x = 1367, y = 123, w = 121, h = 12 }
-metric = "left edge at 1367 px; nearest shared grid column 755 px (delta 612 px)"
+metric = "left edge at 1367 px; nearest shared grid column 529 px (delta 838 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19182,10 +19122,20 @@ threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px;
 golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "A2"
-grade = "accept-as-legacy"
-region = { x = 0, y = 145, w = 1500, h = 23 }
-logical_region = { x = 0, y = 145, w = 1500, h = 23 }
-metric = "gap 23 px vs section median 11 px (delta 12 px)"
+grade = "fix-later"
+region = { x = 0, y = 145, w = 1500, h = 16 }
+logical_region = { x = 0, y = 145, w = 1500, h = 16 }
+metric = "gap 16 px vs section median 11 px (delta 5 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 170, w = 1500, h = 19 }
+logical_region = { x = 0, y = 170, w = 1500, h = 19 }
+metric = "gap 19 px vs section median 11 px (delta 8 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -19193,9 +19143,9 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "A2"
 grade = "accept-as-legacy"
-region = { x = 0, y = 177, w = 1500, h = 28 }
-logical_region = { x = 0, y = 177, w = 1500, h = 28 }
-metric = "gap 28 px vs section median 11 px (delta 17 px)"
+region = { x = 0, y = 199, w = 1500, h = 27 }
+logical_region = { x = 0, y = 199, w = 1500, h = 27 }
+metric = "gap 27 px vs section median 11 px (delta 16 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -19203,8 +19153,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "A2"
 grade = "accept-as-legacy"
-region = { x = 0, y = 217, w = 1500, h = 1 }
-logical_region = { x = 0, y = 217, w = 1500, h = 1 }
+region = { x = 0, y = 262, w = 1500, h = 1 }
+logical_region = { x = 0, y = 262, w = 1500, h = 1 }
 metric = "gap 1 px vs section median 11 px (delta 10 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
@@ -19213,39 +19163,9 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "A2"
 grade = "accept-as-legacy"
-region = { x = 0, y = 241, w = 1500, h = 1 }
-logical_region = { x = 0, y = 241, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 243, w = 1500, h = 17 }
-logical_region = { x = 0, y = 243, w = 1500, h = 17 }
-metric = "gap 17 px vs section median 11 px (delta 6 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 269, w = 1500, h = 19 }
-logical_region = { x = 0, y = 269, w = 1500, h = 19 }
-metric = "gap 19 px vs section median 11 px (delta 8 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 298, w = 1500, h = 19 }
-logical_region = { x = 0, y = 298, w = 1500, h = 19 }
-metric = "gap 19 px vs section median 11 px (delta 8 px)"
+region = { x = 0, y = 264, w = 1500, h = 53 }
+logical_region = { x = 0, y = 264, w = 1500, h = 53 }
+metric = "gap 53 px vs section median 11 px (delta 42 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -19463,28 +19383,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1464, y = 165, w = 12, h = 12 }
-logical_region = { x = 1464, y = 165, w = 12, h = 12 }
-metric = "ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 11, y = 166, w = 18, h = 13 }
-logical_region = { x = 11, y = 166, w = 18, h = 13 }
-metric = "ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 26, y = 166, w = 24, h = 13 }
-logical_region = { x = 26, y = 166, w = 24, h = 13 }
+region = { x = 10, y = 159, w = 29, h = 13 }
+logical_region = { x = 10, y = 159, w = 29, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -19493,188 +19393,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 55, y = 166, w = 11, h = 13 }
-logical_region = { x = 55, y = 166, w = 11, h = 13 }
-metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 678, y = 203, w = 24, h = 16 }
-logical_region = { x = 678, y = 203, w = 24, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 699, y = 203, w = 42, h = 20 }
-logical_region = { x = 699, y = 203, w = 42, h = 20 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 743, y = 203, w = 32, h = 16 }
-logical_region = { x = 743, y = 203, w = 32, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 781, y = 203, w = 42, h = 20 }
-logical_region = { x = 781, y = 203, w = 42, h = 20 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 775, y = 204, w = 10, h = 15 }
-logical_region = { x = 775, y = 204, w = 10, h = 15 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 587, y = 230, w = 58, h = 16 }
-logical_region = { x = 587, y = 230, w = 58, h = 16 }
-metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 645, y = 230, w = 36, h = 16 }
-logical_region = { x = 645, y = 230, w = 36, h = 16 }
-metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 678, y = 230, w = 15, h = 13 }
-logical_region = { x = 678, y = 230, w = 15, h = 13 }
-metric = "ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 692, y = 230, w = 64, h = 16 }
-logical_region = { x = 692, y = 230, w = 64, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 753, y = 230, w = 28, h = 13 }
-logical_region = { x = 753, y = 230, w = 28, h = 13 }
-metric = "ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 797, y = 230, w = 30, h = 13 }
-logical_region = { x = 797, y = 230, w = 30, h = 13 }
-metric = "ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 824, y = 230, w = 30, h = 13 }
-logical_region = { x = 824, y = 230, w = 30, h = 13 }
-metric = "ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 854, y = 230, w = 21, h = 13 }
-logical_region = { x = 854, y = 230, w = 21, h = 13 }
-metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 876, y = 230, w = 13, h = 13 }
-logical_region = { x = 876, y = 230, w = 13, h = 13 }
-metric = "ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 886, y = 230, w = 24, h = 13 }
-logical_region = { x = 886, y = 230, w = 24, h = 13 }
-metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 609, y = 231, w = 8, h = 12 }
-logical_region = { x = 609, y = 231, w = 8, h = 12 }
-metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 10, y = 258, w = 29, h = 13 }
-logical_region = { x = 10, y = 258, w = 29, h = 13 }
-metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "search-palette-1.0-1500"
-surface = "search"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 36, y = 258, w = 23, h = 13 }
-logical_region = { x = 36, y = 258, w = 23, h = 13 }
+region = { x = 36, y = 159, w = 23, h = 13 }
+logical_region = { x = 36, y = 159, w = 23, h = 13 }
 metric = "ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -19683,8 +19403,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1099, y = 258, w = 26, h = 13 }
-logical_region = { x = 1099, y = 258, w = 26, h = 13 }
+region = { x = 1099, y = 159, w = 26, h = 13 }
+logical_region = { x = 1099, y = 159, w = 26, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -19693,8 +19413,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1129, y = 258, w = 18, h = 13 }
-logical_region = { x = 1129, y = 258, w = 18, h = 13 }
+region = { x = 1129, y = 159, w = 18, h = 13 }
+logical_region = { x = 1129, y = 159, w = 18, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -19703,8 +19423,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 31, y = 285, w = 18, h = 15 }
-logical_region = { x = 31, y = 285, w = 18, h = 15 }
+region = { x = 31, y = 186, w = 18, h = 15 }
+logical_region = { x = 31, y = 186, w = 18, h = 15 }
 metric = "ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -19713,8 +19433,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 52, y = 285, w = 8, h = 15 }
-logical_region = { x = 52, y = 285, w = 8, h = 15 }
+region = { x = 52, y = 186, w = 8, h = 15 }
+logical_region = { x = 52, y = 186, w = 8, h = 15 }
 metric = "ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -19723,8 +19443,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 18, y = 286, w = 16, h = 14 }
-logical_region = { x = 18, y = 286, w = 16, h = 14 }
+region = { x = 18, y = 187, w = 16, h = 14 }
+logical_region = { x = 18, y = 187, w = 16, h = 14 }
 metric = "ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -19733,8 +19453,8 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1434, y = 287, w = 25, h = 13 }
-logical_region = { x = 1434, y = 287, w = 25, h = 13 }
+region = { x = 1434, y = 188, w = 25, h = 13 }
+logical_region = { x = 1434, y = 188, w = 25, h = 13 }
 metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -19743,9 +19463,209 @@ golden = "search-palette-1.0-1500"
 surface = "search"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1464, y = 287, w = 17, h = 13 }
-logical_region = { x = 1464, y = 287, w = 17, h = 13 }
+region = { x = 1464, y = 188, w = 17, h = 13 }
+logical_region = { x = 1464, y = 188, w = 17, h = 13 }
 metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 306, y = 224, w = 24, h = 16 }
+logical_region = { x = 306, y = 224, w = 24, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 327, y = 224, w = 42, h = 20 }
+logical_region = { x = 327, y = 224, w = 42, h = 20 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 371, y = 224, w = 32, h = 16 }
+logical_region = { x = 371, y = 224, w = 32, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 409, y = 224, w = 42, h = 20 }
+logical_region = { x = 409, y = 224, w = 42, h = 20 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 403, y = 225, w = 10, h = 15 }
+logical_region = { x = 403, y = 225, w = 10, h = 15 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 1464, y = 230, w = 12, h = 12 }
+logical_region = { x = 1464, y = 230, w = 12, h = 12 }
+metric = "ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 755, y = 231, w = 18, h = 13 }
+logical_region = { x = 755, y = 231, w = 18, h = 13 }
+metric = "ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 770, y = 231, w = 24, h = 13 }
+logical_region = { x = 770, y = 231, w = 24, h = 13 }
+metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 799, y = 231, w = 11, h = 13 }
+logical_region = { x = 799, y = 231, w = 11, h = 13 }
+metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 215, y = 251, w = 58, h = 16 }
+logical_region = { x = 215, y = 251, w = 58, h = 16 }
+metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 273, y = 251, w = 36, h = 16 }
+logical_region = { x = 273, y = 251, w = 36, h = 16 }
+metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 306, y = 251, w = 15, h = 13 }
+logical_region = { x = 306, y = 251, w = 15, h = 13 }
+metric = "ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 320, y = 251, w = 64, h = 16 }
+logical_region = { x = 320, y = 251, w = 64, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 381, y = 251, w = 28, h = 13 }
+logical_region = { x = 381, y = 251, w = 28, h = 13 }
+metric = "ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 425, y = 251, w = 30, h = 13 }
+logical_region = { x = 425, y = 251, w = 30, h = 13 }
+metric = "ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 452, y = 251, w = 30, h = 13 }
+logical_region = { x = 452, y = 251, w = 30, h = 13 }
+metric = "ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 482, y = 251, w = 21, h = 13 }
+logical_region = { x = 482, y = 251, w = 21, h = 13 }
+metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 504, y = 251, w = 13, h = 13 }
+logical_region = { x = 504, y = 251, w = 13, h = 13 }
+metric = "ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 514, y = 251, w = 24, h = 13 }
+logical_region = { x = 514, y = 251, w = 24, h = 13 }
+metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "search-palette-1.0-1500"
+surface = "search"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 237, y = 252, w = 8, h = 12 }
+logical_region = { x = 237, y = 252, w = 8, h = 12 }
+metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
 [[finding]]
@@ -19803,19 +19723,19 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A1"
 grade = "fix-later"
-region = { x = 33, y = 123, w = 32, h = 12 }
-logical_region = { x = 33, y = 123, w = 32, h = 12 }
-metric = "left edge at 33 px; nearest shared grid column 30 px (delta 3 px)"
+region = { x = 16, y = 864, w = 32, h = 32 }
+logical_region = { x = 16, y = 864, w = 32, h = 32 }
+metric = "left edge at 16 px; nearest shared grid column 20 px (delta 4 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
 golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A1"
-grade = "fix-later"
-region = { x = 41, y = 350, w = 17, h = 152 }
-logical_region = { x = 41, y = 350, w = 17, h = 152 }
-metric = "left edge at 41 px; nearest shared grid column 38 px (delta 3 px)"
+grade = "accept-as-legacy"
+region = { x = 33, y = 123, w = 32, h = 12 }
+logical_region = { x = 33, y = 123, w = 32, h = 12 }
+metric = "left edge at 33 px; nearest shared grid column 23 px (delta 10 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19825,7 +19745,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 74, y = 123, w = 19, h = 12 }
 logical_region = { x = 74, y = 123, w = 19, h = 12 }
-metric = "left edge at 74 px; nearest shared grid column 64 px (delta 10 px)"
+metric = "left edge at 74 px; nearest shared grid column 57 px (delta 17 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19833,49 +19753,19 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 227, y = 231, w = 66, h = 12 }
-logical_region = { x = 227, y = 231, w = 66, h = 12 }
-metric = "left edge at 227 px; nearest shared grid column 64 px (delta 163 px)"
+region = { x = 407, y = 226, w = 23, h = 16 }
+logical_region = { x = 407, y = 226, w = 23, h = 16 }
+metric = "left edge at 407 px; nearest shared grid column 383 px (delta 24 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
 golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A1"
-grade = "accept-as-legacy"
-region = { x = 358, y = 231, w = 1130, h = 12 }
-logical_region = { x = 358, y = 231, w = 1130, h = 12 }
-metric = "left edge at 358 px; nearest shared grid column 64 px (delta 294 px)"
-threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A1"
-grade = "accept-as-legacy"
-region = { x = 388, y = 231, w = 1100, h = 12 }
-logical_region = { x = 388, y = 231, w = 1100, h = 12 }
-metric = "left edge at 388 px; nearest shared grid column 680 px (delta 292 px)"
-threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A1"
-grade = "accept-as-legacy"
-region = { x = 470, y = 350, w = 560, h = 152 }
-logical_region = { x = 470, y = 350, w = 560, h = 152 }
-metric = "left edge at 470 px; nearest shared grid column 680 px (delta 210 px)"
-threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A1"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 511, y = 123, w = 16, h = 12 }
 logical_region = { x = 511, y = 123, w = 16, h = 12 }
-metric = "left edge at 511 px; nearest shared grid column 680 px (delta 169 px)"
+metric = "left edge at 511 px; nearest shared grid column 508 px (delta 3 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19885,7 +19775,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 529, y = 123, w = 570, h = 12 }
 logical_region = { x = 529, y = 123, w = 570, h = 12 }
-metric = "left edge at 529 px; nearest shared grid column 680 px (delta 151 px)"
+metric = "left edge at 529 px; nearest shared grid column 508 px (delta 21 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19895,7 +19785,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 538, y = 123, w = 561, h = 12 }
 logical_region = { x = 538, y = 123, w = 561, h = 12 }
-metric = "left edge at 538 px; nearest shared grid column 680 px (delta 142 px)"
+metric = "left edge at 538 px; nearest shared grid column 508 px (delta 30 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19905,7 +19795,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 695, y = 24, w = 38, h = 19 }
 logical_region = { x = 695, y = 24, w = 38, h = 19 }
-metric = "left edge at 695 px; nearest shared grid column 688 px (delta 7 px)"
+metric = "left edge at 695 px; nearest shared grid column 686 px (delta 9 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19913,9 +19803,39 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 779, y = 267, w = 23, h = 12 }
-logical_region = { x = 779, y = 267, w = 23, h = 12 }
-metric = "left edge at 779 px; nearest shared grid column 755 px (delta 24 px)"
+region = { x = 721, y = 24, w = 12, h = 19 }
+logical_region = { x = 721, y = 24, w = 12, h = 19 }
+metric = "left edge at 721 px; nearest shared grid column 754 px (delta 33 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 811, y = 8, w = 629, h = 15 }
+logical_region = { x = 811, y = 8, w = 629, h = 15 }
+metric = "left edge at 811 px; nearest shared grid column 757 px (delta 54 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 971, y = 296, w = 66, h = 12 }
+logical_region = { x = 971, y = 296, w = 66, h = 12 }
+metric = "left edge at 971 px; nearest shared grid column 757 px (delta 214 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 1102, y = 296, w = 386, h = 12 }
+logical_region = { x = 1102, y = 296, w = 386, h = 12 }
+metric = "left edge at 1102 px; nearest shared grid column 757 px (delta 345 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19925,7 +19845,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1109, y = 123, w = 28, h = 12 }
 logical_region = { x = 1109, y = 123, w = 28, h = 12 }
-metric = "left edge at 1109 px; nearest shared grid column 811 px (delta 298 px)"
+metric = "left edge at 1109 px; nearest shared grid column 757 px (delta 352 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19935,7 +19855,17 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 1115, y = 123, w = 22, h = 12 }
 logical_region = { x = 1115, y = 123, w = 22, h = 12 }
-metric = "left edge at 1115 px; nearest shared grid column 811 px (delta 304 px)"
+metric = "left edge at 1115 px; nearest shared grid column 757 px (delta 358 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 1132, y = 296, w = 356, h = 12 }
+logical_region = { x = 1132, y = 296, w = 356, h = 12 }
+metric = "left edge at 1132 px; nearest shared grid column 1486 px (delta 354 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -19952,10 +19882,10 @@ threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block wid
 golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A2"
-grade = "accept-as-legacy"
+grade = "fix-later"
 region = { x = 0, y = 23, w = 1500, h = 1 }
 logical_region = { x = 0, y = 23, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
+metric = "gap 1 px vs section median 9 px (delta 8 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -19965,7 +19895,7 @@ invariant = "A2"
 grade = "accept-as-legacy"
 region = { x = 0, y = 56, w = 1500, h = 31 }
 logical_region = { x = 0, y = 56, w = 1500, h = 31 }
-metric = "gap 31 px vs section median 11 px (delta 20 px)"
+metric = "gap 31 px vs section median 9 px (delta 22 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -19975,7 +19905,7 @@ invariant = "A2"
 grade = "fix-later"
 region = { x = 0, y = 96, w = 1500, h = 16 }
 logical_region = { x = 0, y = 96, w = 1500, h = 16 }
-metric = "gap 16 px vs section median 11 px (delta 5 px)"
+metric = "gap 16 px vs section median 9 px (delta 7 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -19983,9 +19913,9 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 135, w = 1500, h = 8 }
-logical_region = { x = 0, y = 135, w = 1500, h = 8 }
-metric = "gap 8 px vs section median 11 px (delta 3 px)"
+region = { x = 0, y = 145, w = 1500, h = 16 }
+logical_region = { x = 0, y = 145, w = 1500, h = 16 }
+metric = "gap 16 px vs section median 9 px (delta 7 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -19993,9 +19923,9 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A2"
 grade = "accept-as-legacy"
-region = { x = 0, y = 145, w = 1500, h = 23 }
-logical_region = { x = 0, y = 145, w = 1500, h = 23 }
-metric = "gap 23 px vs section median 11 px (delta 12 px)"
+region = { x = 0, y = 170, w = 1500, h = 19 }
+logical_region = { x = 0, y = 170, w = 1500, h = 19 }
+metric = "gap 19 px vs section median 9 px (delta 10 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -20003,9 +19933,9 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A2"
 grade = "accept-as-legacy"
-region = { x = 0, y = 177, w = 1500, h = 24 }
-logical_region = { x = 0, y = 177, w = 1500, h = 24 }
-metric = "gap 24 px vs section median 11 px (delta 13 px)"
+region = { x = 0, y = 199, w = 1500, h = 27 }
+logical_region = { x = 0, y = 199, w = 1500, h = 27 }
+metric = "gap 27 px vs section median 9 px (delta 18 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -20013,9 +19943,49 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A2"
 grade = "fix-later"
-region = { x = 0, y = 206, w = 1500, h = 6 }
-logical_region = { x = 0, y = 206, w = 1500, h = 6 }
-metric = "gap 6 px vs section median 11 px (delta 5 px)"
+region = { x = 0, y = 262, w = 1500, h = 1 }
+logical_region = { x = 0, y = 262, w = 1500, h = 1 }
+metric = "gap 1 px vs section median 9 px (delta 8 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 264, w = 1500, h = 2 }
+logical_region = { x = 0, y = 264, w = 1500, h = 2 }
+metric = "gap 2 px vs section median 9 px (delta 7 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 271, w = 1500, h = 6 }
+logical_region = { x = 0, y = 271, w = 1500, h = 6 }
+metric = "gap 6 px vs section median 9 px (delta 3 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 286, w = 1500, h = 1 }
+logical_region = { x = 0, y = 286, w = 1500, h = 1 }
+metric = "gap 1 px vs section median 9 px (delta 8 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 308, w = 1500, h = 3 }
+logical_region = { x = 0, y = 308, w = 1500, h = 3 }
+metric = "gap 3 px vs section median 9 px (delta 6 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -20023,79 +19993,9 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "A2"
 grade = "accept-as-legacy"
-region = { x = 0, y = 221, w = 1500, h = 1 }
-logical_region = { x = 0, y = 221, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 223, w = 1500, h = 8 }
-logical_region = { x = 0, y = 223, w = 1500, h = 8 }
-metric = "gap 8 px vs section median 11 px (delta 3 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 243, w = 1500, h = 3 }
-logical_region = { x = 0, y = 243, w = 1500, h = 3 }
-metric = "gap 3 px vs section median 11 px (delta 8 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 251, w = 1500, h = 16 }
-logical_region = { x = 0, y = 251, w = 1500, h = 16 }
-metric = "gap 16 px vs section median 11 px (delta 5 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A2"
-grade = "accept-as-legacy"
-region = { x = 0, y = 279, w = 1500, h = 1 }
-logical_region = { x = 0, y = 279, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A2"
-grade = "accept-as-legacy"
-region = { x = 0, y = 303, w = 1500, h = 1 }
-logical_region = { x = 0, y = 303, w = 1500, h = 1 }
-metric = "gap 1 px vs section median 11 px (delta 10 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 305, w = 1500, h = 17 }
-logical_region = { x = 0, y = 305, w = 1500, h = 17 }
-metric = "gap 17 px vs section median 11 px (delta 6 px)"
-threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "A2"
-grade = "fix-later"
-region = { x = 0, y = 331, w = 1500, h = 19 }
-logical_region = { x = 0, y = 331, w = 1500, h = 19 }
-metric = "gap 19 px vs section median 11 px (delta 8 px)"
+region = { x = 0, y = 316, w = 1500, h = 42 }
+logical_region = { x = 0, y = 316, w = 1500, h = 42 }
+metric = "gap 42 px vs section median 9 px (delta 33 px)"
 threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
 
 [[finding]]
@@ -20303,28 +20203,8 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1464, y = 165, w = 12, h = 12 }
-logical_region = { x = 1464, y = 165, w = 12, h = 12 }
-metric = "ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 11, y = 166, w = 18, h = 13 }
-logical_region = { x = 11, y = 166, w = 18, h = 13 }
-metric = "ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 26, y = 166, w = 24, h = 13 }
-logical_region = { x = 26, y = 166, w = 24, h = 13 }
+region = { x = 10, y = 159, w = 29, h = 13 }
+logical_region = { x = 10, y = 159, w = 29, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -20333,308 +20213,8 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 55, y = 166, w = 11, h = 13 }
-logical_region = { x = 55, y = 166, w = 11, h = 13 }
-metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 19, y = 210, w = 46, h = 16 }
-logical_region = { x = 19, y = 210, w = 46, h = 16 }
-metric = "ink RGB (114, 116, 122) on background RGB (19, 21, 28) → contrast 3.9:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 62, y = 210, w = 22, h = 13 }
-logical_region = { x = 62, y = 210, w = 22, h = 13 }
-metric = "ink RGB (114, 116, 122) on background RGB (19, 21, 28) → contrast 3.9:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 18, y = 229, w = 53, h = 13 }
-logical_region = { x = 18, y = 229, w = 53, h = 13 }
-metric = "ink RGB (83, 86, 98) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 70, y = 229, w = 20, h = 13 }
-logical_region = { x = 70, y = 229, w = 20, h = 13 }
-metric = "ink RGB (81, 84, 96) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 90, y = 229, w = 33, h = 13 }
-logical_region = { x = 90, y = 229, w = 33, h = 13 }
-metric = "ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 125, y = 229, w = 13, h = 13 }
-logical_region = { x = 125, y = 229, w = 13, h = 13 }
-metric = "ink RGB (72, 75, 86) on background RGB (19, 21, 28) → contrast 2.1:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 140, y = 229, w = 63, h = 16 }
-logical_region = { x = 140, y = 229, w = 63, h = 16 }
-metric = "ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 218, y = 229, w = 25, h = 13 }
-logical_region = { x = 218, y = 229, w = 25, h = 13 }
-metric = "ink RGB (82, 85, 97) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 323, y = 229, w = 66, h = 16 }
-logical_region = { x = 323, y = 229, w = 66, h = 16 }
-metric = "ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 240, y = 230, w = 62, h = 12 }
-logical_region = { x = 240, y = 230, w = 62, h = 12 }
-metric = "ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 299, y = 230, w = 27, h = 12 }
-logical_region = { x = 299, y = 230, w = 27, h = 12 }
-metric = "ink RGB (80, 84, 95) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 386, y = 230, w = 20, h = 15 }
-logical_region = { x = 386, y = 230, w = 20, h = 15 }
-metric = "ink RGB (80, 84, 95) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 678, y = 265, w = 24, h = 16 }
-logical_region = { x = 678, y = 265, w = 24, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 699, y = 265, w = 42, h = 20 }
-logical_region = { x = 699, y = 265, w = 42, h = 20 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 743, y = 265, w = 32, h = 16 }
-logical_region = { x = 743, y = 265, w = 32, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 781, y = 265, w = 42, h = 20 }
-logical_region = { x = 781, y = 265, w = 42, h = 20 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 775, y = 266, w = 10, h = 15 }
-logical_region = { x = 775, y = 266, w = 10, h = 15 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 587, y = 292, w = 58, h = 16 }
-logical_region = { x = 587, y = 292, w = 58, h = 16 }
-metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 645, y = 292, w = 36, h = 16 }
-logical_region = { x = 645, y = 292, w = 36, h = 16 }
-metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 678, y = 292, w = 15, h = 13 }
-logical_region = { x = 678, y = 292, w = 15, h = 13 }
-metric = "ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 692, y = 292, w = 64, h = 16 }
-logical_region = { x = 692, y = 292, w = 64, h = 16 }
-metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 753, y = 292, w = 28, h = 13 }
-logical_region = { x = 753, y = 292, w = 28, h = 13 }
-metric = "ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 797, y = 292, w = 30, h = 13 }
-logical_region = { x = 797, y = 292, w = 30, h = 13 }
-metric = "ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 824, y = 292, w = 30, h = 13 }
-logical_region = { x = 824, y = 292, w = 30, h = 13 }
-metric = "ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 854, y = 292, w = 21, h = 13 }
-logical_region = { x = 854, y = 292, w = 21, h = 13 }
-metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 876, y = 292, w = 13, h = 13 }
-logical_region = { x = 876, y = 292, w = 13, h = 13 }
-metric = "ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 886, y = 292, w = 24, h = 13 }
-logical_region = { x = 886, y = 292, w = 24, h = 13 }
-metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 609, y = 293, w = 8, h = 12 }
-logical_region = { x = 609, y = 293, w = 8, h = 12 }
-metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 10, y = 320, w = 29, h = 13 }
-logical_region = { x = 10, y = 320, w = 29, h = 13 }
-metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
-threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
-
-[[finding]]
-golden = "review-walk-1.0-1500"
-surface = "review"
-invariant = "Q1"
-grade = "accept-as-legacy"
-region = { x = 36, y = 320, w = 23, h = 13 }
-logical_region = { x = 36, y = 320, w = 23, h = 13 }
+region = { x = 36, y = 159, w = 23, h = 13 }
+logical_region = { x = 36, y = 159, w = 23, h = 13 }
 metric = "ink RGB (112, 114, 120) on background RGB (14, 16, 22) → contrast 4.0:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -20643,8 +20223,8 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1099, y = 320, w = 26, h = 13 }
-logical_region = { x = 1099, y = 320, w = 26, h = 13 }
+region = { x = 1099, y = 159, w = 26, h = 13 }
+logical_region = { x = 1099, y = 159, w = 26, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -20653,8 +20233,8 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1129, y = 320, w = 18, h = 13 }
-logical_region = { x = 1129, y = 320, w = 18, h = 13 }
+region = { x = 1129, y = 159, w = 18, h = 13 }
+logical_region = { x = 1129, y = 159, w = 18, h = 13 }
 metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -20663,8 +20243,8 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 31, y = 347, w = 18, h = 15 }
-logical_region = { x = 31, y = 347, w = 18, h = 15 }
+region = { x = 31, y = 186, w = 18, h = 15 }
+logical_region = { x = 31, y = 186, w = 18, h = 15 }
 metric = "ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -20673,8 +20253,8 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 52, y = 347, w = 8, h = 15 }
-logical_region = { x = 52, y = 347, w = 8, h = 15 }
+region = { x = 52, y = 186, w = 8, h = 15 }
+logical_region = { x = 52, y = 186, w = 8, h = 15 }
 metric = "ink RGB (117, 119, 125) on background RGB (14, 16, 22) → contrast 4.2:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -20683,8 +20263,8 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 18, y = 348, w = 16, h = 14 }
-logical_region = { x = 18, y = 348, w = 16, h = 14 }
+region = { x = 18, y = 187, w = 16, h = 14 }
+logical_region = { x = 18, y = 187, w = 16, h = 14 }
 metric = "ink RGB (118, 120, 126) on background RGB (14, 16, 22) → contrast 4.3:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -20693,8 +20273,8 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1434, y = 349, w = 25, h = 13 }
-logical_region = { x = 1434, y = 349, w = 25, h = 13 }
+region = { x = 1434, y = 188, w = 25, h = 13 }
+logical_region = { x = 1434, y = 188, w = 25, h = 13 }
 metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
@@ -20703,9 +20283,329 @@ golden = "review-walk-1.0-1500"
 surface = "review"
 invariant = "Q1"
 grade = "accept-as-legacy"
-region = { x = 1464, y = 349, w = 17, h = 13 }
-logical_region = { x = 1464, y = 349, w = 17, h = 13 }
+region = { x = 1464, y = 188, w = 17, h = 13 }
+logical_region = { x = 1464, y = 188, w = 17, h = 13 }
 metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 306, y = 224, w = 24, h = 16 }
+logical_region = { x = 306, y = 224, w = 24, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 327, y = 224, w = 42, h = 20 }
+logical_region = { x = 327, y = 224, w = 42, h = 20 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 371, y = 224, w = 32, h = 16 }
+logical_region = { x = 371, y = 224, w = 32, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 409, y = 224, w = 42, h = 20 }
+logical_region = { x = 409, y = 224, w = 42, h = 20 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Large; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 403, y = 225, w = 10, h = 15 }
+logical_region = { x = 403, y = 225, w = 10, h = 15 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 1464, y = 230, w = 12, h = 12 }
+logical_region = { x = 1464, y = 230, w = 12, h = 12 }
+metric = "ink RGB (48, 89, 64) on background RGB (14, 16, 22) → contrast 2.4:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 755, y = 231, w = 18, h = 13 }
+logical_region = { x = 755, y = 231, w = 18, h = 13 }
+metric = "ink RGB (115, 117, 123) on background RGB (14, 16, 22) → contrast 4.1:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 770, y = 231, w = 24, h = 13 }
+logical_region = { x = 770, y = 231, w = 24, h = 13 }
+metric = "ink RGB (119, 121, 127) on background RGB (14, 16, 22) → contrast 4.4:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 799, y = 231, w = 11, h = 13 }
+logical_region = { x = 799, y = 231, w = 11, h = 13 }
+metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 215, y = 251, w = 58, h = 16 }
+logical_region = { x = 215, y = 251, w = 58, h = 16 }
+metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 273, y = 251, w = 36, h = 16 }
+logical_region = { x = 273, y = 251, w = 36, h = 16 }
+metric = "ink RGB (86, 89, 101) on background RGB (14, 16, 22) → contrast 2.7:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 306, y = 251, w = 15, h = 13 }
+logical_region = { x = 306, y = 251, w = 15, h = 13 }
+metric = "ink RGB (83, 86, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 320, y = 251, w = 64, h = 16 }
+logical_region = { x = 320, y = 251, w = 64, h = 16 }
+metric = "ink RGB (87, 91, 103) on background RGB (14, 16, 22) → contrast 2.8:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 381, y = 251, w = 28, h = 13 }
+logical_region = { x = 381, y = 251, w = 28, h = 13 }
+metric = "ink RGB (81, 84, 96) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 425, y = 251, w = 30, h = 13 }
+logical_region = { x = 425, y = 251, w = 30, h = 13 }
+metric = "ink RGB (80, 83, 95) on background RGB (14, 16, 22) → contrast 2.5:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 452, y = 251, w = 30, h = 13 }
+logical_region = { x = 452, y = 251, w = 30, h = 13 }
+metric = "ink RGB (81, 85, 96) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 482, y = 251, w = 21, h = 13 }
+logical_region = { x = 482, y = 251, w = 21, h = 13 }
+metric = "ink RGB (84, 87, 99) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 504, y = 251, w = 13, h = 13 }
+logical_region = { x = 504, y = 251, w = 13, h = 13 }
+metric = "ink RGB (75, 78, 89) on background RGB (14, 16, 22) → contrast 2.3:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 514, y = 251, w = 24, h = 13 }
+logical_region = { x = 514, y = 251, w = 24, h = 13 }
+metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 237, y = 252, w = 8, h = 12 }
+logical_region = { x = 237, y = 252, w = 8, h = 12 }
+metric = "ink RGB (82, 85, 97) on background RGB (14, 16, 22) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 763, y = 275, w = 46, h = 16 }
+logical_region = { x = 763, y = 275, w = 46, h = 16 }
+metric = "ink RGB (114, 116, 122) on background RGB (19, 21, 28) → contrast 3.9:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 806, y = 275, w = 22, h = 13 }
+logical_region = { x = 806, y = 275, w = 22, h = 13 }
+metric = "ink RGB (114, 116, 122) on background RGB (19, 21, 28) → contrast 3.9:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 762, y = 294, w = 53, h = 13 }
+logical_region = { x = 762, y = 294, w = 53, h = 13 }
+metric = "ink RGB (83, 86, 98) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 814, y = 294, w = 20, h = 13 }
+logical_region = { x = 814, y = 294, w = 20, h = 13 }
+metric = "ink RGB (81, 84, 96) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 834, y = 294, w = 33, h = 13 }
+logical_region = { x = 834, y = 294, w = 33, h = 13 }
+metric = "ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 869, y = 294, w = 13, h = 13 }
+logical_region = { x = 869, y = 294, w = 13, h = 13 }
+metric = "ink RGB (72, 75, 86) on background RGB (19, 21, 28) → contrast 2.1:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 884, y = 294, w = 63, h = 16 }
+logical_region = { x = 884, y = 294, w = 63, h = 16 }
+metric = "ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 962, y = 294, w = 25, h = 13 }
+logical_region = { x = 962, y = 294, w = 25, h = 13 }
+metric = "ink RGB (82, 85, 97) on background RGB (19, 21, 28) → contrast 2.5:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 1067, y = 294, w = 66, h = 16 }
+logical_region = { x = 1067, y = 294, w = 66, h = 16 }
+metric = "ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 984, y = 295, w = 62, h = 12 }
+logical_region = { x = 984, y = 295, w = 62, h = 12 }
+metric = "ink RGB (86, 89, 101) on background RGB (19, 21, 28) → contrast 2.6:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 1043, y = 295, w = 27, h = 12 }
+logical_region = { x = 1043, y = 295, w = 27, h = 12 }
+metric = "ink RGB (80, 84, 95) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink"
+threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
+
+[[finding]]
+golden = "review-walk-1.0-1500"
+surface = "review"
+invariant = "Q1"
+grade = "accept-as-legacy"
+region = { x = 1130, y = 295, w = 20, h = 15 }
+logical_region = { x = 1130, y = 295, w = 20, h = 15 }
+metric = "ink RGB (80, 84, 95) on background RGB (19, 21, 28) → contrast 2.4:1; role class Body; scrim-blend ink"
 threshold = "WCAG 2.x: Body ≥ 4.5:1 (em < 20.0), Large ≥ 3.0:1 (em ≥ 20.0); method per token_tests.rs"
 
 [[finding]]
@@ -21203,9 +21103,59 @@ golden = "action-menu-1.0-1500"
 surface = "action"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 499, y = 60, w = 180, h = 784 }
-logical_region = { x = 499, y = 60, w = 180, h = 784 }
-metric = "left edge at 499 px; nearest shared grid column 686 px (delta 187 px)"
+region = { x = 233, y = 60, w = 74, h = 784 }
+logical_region = { x = 233, y = 60, w = 74, h = 784 }
+metric = "left edge at 233 px; nearest shared grid column 57 px (delta 176 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "action-menu-1.0-1500"
+surface = "action"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 280, y = 60, w = 27, h = 784 }
+logical_region = { x = 280, y = 60, w = 27, h = 784 }
+metric = "left edge at 280 px; nearest shared grid column 57 px (delta 223 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "action-menu-1.0-1500"
+surface = "action"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 383, y = 60, w = 56, h = 784 }
+logical_region = { x = 383, y = 60, w = 56, h = 784 }
+metric = "left edge at 383 px; nearest shared grid column 57 px (delta 326 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "action-menu-1.0-1500"
+surface = "action"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 427, y = 60, w = 12, h = 784 }
+logical_region = { x = 427, y = 60, w = 12, h = 784 }
+metric = "left edge at 427 px; nearest shared grid column 57 px (delta 370 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "action-menu-1.0-1500"
+surface = "action"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 499, y = 60, w = 260, h = 784 }
+logical_region = { x = 499, y = 60, w = 260, h = 784 }
+metric = "left edge at 499 px; nearest shared grid column 57 px (delta 442 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "action-menu-1.0-1500"
+surface = "action"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 506, y = 60, w = 253, h = 784 }
+logical_region = { x = 506, y = 60, w = 253, h = 784 }
+metric = "left edge at 506 px; nearest shared grid column 57 px (delta 449 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -21215,7 +21165,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 512, y = 864, w = 71, h = 32 }
 logical_region = { x = 512, y = 864, w = 71, h = 32 }
-metric = "left edge at 512 px; nearest shared grid column 686 px (delta 174 px)"
+metric = "left edge at 512 px; nearest shared grid column 57 px (delta 455 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -21223,19 +21173,9 @@ golden = "action-menu-1.0-1500"
 surface = "action"
 invariant = "A1"
 grade = "accept-as-legacy"
-region = { x = 605, y = 60, w = 74, h = 784 }
-logical_region = { x = 605, y = 60, w = 74, h = 784 }
-metric = "left edge at 605 px; nearest shared grid column 686 px (delta 81 px)"
-threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
-
-[[finding]]
-golden = "action-menu-1.0-1500"
-surface = "action"
-invariant = "A1"
-grade = "accept-as-legacy"
-region = { x = 652, y = 60, w = 27, h = 784 }
-logical_region = { x = 652, y = 60, w = 27, h = 784 }
-metric = "left edge at 652 px; nearest shared grid column 686 px (delta 34 px)"
+region = { x = 516, y = 60, w = 243, h = 784 }
+logical_region = { x = 516, y = 60, w = 243, h = 784 }
+metric = "left edge at 516 px; nearest shared grid column 57 px (delta 459 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -21245,7 +21185,17 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 695, y = 8, w = 37, h = 48 }
 logical_region = { x = 695, y = 8, w = 37, h = 48 }
-metric = "left edge at 695 px; nearest shared grid column 688 px (delta 7 px)"
+metric = "left edge at 695 px; nearest shared grid column 1051 px (delta 356 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "action-menu-1.0-1500"
+surface = "action"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 720, y = 8, w = 12, h = 48 }
+logical_region = { x = 720, y = 8, w = 12, h = 48 }
+metric = "left edge at 720 px; nearest shared grid column 1051 px (delta 331 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -21255,27 +21205,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 742, y = 8, w = 57, h = 48 }
 logical_region = { x = 742, y = 8, w = 57, h = 48 }
-metric = "left edge at 742 px; nearest shared grid column 721 px (delta 21 px)"
-threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
-
-[[finding]]
-golden = "action-menu-1.0-1500"
-surface = "action"
-invariant = "A1"
-grade = "accept-as-legacy"
-region = { x = 755, y = 60, w = 56, h = 784 }
-logical_region = { x = 755, y = 60, w = 56, h = 784 }
-metric = "left edge at 755 px; nearest shared grid column 721 px (delta 34 px)"
-threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
-
-[[finding]]
-golden = "action-menu-1.0-1500"
-surface = "action"
-invariant = "A1"
-grade = "accept-as-legacy"
-region = { x = 799, y = 60, w = 12, h = 784 }
-logical_region = { x = 799, y = 60, w = 12, h = 784 }
-metric = "left edge at 799 px; nearest shared grid column 721 px (delta 78 px)"
+metric = "left edge at 742 px; nearest shared grid column 1051 px (delta 309 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -21285,7 +21215,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 878, y = 60, w = 20, h = 784 }
 logical_region = { x = 878, y = 60, w = 20, h = 784 }
-metric = "left edge at 878 px; nearest shared grid column 721 px (delta 157 px)"
+metric = "left edge at 878 px; nearest shared grid column 1051 px (delta 173 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -21295,7 +21225,7 @@ invariant = "A1"
 grade = "accept-as-legacy"
 region = { x = 886, y = 60, w = 12, h = 784 }
 logical_region = { x = 886, y = 60, w = 12, h = 784 }
-metric = "left edge at 886 px; nearest shared grid column 721 px (delta 165 px)"
+metric = "left edge at 886 px; nearest shared grid column 1051 px (delta 165 px)"
 threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
 
 [[finding]]
@@ -21321,6 +21251,276 @@ threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px;
 [[finding]]
 golden = "action-menu-1.0-1500"
 surface = "action"
+invariant = "T1"
+grade = "fix-later"
+region = { x = 16, y = 864, w = 32, h = 32 }
+logical_region = { x = 16, y = 864, w = 32, h = 32 }
+metric = "text line height 32 px (1 component) → em ≈ 45.7 logical px; nearest ladder rung 30 px"
+threshold = "em within 15% of a TextRole rung [11, 12, 12.5, 14, 16, 20, 30]; em = line height / 0.7 ÷ scale 1.0 (connected-component glyph-line estimator)"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "fix-later"
+region = { x = 16, y = 864, w = 32, h = 32 }
+logical_region = { x = 16, y = 864, w = 32, h = 32 }
+metric = "left edge at 16 px; nearest shared grid column 13 px (delta 3 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "fix-later"
+region = { x = 25, y = 833, w = 37, h = 12 }
+logical_region = { x = 25, y = 833, w = 37, h = 12 }
+metric = "left edge at 25 px; nearest shared grid column 21 px (delta 4 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 41, y = 188, w = 17, h = 12 }
+logical_region = { x = 41, y = 188, w = 17, h = 12 }
+metric = "left edge at 41 px; nearest shared grid column 56 px (delta 15 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 45, y = 833, w = 17, h = 12 }
+logical_region = { x = 45, y = 833, w = 17, h = 12 }
+metric = "left edge at 45 px; nearest shared grid column 56 px (delta 11 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "fix-later"
+region = { x = 52, y = 797, w = 19, h = 15 }
+logical_region = { x = 52, y = 797, w = 19, h = 15 }
+metric = "left edge at 52 px; nearest shared grid column 56 px (delta 4 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 81, y = 797, w = 16, h = 15 }
+logical_region = { x = 81, y = 797, w = 16, h = 15 }
+metric = "left edge at 81 px; nearest shared grid column 69 px (delta 12 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 217, y = 797, w = 44, h = 15 }
+logical_region = { x = 217, y = 797, w = 44, h = 15 }
+metric = "left edge at 217 px; nearest shared grid column 69 px (delta 148 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 249, y = 797, w = 12, h = 15 }
+logical_region = { x = 249, y = 797, w = 12, h = 15 }
+metric = "left edge at 249 px; nearest shared grid column 69 px (delta 180 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 335, y = 797, w = 12, h = 15 }
+logical_region = { x = 335, y = 797, w = 12, h = 15 }
+metric = "left edge at 335 px; nearest shared grid column 69 px (delta 266 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 380, y = 797, w = 38, h = 15 }
+logical_region = { x = 380, y = 797, w = 38, h = 15 }
+metric = "left edge at 380 px; nearest shared grid column 69 px (delta 311 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 393, y = 797, w = 25, h = 15 }
+logical_region = { x = 393, y = 797, w = 25, h = 15 }
+metric = "left edge at 393 px; nearest shared grid column 69 px (delta 324 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 532, y = 112, w = 513, h = 33 }
+logical_region = { x = 532, y = 112, w = 513, h = 33 }
+metric = "left edge at 532 px; nearest shared grid column 69 px (delta 463 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 545, y = 864, w = 71, h = 32 }
+logical_region = { x = 545, y = 864, w = 71, h = 32 }
+metric = "left edge at 545 px; nearest shared grid column 69 px (delta 476 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 745, y = 8, w = 37, h = 48 }
+logical_region = { x = 745, y = 8, w = 37, h = 48 }
+metric = "left edge at 745 px; nearest shared grid column 69 px (delta 676 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 770, y = 8, w = 12, h = 48 }
+logical_region = { x = 770, y = 8, w = 12, h = 48 }
+metric = "left edge at 770 px; nearest shared grid column 69 px (delta 701 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 792, y = 8, w = 57, h = 48 }
+logical_region = { x = 792, y = 8, w = 57, h = 48 }
+metric = "left edge at 792 px; nearest shared grid column 69 px (delta 723 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 1053, y = 112, w = 272, h = 33 }
+logical_region = { x = 1053, y = 112, w = 272, h = 33 }
+metric = "left edge at 1053 px; nearest shared grid column 1598 px (delta 545 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 1459, y = 112, w = 129, h = 33 }
+logical_region = { x = 1459, y = 112, w = 129, h = 33 }
+metric = "left edge at 1459 px; nearest shared grid column 1598 px (delta 139 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A1"
+grade = "accept-as-legacy"
+region = { x = 1464, y = 112, w = 124, h = 33 }
+logical_region = { x = 1464, y = 112, w = 124, h = 33 }
+metric = "left edge at 1464 px; nearest shared grid column 1598 px (delta 134 px)"
+threshold = "cluster tolerance 2.0 logical px × scale 1.0 = 2 px; min block width 12.0 logical px; grid min membership 2"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 56, w = 1600, h = 8 }
+logical_region = { x = 0, y = 56, w = 1600, h = 8 }
+metric = "gap 8 px vs section median 15 px (delta 7 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 170, w = 1600, h = 18 }
+logical_region = { x = 0, y = 170, w = 1600, h = 18 }
+metric = "gap 18 px vs section median 15 px (delta 3 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A2"
+grade = "accept-as-legacy"
+region = { x = 0, y = 200, w = 1600, h = 25 }
+logical_region = { x = 0, y = 200, w = 1600, h = 25 }
+metric = "gap 25 px vs section median 15 px (delta 10 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 291, w = 1600, h = 9 }
+logical_region = { x = 0, y = 291, w = 1600, h = 9 }
+metric = "gap 9 px vs section median 15 px (delta 6 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A2"
+grade = "accept-as-legacy"
+region = { x = 0, y = 307, w = 1600, h = 3 }
+logical_region = { x = 0, y = 307, w = 1600, h = 3 }
+metric = "gap 3 px vs section median 15 px (delta 12 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 374, w = 1600, h = 8 }
+logical_region = { x = 0, y = 374, w = 1600, h = 8 }
+metric = "gap 8 px vs section median 15 px (delta 7 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
+invariant = "A2"
+grade = "fix-later"
+region = { x = 0, y = 784, w = 1600, h = 13 }
+logical_region = { x = 0, y = 784, w = 1600, h = 13 }
+metric = "gap 13 px vs section median 19 px (delta 6 px)"
+threshold = "outlier when |gap − median| > 2.0 logical px × scale 1.0 = 2 px; section ceiling 96.0 logical px; min membership 3 gaps"
+
+[[finding]]
+golden = "today-two-column-1.0-1600"
+surface = "today"
 invariant = "T1"
 grade = "fix-later"
 region = { x = 16, y = 864, w = 32, h = 32 }
