@@ -19995,6 +19995,40 @@ mod ui_small_inventory_tests {
         });
     }
 
+    // -- #1315: the habit card's hint-keys ride the keymap projection -------
+
+    /// The habit row card's tooltip hint-keys equal the keymap's
+    /// first-binding projection for the row's edit verb over the visible
+    /// chain — the task-card grammar's structural oracle (the rendered
+    /// model is compared against the projection's own output, never label
+    /// prose). Red pre-fix: the card model hardcoded the empty list.
+    #[test]
+    fn the_habit_card_hint_keys_match_the_keymap_projection() {
+        on_slint_thread(|| {
+            use slint::Model as _;
+            let (state, _task, _habit) = fixture();
+            let rig = rig(state);
+            let chain = rig.adapter().borrow().shell.chain();
+            let keymap = crate::keymap::Keymap::from_preset(crate::keymap::Preset::Standard);
+            let projected: Vec<slint::SharedString> = keymap
+                .first_binding_display(ActionId::HabitEdit, &chain)
+                .unwrap_or_default()
+                .iter()
+                .map(|stroke| slint::SharedString::from(stroke.as_str()))
+                .collect();
+
+            let model = rig.handle.window().get_habits_model();
+            let row = model.row_data(0).expect("the fixture habit row renders");
+            let rendered: Vec<slint::SharedString> = (0..row.hint_keys.row_count())
+                .filter_map(|i| row.hint_keys.row_data(i))
+                .collect();
+            assert_eq!(
+                rendered, projected,
+                "#1315: the habit card's hint-keys are the keymap projection"
+            );
+        });
+    }
+
     // -- #1449: the task variant titles the open task -----------------------
 
     /// The `TaskDetail` task variant's toolbar title is the open task's
