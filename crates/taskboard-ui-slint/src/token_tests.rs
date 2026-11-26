@@ -77,25 +77,11 @@ fn resolve_reference(name: &str) -> Option<&str> {
     None
 }
 
-/// WCAG 2.x relative luminance over 8-bit sRGB channels.
-fn relative_luminance(hex: &str) -> f64 {
-    let channel = |i: usize| -> f64 {
-        let c = f64::from(u8::from_str_radix(&hex[i..i + 2], 16).expect("validated hex")) / 255.0;
-        if c <= 0.03928 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
-}
-
-/// WCAG 2.x contrast ratio, ≥ 1.0.
-fn contrast_ratio(a: &str, b: &str) -> f64 {
-    let (la, lb) = (relative_luminance(a), relative_luminance(b));
-    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
-    (hi + 0.05) / (lo + 0.05)
-}
+// The WCAG 2.x colour math lives in `presentation.rs` (chunk L4,
+// #1415): the single production definition, hoisted out of this test
+// module when the chip-ink rule needed it — consumed here unchanged,
+// keeping the known-answer pins over the one implementation.
+use crate::presentation::contrast_ratio;
 
 // ---------------------------------------------------------------------------
 // Pair list as const data (§9.1): (foreground, surface, minimum class).
