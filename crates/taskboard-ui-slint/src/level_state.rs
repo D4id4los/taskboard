@@ -191,6 +191,11 @@ pub(crate) struct PlanPlaceState {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WalkState {
     pub(crate) answers: Vec<String>,
+    /// The rating drafts (#1431): the T-15 text grammar — empty is
+    /// the neutral unrated; a valid `1..=5` mints at Record. They
+    /// share the answers' lifecycle (the level's death is the clear).
+    pub(crate) mood_text: String,
+    pub(crate) energy_text: String,
     pub(crate) anchor: FocusAnchor,
 }
 
@@ -301,6 +306,8 @@ impl LevelState {
                 }),
                 crate::surfaces::FlowTag::ReviewWalk => Self::Walk(WalkState {
                     answers: Vec::new(),
+                    mood_text: String::new(),
+                    energy_text: String::new(),
                     anchor: FocusAnchor::None,
                 }),
                 // The epoch placeholder: the opening seam re-seeds
