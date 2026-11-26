@@ -1645,22 +1645,27 @@ impl Adapter {
                 self.apply_outcomes(window, &outcomes);
             }
             ActionId::TaskScheduleToday => {
-                // The batch twin of the router's today stamp (#893):
-                // the day's last covered instant over the same frozen
-                // day facts — the raw exclusive end is excluded by the
-                // `[now, end)` membership the stamped rows are judged
-                // by. The domain mint, never a local `end − ε` (#884).
-                let end = taskboard_domain::days::last_covered_instant(self.day_ctx().window.1);
-                self.schedule_selection(&state, end);
+                // The batch twin of the router's today pair-write
+                // (#1428, journey plan D-1): both fields in one mask —
+                // the day's first covered instant (start) and its last
+                // covered instant (due, #893). The domain mints, never
+                // a local `end − ε` (#884).
+                let first = self.day_ctx().window.0;
+                let last = taskboard_domain::days::last_covered_instant(self.day_ctx().window.1);
+                self.schedule_selection(&state, first, last);
             }
             ActionId::TaskScheduleTomorrow => {
-                let end = taskboard_domain::days::next_day_window(
+                // The batch twin of the router's tomorrow pair-write
+                // (D-2): the covered-instant law holds for the batch
+                // path too — tomorrow's first instant and its last
+                // covered instant, the raw exclusive end retired.
+                let (first, end) = taskboard_domain::days::next_day_window(
                     self.day_ctx().now,
                     self.day_start.0,
                     self.day_start.1,
-                )
-                .1;
-                self.schedule_selection(&state, end);
+                );
+                let last = taskboard_domain::days::last_covered_instant(end);
+                self.schedule_selection(&state, first, last);
             }
             ActionId::TaskUnschedule => {
                 let members = self.view_state.selection_anchor_order(&state);
@@ -1687,14 +1692,15 @@ impl Adapter {
 
     /// The schedule pair's per-member dispatch (the arms' shared body):
     /// one sparse `UpdateTask` per selection member in anchor order,
-    /// `scheduled` set to the shared window end, everything else
-    /// untouched.
-    fn schedule_selection(&mut self, state: &AppState, end: DateTime<Utc>) {
+    /// `scheduled` and `duedate` set to the shared day-window pair
+    /// (#1428, journey plan D-1), everything else untouched.
+    fn schedule_selection(&mut self, state: &AppState, first: DateTime<Utc>, last: DateTime<Utc>) {
         for member in self.view_state.selection_anchor_order(state) {
             self.send(StateCommand::UpdateTask {
                 id: member,
                 changes: taskboard_domain::TaskChanges {
-                    scheduled: Some(Some(end)),
+                    scheduled: Some(Some(first)),
+                    duedate: Some(Some(last)),
                     ..taskboard_domain::TaskChanges::default()
                 },
             });
@@ -1979,16 +1985,20 @@ impl Adapter {
         ctx.today_last_instant = Some(taskboard_domain::days::last_covered_instant(
             self.day_ctx().window.1,
         ));
-        // The tomorrow window's end (UX-R8 chunk-5 D-3): the additive
-        // day fact, `days::next_day_window` — never `+24h` arithmetic.
-        ctx.tomorrow_window_end = Some(
-            taskboard_domain::days::next_day_window(
-                self.day_ctx().now,
-                self.day_start.0,
-                self.day_start.1,
-            )
-            .1,
+        // The schedule quick verbs' pair-write facts (#1428, journey
+        // plan D-1/D-2): today's and tomorrow's first covered instants
+        // (the day_start_time-aware window starts) and tomorrow's last
+        // covered instant (the covered-instant law — the raw exclusive
+        // end is retired). One domain mint per fact, no local
+        // arithmetic.
+        ctx.today_first_instant = Some(self.day_ctx().window.0);
+        let tomorrow = taskboard_domain::days::next_day_window(
+            self.day_ctx().now,
+            self.day_start.0,
+            self.day_start.1,
         );
+        ctx.tomorrow_first_instant = Some(tomorrow.0);
+        ctx.tomorrow_last_instant = Some(taskboard_domain::days::last_covered_instant(tomorrow.1));
         // The smart toggle's state half (J3 R-8, round 9 chunk 11):
         // synced at dispatch time — the fact must answer about the
         // exact resolved target, which only exists after the one-shot
@@ -15493,10 +15503,11 @@ fn install_board_color_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     bind mut (a, window), args (index), {        let Ok(index) = usize::try_from(index) else {
         return;
     };
-    let Some(swatch) = crate::presentation::SWATCHES.get(index) else {
-        return;
+    let palette = crate::presentation::derived_swatches();
+    let Some(swatch) = palette.get(index) else {
+        return; // a stale palette index
     };
-    let outcomes = a.view_state.commit_board_color(swatch);
+    let outcomes = a.view_state.commit_board_color(swatch.as_str());
     a.apply_outcomes(&window, &outcomes);
     });
     install_seam!(window: window.on_board_color_strip_dismissed, adapter: adapter;
@@ -16190,14 +16201,45 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         }
 
     });
+    // The picker's draft-write seams (journey plan
+    // `…-schedule-colour-ux-plan.md` D-3, US-28/S1+S4, the W-3/W-7
+    // rows): the projected value is quantized through the conversion
+    // the mint owns (`hsv_to_hex`, the 6-hex shape) into the draft
+    // buffer, then the forced refresh re-projects the picker — the
+    // draft string is the single truth, the picker its projection.
+    // No command: the overlay's commit is the funnel.
+    // slint: hue-picked
+    install_seam!(window: window.on_labels_overlay_hue_picked, adapter: adapter;
+    bind mut (a, window), args (hue), {        let hue = f64::from(hue);
+        if let Some(form) = a.label_form.as_mut() {
+            // The untouched axes ride the last-valid draft's own
+            // reading (the projection is only ever re-projected).
+            let (_, sat, val) =
+                crate::presentation::hex_to_hsv(&form.color).unwrap_or((hue, 1.0, 1.0));
+            form.color = crate::presentation::hsv_to_hex(hue, sat, val);
+            a.refresh_forced(&window);
+        }
+
+    });
+    // slint: sat-val-picked
+    install_seam!(window: window.on_labels_overlay_sat_val_picked, adapter: adapter;
+    bind mut (a, window), args (sat, val), {        let (sat, val) = (f64::from(sat), f64::from(val));
+        if let Some(form) = a.label_form.as_mut() {
+            let (hue, _, _) =
+                crate::presentation::hex_to_hsv(&form.color).unwrap_or((0.0, sat, val));
+            form.color = crate::presentation::hsv_to_hex(hue, sat, val);
+            a.refresh_forced(&window);
+        }
+
+    });
     install_seam!(window: window.on_labels_overlay_swatch_clicked, adapter: adapter;
-    bind mut (a, window), args (index), {        let Some(swatch) =
-            crate::presentation::SWATCHES.get(usize::try_from(index).unwrap_or(usize::MAX))
+    bind mut (a, window), args (index), {        let palette = crate::presentation::derived_swatches();
+        let Some(swatch) = palette.get(usize::try_from(index).unwrap_or(usize::MAX))
         else {
             return; // a stale palette index
         };
         if let Some(form) = a.label_form.as_mut() {
-            form.color = swatch.to_string();
+            form.color.clone_from(swatch);
             a.refresh_forced(&window);
         }
 

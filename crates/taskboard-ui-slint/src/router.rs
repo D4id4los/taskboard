@@ -1123,11 +1123,23 @@ pub struct DispatchCtx {
     /// commit it (`NoTarget` without it, the `day_window` backstop
     /// shape).
     pub today_last_instant: Option<chrono::DateTime<chrono::Utc>>,
-    /// The next day window's end (UX-R8 chunk-5 D-3, US-1/S2): set by
-    /// the adapter per dispatch from `days::next_day_window` — the
-    /// landed day law, never `+24h` arithmetic;
-    /// `task.schedule-tomorrow` commits to it.
-    pub tomorrow_window_end: Option<chrono::DateTime<chrono::Utc>>,
+    /// The today window's first covered instant (journey plan
+    /// `2026-11-25-sound-today-colour-journeys-schedule-colour-ux-plan.md`
+    /// D-1): set by the adapter per dispatch —
+    /// `days::day_first_instant(today)` over the held day facts; the
+    /// schedule quick verbs' start stamp (`NoTarget` without it, the
+    /// `day_window` backstop shape).
+    pub today_first_instant: Option<chrono::DateTime<chrono::Utc>>,
+    /// The next day window's first covered instant (the same plan's
+    /// D-1): set by the adapter per dispatch from
+    /// `days::next_day_window`'s opening instant — never `+24h`
+    /// arithmetic; `task.schedule-tomorrow`'s start stamp.
+    pub tomorrow_first_instant: Option<chrono::DateTime<chrono::Utc>>,
+    /// The next day window's last covered instant (the same plan's
+    /// D-2 — tomorrow reconciles to the covered-instant law, the raw
+    /// exclusive end retired): `days::day_last_instant(tomorrow)`;
+    /// `task.schedule-tomorrow`'s due stamp.
+    pub tomorrow_last_instant: Option<chrono::DateTime<chrono::Utc>>,
     /// Whether the focused task carries a scheduled day (UX-R8 D-3):
     /// `task.unschedule`'s route gate, synced by the adapter from the
     /// focused task (the `focused_task_done` shape).
@@ -2186,13 +2198,29 @@ impl ActionRouter {
             // the `Some(None)` clear twin. Inapplicable subjects are
             // withheld upstream (D-4); the NoTarget arm is the
             // stale-absorb backstop.
+            // The schedule pair-write (#1428, journey plan D-1/D-2,
+            // US-27/S1–S2): each quick verb commits BOTH fields in one
+            // sparse mask — `scheduled` = the target day's first
+            // covered instant (the `day_start_time`-aware window
+            // start), `duedate` = the target day's last covered
+            // instant (the N-4 shape). D-2 reconciles the old
+            // today/tomorrow asymmetry: tomorrow commits the covered
+            // instant too, never the raw exclusive end (excluded by
+            // the day's own `[start, end)` membership, #893's law).
+            // The due-only twin (`TaskDueToday`) is unchanged.
             ActionId::TaskScheduleToday => {
-                match (ctx.focused_task, ctx.day_window, ctx.today_last_instant) {
-                    (Some(id), Some(_), Some(stamp)) => {
+                match (
+                    ctx.focused_task,
+                    ctx.day_window,
+                    ctx.today_first_instant,
+                    ctx.today_last_instant,
+                ) {
+                    (Some(id), Some(_), Some(first), Some(last)) => {
                         DispatchOutcome::Command(StateCommand::UpdateTask {
                             id,
                             changes: taskboard_domain::TaskChanges {
-                                scheduled: Some(Some(stamp)),
+                                scheduled: Some(Some(first)),
+                                duedate: Some(Some(last)),
                                 ..taskboard_domain::TaskChanges::default()
                             },
                         })
@@ -2200,14 +2228,21 @@ impl ActionRouter {
                     _ => DispatchOutcome::NoTarget,
                 }
             }
-            ActionId::TaskScheduleTomorrow => match (ctx.focused_task, ctx.tomorrow_window_end) {
-                (Some(id), Some(end)) => DispatchOutcome::Command(StateCommand::UpdateTask {
-                    id,
-                    changes: taskboard_domain::TaskChanges {
-                        scheduled: Some(Some(end)),
-                        ..taskboard_domain::TaskChanges::default()
-                    },
-                }),
+            ActionId::TaskScheduleTomorrow => match (
+                ctx.focused_task,
+                ctx.tomorrow_first_instant,
+                ctx.tomorrow_last_instant,
+            ) {
+                (Some(id), Some(first), Some(last)) => {
+                    DispatchOutcome::Command(StateCommand::UpdateTask {
+                        id,
+                        changes: taskboard_domain::TaskChanges {
+                            scheduled: Some(Some(first)),
+                            duedate: Some(Some(last)),
+                            ..taskboard_domain::TaskChanges::default()
+                        },
+                    })
+                }
                 _ => DispatchOutcome::NoTarget,
             },
             ActionId::TaskUnschedule => match (ctx.focused_task, ctx.focused_task_scheduled) {
@@ -2527,7 +2562,9 @@ mod tests {
             recur_draft_rule: None,
             day_window: None,
             today_last_instant: None,
-            tomorrow_window_end: None,
+            today_first_instant: None,
+            tomorrow_first_instant: None,
+            tomorrow_last_instant: None,
             focused_task_done: false,
             focused_task_tracker: false,
             focused_task_scheduled: false,
@@ -2544,38 +2581,45 @@ mod tests {
         }
     }
 
-    /// UX-R8 chunk-5 D-3 (US-1/S1–S3) — the scheduled field's quick
-    /// verbs route the exact sparse `scheduled` mask: today's last
-    /// covered instant (#893), tomorrow's window end, the `Some(None)`
-    /// clear twin; every other mask stays `None`. The backstops: no
-    /// focus → `NoTarget` for all three; unschedule on an unscheduled
-    /// subject → `NoTarget` (the stale-absorb posture).
+    /// UX-R8 chunk-5 D-3 (US-1/S1–S3) as amended by the schedule
+    /// pair-write (#1428, journey plan D-1/D-2) — the scheduled
+    /// field's quick verbs route the exact sparse PAIR mask:
+    /// `scheduled` = the day's first covered instant, `duedate` = its
+    /// last covered instant (today #893, tomorrow the reconciled
+    /// covered-instant law — the raw exclusive end is retired), plus
+    /// the `Some(None)` clear twin; every other mask stays `None`. The
+    /// backstops: no focus → `NoTarget` for all three; unschedule on
+    /// an unscheduled subject → `NoTarget` (the stale-absorb posture).
     #[test]
     fn the_schedule_trio_routes_the_exact_sparse_masks() {
         let end = chrono::Utc::now();
         let mut scheduled = ctx(true);
         scheduled.day_window = Some((end, end));
         scheduled.today_last_instant = Some(end);
-        scheduled.tomorrow_window_end = Some(end);
+        scheduled.today_first_instant = Some(end);
+        scheduled.tomorrow_first_instant = Some(end);
+        scheduled.tomorrow_last_instant = Some(end);
         scheduled.focused_task_scheduled = true;
-        let expected = |end: chrono::DateTime<chrono::Utc>| {
+        let expected = |first: chrono::DateTime<chrono::Utc>,
+                        last: chrono::DateTime<chrono::Utc>| {
             DispatchOutcome::Command(StateCommand::UpdateTask {
                 id: scheduled.focused_task.expect("focused"),
                 changes: taskboard_domain::TaskChanges {
-                    scheduled: Some(Some(end)),
+                    scheduled: Some(Some(first)),
+                    duedate: Some(Some(last)),
                     ..taskboard_domain::TaskChanges::default()
                 },
             })
         };
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskScheduleToday, &scheduled),
-            expected(end),
-            "today commits the day's last covered instant"
+            expected(end, end),
+            "today commits the day's first + last covered instants"
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskScheduleTomorrow, &scheduled),
-            expected(end),
-            "tomorrow commits the next window's end"
+            expected(end, end),
+            "tomorrow commits the next day's first + last covered instants"
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskUnschedule, &scheduled),
@@ -2620,6 +2664,15 @@ mod tests {
                 "{id} without the last-covered-instant fact is NoTarget"
             );
         }
+        // The tomorrow pair's backstop (the same plan's D-1/D-2): both
+        // tomorrow facts must be present, else the typed refusal.
+        let mut tomorrowless = ctx(true);
+        tomorrowless.day_window = Some((end, end));
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskScheduleTomorrow, &tomorrowless),
+            DispatchOutcome::NoTarget,
+            "tomorrow without its pair facts is NoTarget"
+        );
     }
 
     /// DR-3/3 — the timer verbs route exact typed commands from their
