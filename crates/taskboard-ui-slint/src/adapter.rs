@@ -4402,14 +4402,52 @@ impl Adapter {
                     window.invoke_refocus_view();
                     return Vec::new();
                 }
+                // The rating drafts mint at the trust boundary
+                // (#1431, the T-15 grammar): blank is the legal
+                // unrated; an invalid draft refuses the record —
+                // nothing dispatches, the walk stays on the Prompts
+                // stage with the flavours rendered.
+                let walk_drafts = self
+                    .view_state
+                    .walk()
+                    .map_or((String::new(), String::new()), |walk| {
+                        (walk.mood_text.clone(), walk.energy_text.clone())
+                    });
+                let rating_draft = |draft: &str| -> Option<Option<u8>> {
+                    if draft.is_empty() {
+                        Some(None)
+                    } else {
+                        draft
+                            .parse::<u8>()
+                            .ok()
+                            .and_then(|n| taskboard_domain::reflection::Rating::try_new(n).ok())
+                            .map(|rating| Some(rating.get()))
+                    }
+                };
+                let mood = rating_draft(&walk_drafts.0);
+                let energy = rating_draft(&walk_drafts.1);
+                let (Some(mood), Some(energy)) = (mood, energy) else {
+                    let flavour = |parsed: Option<Option<u8>>, draft: &str| {
+                        if draft.is_empty() {
+                            crate::FieldValidity::Neutral
+                        } else if parsed.is_some() {
+                            crate::FieldValidity::Valid
+                        } else {
+                            crate::FieldValidity::Invalid
+                        }
+                    };
+                    window.set_walk_mood_validity(flavour(mood, &walk_drafts.0));
+                    window.set_walk_energy_validity(flavour(energy, &walk_drafts.1));
+                    return Vec::new();
+                };
                 let mut outcomes = vec![FlowOutcome::Command(
                     taskboard_domain::StateCommand::RecordReflection {
                         cadence,
                         day: window_bounds.day(),
                         window: window_bounds.bounds(),
                         text,
-                        mood: None,
-                        energy: None,
+                        mood,
+                        energy,
                         flags: std::collections::BTreeSet::new(),
                     },
                 )];
@@ -10546,6 +10584,20 @@ impl Adapter {
         window.set_reflection_editor_mood_validity(rating_validity(&self.reflection_mood_draft));
         window
             .set_reflection_editor_energy_validity(rating_validity(&self.reflection_energy_draft));
+        // The walk's rating drafts (#1431): the same grammar mirrored
+        // onto the walk overlay's Prompts fields — the seeds ride the
+        // drafts (blank is the neutral unrated), the flavours use the
+        // `Rating` mint.
+        let walk_rating_drafts = self
+            .view_state
+            .walk()
+            .map_or((String::new(), String::new()), |walk| {
+                (walk.mood_text.clone(), walk.energy_text.clone())
+            });
+        window.set_walk_mood_seed(SharedString::from(walk_rating_drafts.0.clone()));
+        window.set_walk_energy_seed(SharedString::from(walk_rating_drafts.1.clone()));
+        window.set_walk_mood_validity(rating_validity(&walk_rating_drafts.0));
+        window.set_walk_energy_validity(rating_validity(&walk_rating_drafts.1));
         window.set_reflection_remove_armed(self.reflection_armed.is_some());
         let chips: Vec<crate::ReflectionFlagChip> = crate::presentation::HEALTH_FLAGS
             .iter()
@@ -18827,6 +18879,18 @@ fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
         walk.answers.resize(index + 1, String::new());
     }
     walk.answers[index] = text.to_string();
+    });
+    install_seam!(window: window.on_walk_rating_edited, adapter: adapter; [bare_mut]
+    bind mut (a), args (kind, text), {        let Some(walk) = a.view_state.walk_mut() else {
+        return;
+    };
+    // Kind 0 = mood, 1 = energy (the overlay's field order); the
+    // drafts mirror verbatim — the parse is Record's job (the T-15
+    // boundary law: store the text, mint at the trust boundary).
+    match kind {
+        0 => walk.mood_text = text.to_string(),
+        _ => walk.energy_text = text.to_string(),
+    }
     });
     install_seam!(window: window.on_walk_record_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewRecord);

@@ -193,6 +193,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "walk_keep_clicked",
     "walk_leave_clicked",
     "walk_pick_clicked",
+    "walk_rating_edited",
     "walk_record_clicked",
     "walk_abort_accept_clicked",
     "walk_abort_arm_requested",

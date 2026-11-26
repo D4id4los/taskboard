@@ -17913,6 +17913,12 @@ fn recording_routes_one_entry_and_clears_the_card() {
             .handle
             .window()
             .invoke_walk_answer_edited(3, "the planner leg".into());
+        // A mood rating rides its draft seam (#1431): the recorded
+        // entry carries it; the untouched energy stays unrated.
+        harness
+            .handle
+            .window()
+            .invoke_walk_rating_edited(0, "4".into());
         harness.handle.dispatch_action(ActionId::ReviewRecord);
         harness.driver.advance_time(0);
         let drained = harness.engine.drain();
@@ -17935,9 +17941,12 @@ fn recording_routes_one_entry_and_clears_the_card() {
                 assert_eq!(*window, expected_window.bounds());
                 assert!(text.contains("shipped the walk"));
                 assert!(text.contains("the planner leg"));
-                assert_eq!(*mood, None);
+                // The drafted rating persists into the payload (#1431);
+                // the unrated energy stays `None` (ratings are
+                // independent).
+                assert_eq!(*mood, Some(4));
                 assert_eq!(*energy, None);
-                assert!(flags.is_empty(), "attributes stay the CLI's (D-W9)");
+                assert!(flags.is_empty(), "flags stay the CLI's");
             }
             other => panic!("one record, got {other:?}"),
         }
@@ -17953,6 +17962,42 @@ fn recording_routes_one_entry_and_clears_the_card() {
             !harness.handle.window().get_review_card_visible(),
             "the recorded window no longer surfaces"
         );
+    });
+}
+
+/// #1431's optionality half (split from J14 by behavior): an unrated
+/// walk still records `mood: None, energy: None` — the ratings are
+/// optional; the text-only record stays legal.
+#[test]
+fn recording_an_unrated_walk_keeps_the_ratings_none() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        open_walk(&mut *harness);
+        for _ in 0..3 {
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+        }
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        assert_eq!(walk_stage(&*harness), 2);
+        harness
+            .handle
+            .window()
+            .invoke_walk_answer_edited(0, "text only".into());
+        harness.handle.dispatch_action(ActionId::ReviewRecord);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::RecordReflection { mood, energy, .. }] => {
+                // Desired semantics: the ratings are optional inputs —
+                // left blank they record as unrated, never as invented
+                // values.
+                assert_eq!(*mood, None);
+                assert_eq!(*energy, None);
+            }
+            other => panic!("one unrated record, got {other:?}"),
+        }
     });
 }
 

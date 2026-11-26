@@ -19,7 +19,7 @@
 import { Theme, Typography, RoleText } from "../theme.slint";
 import { TextButton, TextButtonSize, TextButtonEmphasis } from "../widgets/text-button.slint";
 import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
-import { TextField } from "../widgets/text-field.slint";
+import { TextField, FieldValidity } from "../widgets/text-field.slint";
 import { ListView } from "../widgets/listview.slint";
 import { DialogButtonModel } from "../widgets/modal-dialog-host.slint";
 import { PlanNextDayView, PlanModel } from "plan-next-day-view.slint";
@@ -121,6 +121,13 @@ export component ReviewWalkOverlay inherits Rectangle {
     in property <ReviewWalkModel> model;
     // The prompts' one-shot answer seeds (the mount-transition push).
     in property <[string]> answer-seeds;
+    // The prompts' rating drafts (#1431): the T-15 editor's grammar —
+    // the seeds mirror adapter-side drafts, the validity flavours use
+    // the `Rating` mint's 1..=5 (blank is the neutral unrated).
+    in property <string> mood-seed;
+    in property <string> energy-seed;
+    in property <FieldValidity> mood-validity: FieldValidity.neutral;
+    in property <FieldValidity> energy-validity: FieldValidity.neutral;
     // The embedded planner's mirrors (J4 US-3: the same plan model
     // and text buffers the standalone surface reads; D-2).
     in property <PlanModel> plan;
@@ -148,6 +155,9 @@ export component ReviewWalkOverlay inherits Rectangle {
     callback date-edited(string);
     callback date-commit-clicked();
     callback answer-edited(int, string);
+    // The rating drafts' seam (#1431): kind 0 = mood, 1 = energy —
+    // the T-15 editor's text grammar verbatim.
+    callback walk-rating-edited(int, string);
     callback record-clicked();
     callback finish-clicked();
 
@@ -229,6 +239,31 @@ export component ReviewWalkOverlay inherits Rectangle {
                         edited(text) => root.answer-edited(index, text);
                     }
                 }
+            }
+        }
+
+        // The prompts' rating row (#1431): the T-15 inline editor's
+        // two-field grammar verbatim — the ratings are optional
+        // inputs, blank is the neutral unrated, an invalid draft
+        // refuses the record (nothing dispatches).
+        if (root.model.stage-kind == 2): HorizontalLayout {
+            vertical-stretch: 0;
+            spacing: Theme.space-2;
+            TextField {
+                horizontal-stretch: 1;
+                placeholder: "1..=5 · empty = clear";
+                label: "Mood (1-5, empty clears)";
+                text: root.mood-seed;
+                validity: root.mood-validity;
+                edited(text) => { root.walk-rating-edited(0, text); }
+            }
+            TextField {
+                horizontal-stretch: 1;
+                placeholder: "1..=5 · empty = clear";
+                label: "Energy (1-5, empty clears)";
+                text: root.energy-seed;
+                validity: root.energy-validity;
+                edited(text) => { root.walk-rating-edited(1, text); }
             }
         }
 

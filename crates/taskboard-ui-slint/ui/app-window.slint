@@ -523,6 +523,13 @@ export component AppWindow inherits Window {
     in-out property <ReviewWalkModel> walk-model;
     // The prompts' one-shot answer seeds (the mount-transition push).
     in-out property <[string]> walk-answer-seeds: [];
+    // The prompts' rating drafts (#1431): the seeds and validity
+    // flavours mirror the adapter-side drafts (the T-15 grammar).
+    in-out property <string> walk-mood-seed: "";
+    in-out property <string> walk-energy-seed: "";
+    in-out property <FieldValidity> walk-mood-validity: FieldValidity.neutral;
+    in-out property <FieldValidity> walk-energy-validity: FieldValidity.neutral;
+    pure callback walk-rating-edited(int, string);
     // The walk's seams: scrim, the row verbs (cursor row only), the
     // armed picker and date field, the prompt mirrors, and the commit
     // exits.
@@ -2085,6 +2092,10 @@ export component AppWindow inherits Window {
             ReviewWalkOverlay {
                 model: root.walk-model;
                 answer-seeds: root.walk-answer-seeds;
+                mood-seed: root.walk-mood-seed;
+                energy-seed: root.walk-energy-seed;
+                mood-validity: root.walk-mood-validity;
+                energy-validity: root.walk-energy-validity;
                 plan: root.plan-model;
                 plan-time-text: root.plan-time-text;
                 plan-effort-text: root.plan-effort-text;
@@ -2110,6 +2121,7 @@ export component AppWindow inherits Window {
                 date-edited(text) => root.walk-date-edited(text);
                 date-commit-clicked() => root.walk-date-commit-clicked();
                 answer-edited(index, text) => root.walk-answer-edited(index, text);
+                walk-rating-edited(kind, text) => root.walk-rating-edited(kind, text);
                 record-clicked() => root.walk-record-clicked();
                 finish-clicked() => root.walk-finish-clicked();
             }
