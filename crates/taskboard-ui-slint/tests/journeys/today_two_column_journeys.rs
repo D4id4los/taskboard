@@ -41,13 +41,24 @@ const NARROW: (u32, u32) = (1000, 900);
 /// kind present, several sections non-empty, two live boards (the A1
 /// aggregation's "see = sum" posture).
 fn grid_fixture() -> taskboard_domain::AppState {
-    let (two, mut state, _walked) = fixture::today_overdue_state();
     let now = chrono::Utc::now();
+    let (two, mut state, _walked) = fixture::today_overdue_state_at(now);
+    // The Done section's membership is the today day-window
+    // (`days::today_sections`: `done ∈ [start, end)`), not "recently"
+    // — so the completion is anchored to the window's interior through
+    // the harness calendar instead of a `now − 30 m` relative stamp.
+    // A relative stamp falls into yesterday for any run within 30
+    // minutes of the window start (the deterministic once-a-day
+    // precondition failure observed on this suite); the anchored stamp
+    // renders the same three-plus task rows at every wall-clock instant.
+    let calendar = fixture::harness_calendar();
+    let (day_start, _day_end) =
+        taskboard_domain::days::day_window(now, calendar.day_start_time, calendar.offset);
     let _ = fixture::add_completed_task(
         &mut state,
         two.stack_c,
         "finished",
-        now - chrono::TimeDelta::minutes(30),
+        day_start + chrono::TimeDelta::minutes(1),
         None,
         None,
     );
@@ -218,7 +229,7 @@ fn us17_s3_aggregated_row_sets_unchanged_in_both_columns() {
         let wide_habits = habit_count(mounted);
         assert!(
             wide_rows.len() >= 3 && wide_habits >= 1,
-            "precondition: the fixture populates several sections and a habit"
+            "precondition: the fixture populates several sections and a habit ({wide_rows:?} / {wide_habits})"
         );
 
         mounted.driver.set_window_size(NARROW.0, NARROW.1);
