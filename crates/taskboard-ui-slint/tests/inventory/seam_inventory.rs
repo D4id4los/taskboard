@@ -25,7 +25,16 @@ const ADAPTER_MODULES: &[&str] = &[
     include_str!("../../src/adapter/seams/recur.rs"),
     include_str!("../../src/adapter/seams/stack_width.rs"),
     include_str!("../../src/adapter/seams/status_panel.rs"),
+    include_str!("../../src/adapter/seams/today.rs"),
     include_str!("../../src/adapter/seams/toolbar.rs"),
+    include_str!("../../src/adapter/seams/banner.rs"),
+    include_str!("../../src/adapter/seams/context.rs"),
+    include_str!("../../src/adapter/seams/drag.rs"),
+    include_str!("../../src/adapter/seams/due.rs"),
+    include_str!("../../src/adapter/seams/habit.rs"),
+    include_str!("../../src/adapter/seams/navigation.rs"),
+    include_str!("../../src/adapter/seams/shell.rs"),
+    include_str!("../../src/adapter/seams/undo.rs"),
     include_str!("../../src/adapter/seams/view.rs"),
 ];
 
