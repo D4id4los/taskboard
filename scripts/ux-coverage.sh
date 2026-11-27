@@ -53,7 +53,10 @@
 #   scripts/ux-coverage.sh --self-test
 #
 # --root <dir>: repository root for evidence greps (default: the git
-#   toplevel of the script's location). --self-test points --root at
+#   toplevel of the caller's working directory — from a worktree that
+#   is the worktree, never the script's checkout; outside any git
+#   repo the script's repo toplevel is the fallback). --self-test
+#   points --root at
 #   scripts/fixtures/ux-coverage-fixture/tree so PASS rows resolve
 #   against the miniature evidence tree.
 set -euo pipefail
@@ -73,7 +76,9 @@ usage: scripts/ux-coverage.sh <plan.md> [--gate] [--root <dir>]
                  INVENTORY-MISS (a plain run prints the same table but
                  exits 0 — the report is informational)
   --root <dir>   repository root for evidence greps (default: the git
-                 toplevel of the script's location)
+                 toplevel of the caller's working directory — from a
+                 worktree that is the worktree; outside any git repo
+                 the script's repo toplevel is the fallback)
   --self-test    exercise the bundled fixture's PASS, BOUND, AMBIGUOUS,
                  INVENTORY-MISS, MISSING and dead-bound-test paths, a
                  malformed-table variant, the #965 boundary-matching
@@ -918,6 +923,35 @@ self_test() {
     rc=1
   fi
 
+  # 28. #1531 worktree-cwd default root: with no --root the evidence
+  #     root is the CALLER's git toplevel, never the script's. repo28
+  #     is the script's repo (a copied-script layout whose tests/
+  #     carries nothing the plan can bind to — pre-#1531 the gate
+  #     scanned it and every bound row read MISSING); wt28 is a
+  #     second git repo (the worktree stand-in — a different
+  #     checkout's toplevel under the cwd) whose tree carries the
+  #     honest evidence. Invoked from wt28 with no --root, the gate
+  #     must scan wt28 and bind every row (exit 0). Assertions
+  #     structural only: exit code + BOUND/MISSING counts.
+  local repo28="$tmp/repo28" wt28="$tmp/wt28"
+  mkdir -p "$repo28/scripts/fixtures" "$repo28/tests"
+  cp "${BASH_SOURCE[0]}" "$repo28/scripts/"
+  cp -r "$fx" "$repo28/scripts/fixtures/"
+  git init -q "$repo28"
+  cp -r "$fx/tree" "$wt28"
+  git init -q "$wt28"
+  (cd "$wt28" && bash "$repo28/scripts/ux-coverage.sh" "$fx/plan-targetpin.md" --gate) \
+    >"$tmp/wtroot.out" 2>&1 && code=0 || code=$?
+  b=$(grep -c ' BOUND (' "$tmp/wtroot.out" || true)
+  m=$(grep -c 'MISSING$' "$tmp/wtroot.out" || true)
+  if [[ $code -eq 0 && $b -eq 2 && $m -eq 0 ]]; then
+    echo "self-test 28 (#1531 the no-root default scans the caller's checkout): PASS"
+  else
+    echo "self-test 28 (#1531 the no-root default scans the caller's checkout): FAIL (exit $code, $b BOUND, $m MISSING)"
+    sed 's/^/    /' "$tmp/wtroot.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -954,7 +988,22 @@ main() {
   fi
 
   if [[ -z $root ]]; then
-    root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
+    # (#1531) the evidence root is the CALLER's checkout, not the
+    # script's: a worktree agent invoking another checkout's copy of
+    # this script by absolute path must scan its own worktree, or the
+    # gate validates against stale sources and can hand a false
+    # green. Outside any git repo (ad-hoc / --self-test-style
+    # invocations) the script's repo toplevel stays the fallback —
+    # the historical behaviour. The #1073/#1186 canonicalization
+    # below operates on whatever this produced, untouched.
+    local script_toplevel caller_toplevel
+    script_toplevel="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
+    caller_toplevel="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
+      || caller_toplevel=$script_toplevel
+    root=$caller_toplevel
+    if [[ $root != "$script_toplevel" ]]; then
+      echo "ux-coverage: no --root; scanning the caller's checkout ($root), not the script's repo ($script_toplevel)" >&2
+    fi
   fi
 
   local records=""

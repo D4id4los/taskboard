@@ -168,6 +168,10 @@ scripts/ux-coverage.sh <ux-plan.md> [--gate] [--root <dir>]
 scripts/ux-coverage.sh --self-test
 #+end_example
 
+The default evidence root is the invoking checkout's git toplevel
+(the caller's =$PWD=, #1531 — from a worktree that is the worktree,
+never the script's own repo); pass =--root= to pin it.
+
 Checks:
 
 - For each **wiring-inventory row**: the callback name must appear in
