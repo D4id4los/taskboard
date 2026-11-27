@@ -629,6 +629,23 @@ pub enum StateCommand {
         /// The habit whose current window's mark clears.
         habit: HabitId,
     },
+    /// Tombstone one habit event by id (the #1519 exact inverse's
+    /// synthesis verb — the `RestoreTask` catalogue precedent: planned
+    /// by the undo synthesis, never surfaced as a UI/CLI verb). An
+    /// absent id is the typed `UnknownHabitEvent` rejection. The
+    /// receipt is bare `Applied`.
+    TombstoneHabitEvent {
+        /// The event to tombstone.
+        event: crate::habit_event::HabitEventId,
+    },
+    /// Restore one habit event row verbatim — including its tombstone
+    /// state (the #900 verbatim-resurrect precedent at event grain;
+    /// the adjust pre-image's restore payload). Catalogue verb only
+    /// (never a UI/CLI surface): the receipt is bare `Applied`.
+    RestoreHabitEvent {
+        /// The verbatim row to restore.
+        event: crate::habit_event::HabitEvent,
+    },
     /// Pause a habit through an inclusive local date (the
     /// `PauseSeries` twin, issue #958): covered windows are transparent
     /// in the streak walk (no miss, no credit) and the tracker nudge

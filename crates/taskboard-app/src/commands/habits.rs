@@ -321,7 +321,7 @@ pub async fn skip_on(app: &crate::App, selector: &str) -> Result<HabitSkipReceip
         .execute(StateCommand::SkipHabit { habit: id })
         .await?
     {
-        CommandOutcome::HabitSkipped { habit, window } => {
+        CommandOutcome::HabitSkipped { habit, window, .. } => {
             let state = app.engine.shared_state().load_full();
             let row = state.habits.habits[&habit].clone();
             Ok(HabitSkipReceipt {
@@ -596,6 +596,7 @@ pub async fn log_on(app: &crate::App, selector: &str) -> Result<HabitLogReceipt,
             habit,
             window,
             count,
+            ..
         } => {
             let state = app.engine.shared_state().load_full();
             let key = HabitLogKey { habit, window };
@@ -644,6 +645,7 @@ pub async fn adjust_on(
             habit,
             window,
             count,
+            ..
         } => {
             let state = app.engine.shared_state().load_full();
             let key = HabitLogKey { habit, window };

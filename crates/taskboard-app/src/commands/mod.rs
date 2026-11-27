@@ -839,6 +839,10 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::TrackerTaskNotDoneable(_) => "tracker-not-doneable",
         D::NotRecurring(_) => "not-recurring",
         D::UnknownHabit(_) | D::HabitDeleted(_) => "unknown-habit",
+        // The #1519 synthesis verbs' typed refusal (compile-forced
+        // totality arm; the verbs themselves are engine-catalogue
+        // only).
+        D::UnknownHabitEvent(_) => "unknown-habit-event",
         D::InvalidHabitWindow { .. } => "invalid-habit-window",
         D::InvalidHabitPause { .. } => "invalid-habit-pause",
 
@@ -917,6 +921,7 @@ fn undo_field_kind(field: taskboard_domain::UndoField) -> &'static str {
         F::HabitTarget => "habit-target",
         F::HabitAnchorTime => "habit-anchor-time",
         F::HabitLogCount => "habit-log-count",
+        F::HabitEvents => "habit-events",
     }
 }
 
@@ -930,6 +935,14 @@ fn journal_entity_id(entity: taskboard_domain::JournalEntity) -> String {
         E::Habit(id) => id.as_uuid().to_string(),
         E::TimeEntry(id) => id.as_uuid().to_string(),
         E::HabitLog(key) => key.wire_form(),
+        E::HabitEventWindow(habit, window) => {
+            format!(
+                "{}|{}",
+                habit.as_uuid(),
+                window.as_date().format("%Y-%m-%d")
+            )
+        }
+        E::HabitEvent(id) => id.as_uuid().to_string(),
         E::ReminderRule(id) => id.as_uuid().to_string(),
     }
 }
