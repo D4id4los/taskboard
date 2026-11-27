@@ -157,6 +157,8 @@ username = "<your-nextcloud-username>"
 [sync]
 backend = "nextcloud"   # optional; absent = auto: nextcloud iff server_url is set
 poll_interval_secs = 30
+http_connect_timeout_secs = 10  # HTTP dial bound, seconds (1–3600; env TASKBOARD_SYNC__HTTP_CONNECT_TIMEOUT_SECS)
+http_read_timeout_secs = 30     # HTTP idle-read bound, seconds (1–3600; env TASKBOARD_SYNC__HTTP_READ_TIMEOUT_SECS)
 
 [ui]
 scale = 1.0             # theme token multiplier; 0.5–3.0 enforced at load
