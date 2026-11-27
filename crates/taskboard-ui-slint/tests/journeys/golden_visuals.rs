@@ -1051,6 +1051,330 @@ fn the_focus_overlay_golden_holds() {
     );
 }
 
+// ---------------------------------------------------------------------
+// The light golden subset (#1437 D7): a named representative subset —
+// one case per breakpoint class (0.5/600 compact, 1.0/1000 regular,
+// 1.0/1600 expansive) and one per major surface (board, today, task
+// detail, settings, review, focus overlay) — committed as light
+// goldens with the same frozen-render-clock law as the dark corpus.
+// The rest of the corpus stays dark-only BY DECISION (the manifest
+// notes say so): the palette is a global push, so once the subset
+// proves the light push renders everywhere, per-view light goldens
+// add coverage of the same push, not new behaviour. The push itself is
+// journey-pinned (a_theme_pick_routes_one_set_theme_...).
+// ---------------------------------------------------------------------
+
+/// The light capture's settings (design D7): the frozen render clock
+/// (§6.1 — same law as every dark capture) plus the light theme
+/// riding `UiSettings.theme` (the mount-time push).
+fn light_settings(scale: f64) -> UiSettings {
+    UiSettings {
+        theme: taskboard_ui_slint::palette::ThemeName::LIGHT,
+        ..scale_settings(scale)
+    }
+}
+
+/// The light subset's path convention: `<surface>-light-<scale>-
+/// <width>.png` — the `light` infix is the review surface for the
+/// dark-only asymmetry (the manifest entry names carry it too).
+fn light_path(surface: &str, scale: f64, width: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "{}/tests/goldens/{surface}-light-{scale:.1}-{width}.png",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+/// The subset's shared frame-of-work: regen-or-compare around
+/// `capture_golden` with the light settings (the argument bundle is
+/// the capture site's own contract — the `capture_golden` twin).
+#[allow(clippy::too_many_arguments)]
+fn capture_light(
+    driver: &mut SlintDriver,
+    state: Arc<ArcSwap<taskboard_domain::AppState>>,
+    surface: &str,
+    scale: f64,
+    width: u32,
+    fixture_note: &str,
+    state_note: &str,
+    frame: impl FnOnce(&mut SlintDriver, &taskboard_ui_slint::UiHandle),
+    regen: bool,
+) {
+    capture_golden(
+        driver,
+        state,
+        light_settings(scale),
+        frame,
+        &GoldenMeta {
+            fixture: fixture_note,
+            state: state_note,
+            scale,
+        },
+        width,
+        &light_path(surface, scale, width),
+        regen,
+    );
+}
+
+#[test]
+fn the_board_light_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(
+                fixture::golden_state_enriched_at(fixture::PINNED_NOW).1,
+            ));
+            capture_light(
+                driver,
+                state,
+                "board",
+                1.0,
+                1000,
+                "golden_state_enriched_at(PINNED_NOW)",
+                "board view; the light palette (#1437 D7 subset; dark twin: board-1.0-1000)",
+                |_driver, handle| {
+                    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+                },
+                regen,
+            );
+        },
+    );
+    assert_regen_marker();
+}
+
+/// The compact breakpoint's light cell (the matrix's low corner).
+#[test]
+fn the_board_light_compact_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(
+                fixture::golden_state_enriched_at(fixture::PINNED_NOW).1,
+            ));
+            capture_light(
+                driver,
+                state,
+                "board",
+                0.5,
+                600,
+                "golden_state_enriched_at(PINNED_NOW)",
+                "board view at 0.5/600; the light palette (#1437 D7 subset; dark twin: board-0.5-600)",
+                |_driver, handle| {
+                    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+                },
+                regen,
+            );
+        },
+    );
+    assert_regen_marker();
+}
+
+#[test]
+fn the_today_light_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::today_overdue_enriched_at(
+                fixture::PINNED_NOW,
+            )));
+            capture_light(
+                driver,
+                state,
+                "today",
+                1.0,
+                1000,
+                "today_overdue_enriched_at(PINNED_NOW)",
+                "today view; overdue rows + tracked chip; the light palette (#1437 D7 subset; dark twin: today-1.0-1000)",
+                |_, _| {},
+                regen,
+            );
+        },
+    );
+    assert_regen_marker();
+}
+
+/// The expansive breakpoint's light cell (the two-column grid arm).
+#[test]
+fn the_today_two_column_light_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::today_overdue_enriched_at(
+                fixture::PINNED_NOW,
+            )));
+            capture_light(
+                driver,
+                state,
+                "today-two-column",
+                1.0,
+                1600,
+                "today_overdue_enriched_at(PINNED_NOW)",
+                "today view; the two-column grid arm at 1600; the light palette (#1437 D7 subset; dark twin: today-two-column-1.0-1600)",
+                |driver, handle| {
+                    driver.set_window_size(1600, HEIGHT);
+                    driver.advance_time(0);
+                    assert!(
+                        handle
+                            .window()
+                            .global::<taskboard_ui_slint::TodayLayoutFacts>()
+                            .get_grid_arm(),
+                        "typed precondition: the wide capture mounts the grid arm"
+                    );
+                },
+                regen,
+            );
+        },
+    );
+    assert_regen_marker();
+}
+
+/// The task detail's light cell (the walked-into detail, unfocused).
+#[test]
+fn the_task_view_light_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(
+                fixture::golden_state_enriched_at(fixture::PINNED_NOW).1,
+            ));
+            capture_light(
+                driver,
+                state,
+                "task-view",
+                1.0,
+                1000,
+                "golden_state_enriched_at(PINNED_NOW)",
+                "task detail; header/summary/description regions; the light palette (#1437 D7 subset)",
+                |_driver, handle| {
+                    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+                    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFirstItem);
+                    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::TaskEdit);
+                },
+                regen,
+            );
+        },
+    );
+    assert_regen_marker();
+}
+
+#[test]
+fn the_settings_light_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(
+                fixture::golden_state_enriched_at(fixture::PINNED_NOW).1,
+            ));
+            capture_light(
+                driver,
+                state,
+                "settings",
+                1.0,
+                1000,
+                "golden_state_enriched_at(PINNED_NOW)",
+                "settings view; the theme row + scale row; the light palette (#1437 D7 subset)",
+                |driver, handle| {
+                    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::AppSettings);
+                    driver.advance_time(0);
+                },
+                regen,
+            );
+        },
+    );
+    assert_regen_marker();
+}
+
+#[test]
+fn the_review_empty_light_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let (_fixture, mut state) = fixture::golden_state();
+            state.tracking.entries.clear();
+            state.reflection.entries.clear();
+            let state = Arc::new(ArcSwap::from_pointee(state));
+            capture_light(
+                driver,
+                state,
+                "review-empty",
+                1.0,
+                1000,
+                "golden_state; tracking + reflection entries cleared",
+                "review view; empty tier; the light palette (#1437 D7 subset; dark twin: review-empty-1.0-1000)",
+                |_, handle| enter_review(handle),
+                regen,
+            );
+        },
+    );
+    assert_regen_marker();
+}
+
+#[test]
+fn the_focus_overlay_light_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let mut golden = fixture::golden_state_enriched_at(fixture::PINNED_NOW).1;
+            golden.settings.focus_enabled = true;
+            golden.settings.focus = Some(
+                taskboard_domain::focus::FocusTiming::try_new(
+                    chrono::TimeDelta::minutes(25),
+                    chrono::TimeDelta::minutes(5),
+                    chrono::TimeDelta::minutes(15),
+                    4,
+                )
+                .expect("positive timings"),
+            );
+            let state = Arc::new(ArcSwap::from_pointee(golden));
+            capture_light(
+                driver,
+                state,
+                "focus-overlay",
+                1.0,
+                1000,
+                "golden_state_enriched_at + FocusTiming settings",
+                "concentration overlay; work caption + pool + quick note; the light palette (#1437 D7 subset; dark twin: focus-overlay-1.0-1000)",
+                |_driver, handle| {
+                    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::FocusModeToggle);
+                },
+                regen,
+            );
+        },
+    );
+    assert_regen_marker();
+}
+
 // -- r4 chunk 10: the entries-overlay golden -----------------------------
 
 /// The time-entries overlay's golden (r4 chunk 10, D35): the open
