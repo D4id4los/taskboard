@@ -588,6 +588,19 @@ pub(in crate::adapter) fn install_stack_seams(window: &AppWindow, adapter: &Rc<R
     bind mut (a, window), args (text), {        commit_text(&mut a, &window, &text);
 
     });
+    // The dead-zone click-out (#1543, UX plan R-1/R-4): the board's
+    // gated TouchArea layers route here and the one settle funnel
+    // (`settle_flow`) owns everything — commit-vs-discard is the
+    // pure `settle_by_rule`, and a flowless click is `settle_flow`'s
+    // own `Flow::None` early-return (the adapter owns the decision;
+    // the UI never branches on flow content). The `[try]` install
+    // absorbs the settle's teardown `focus-lost` echo exactly as at
+    // every other settle seam (task.rs's borrow discipline).
+    install_seam!(window: window.on_board_dead_zone_clicked, adapter: adapter; [try]
+    bind mut (a, window), args (), {        let state = a.state.load_full();
+    a.settle_flow(&window, &state);
+
+    });
 }
 
 /// A stack-detail card click: focus the row's task (selection state
