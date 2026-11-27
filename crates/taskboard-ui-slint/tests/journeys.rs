@@ -16072,6 +16072,69 @@ fn env_locked_focus_rows_render_locked_and_refuse_the_seam() {
     );
 }
 
+/// US-6/S1 (#1512, plan D2): under a `ui.theme` env override the
+/// Theme row renders its env-locked posture — the pushed property is
+/// the control's disabled binding and the annotation's visibility
+/// binding (the focus-enabled-env-locked grammar), so the widget path
+/// is structurally unreachable. The seam-level typed refusal stays
+/// #1529's (no `Field::Theme` on this branch — the recorded
+/// diff-shape rule), so the inertness asserted here is the widget
+/// grammar's, the same layer the sibling rows render from.
+#[test]
+fn us6_s1_an_env_locked_theme_row_renders_the_locked_posture() {
+    let (_fixture, state) = fixture::golden_state();
+    let mut snapshot = general_snapshot();
+    snapshot.env_overridden = BTreeSet::from(["ui.theme".to_owned()]);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, snapshot);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            assert!(
+                model().get_theme_env_locked(),
+                "the ui.theme override pushes the locked posture"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the locked posture opens with nothing routed"
+            );
+        },
+    );
+}
+
+/// T4 (#1512, plan D2, invariant 6): the push truth table — without
+/// the `ui.theme` key in `env_overridden` the Theme row's locked
+/// posture stays false, so the row renders enabled and behaves
+/// exactly as before the property existed.
+#[test]
+fn the_theme_rows_env_lock_push_follows_the_snapshot_truth_table() {
+    let (_fixture, state) = fixture::golden_state();
+    let snapshot = general_snapshot();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, snapshot);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+            assert!(
+                !window
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_theme_env_locked(),
+                "no ui.theme override, no lock"
+            );
+        },
+    );
+}
+
 /// T-16 (#799) — the env-locked absorb's second family: the Files
 /// toggle's pick refuses typed (the `EnvLocked` detail class renders)
 /// and never routes; a knob pick on a locked choice row refuses the
