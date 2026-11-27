@@ -889,6 +889,7 @@ fn not_undoable_reason_kind(reason: taskboard_domain::NotUndoableReason) -> &'st
         R::ReminderSurface => "reminder-surface",
         R::TrackingSurface => "tracking-surface",
         R::HabitSurface => "habit-surface",
+        R::HabitPolicy => "habit-policy",
         R::ReflectionSurface => "reflection-surface",
     }
 }

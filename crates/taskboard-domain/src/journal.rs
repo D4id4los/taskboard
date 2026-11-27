@@ -118,17 +118,27 @@ pub enum NotUndoableReason {
     /// (`DeleteTimeEntry` journaled `PreImages` since #901 — restore
     /// machinery.)
     TrackingSurface,
-    /// Habit verbs whose inverse is lossy or unwatermarkable: an
-    /// absent-window `AdjustHabitLog` (a `count: 0` inverse would forge
-    /// an explicit count-0 row where the pre-state had none — D24), and
-    /// an `UpdateHabit` addressing the conversion seam (no clock slot
-    /// to watermark against; D25). (`DeleteHabit` journaled `PreImages`
-    /// since #901 — restore machinery.) Dated supersession (2026-11-21,
-    /// habit-family UX plan R-7): `LogHabit` is journal-invertible
-    /// since 2026-11-21 (habit-family UX plan R-7) — the fence no
-    /// longer covers it; the audited correction valve and the
-    /// conversion seam keep theirs.
+    /// **Retired, kept for serde stability** (the `RestoreClass` C8
+    /// precedent): a pre-#1520 persisted journal that recorded this
+    /// reason decodes unchanged and keeps refusing with its recorded
+    /// reason. No classifier may reference it anymore: the D24/D25
+    /// fences died with the event-log grammar (#1519 — the absent-
+    /// window adjust inverts exactly through the per-event snapshot,
+    /// and the conversion seam journals the ordinary habit pre-image;
+    /// windows are derived, there is no clock slot to watermark
+    /// against). `PauseHabit` and the convert composites moved to
+    /// [`NotUndoableReason::HabitPolicy`].
     HabitSurface,
+    /// Habit verbs whose inverse is deliberately unexposed by policy —
+    /// not by structural impossibility: `PauseHabit` (the
+    /// `HabitChanges` change mask has no `paused_until` leg, so the
+    /// standard `UpdateHabit` inverse cannot express the restore) and
+    /// the series↔habit convert composites (the rule+habit composite
+    /// restore stays unexpressible in the one-inverse-command
+    /// synthesis; issue #506). The D24/D25 *exactness* fences these
+    /// arms used to share are gone (#1519); what remains here is the
+    /// policy fence, honestly named.
+    HabitPolicy,
     /// Reflection verbs are not undoable in v1 (DR-7 D-J7), for three
     /// recorded reasons: (i) the inverse of a record is a tombstone —
     /// a *different stored fact* than row-absence, exactly the lossiness
@@ -173,13 +183,45 @@ pub enum PreImage {
         id: TimeEntryId,
         before: Option<Box<TimeEntry>>,
     },
-    /// One habit-log window row's pre-image. `before: None` = the window
-    /// had no row — unreachable in a journaled-undoable entry (an
-    /// absent-window `AdjustHabitLog` refuses at record time; D24) but
-    /// kept for the enum's `before` convention.
+    /// One habit-log window row's pre-image. **Retired writer** (the
+    /// #1519 event-log grammar): no production classifier captures
+    /// this shape anymore — the four habit write classes journal
+    /// [`PreImage::HabitEventWindow`] over the addressed window's
+    /// event membership. The variant stays decode-only so pre-#1520
+    /// journal entries decode and keep undoing through the unchanged
+    /// legacy inverse paths until the last legacy entry ages out of
+    /// the retention window (no migration; no weakening of the legacy
+    /// undo tests).
     HabitLogRow {
         key: crate::habit::HabitLogKey,
         before: Option<crate::habit::HabitLogEntry>,
+    },
+    /// The addressed window's **exact per-event tombstone-state
+    /// snapshot** (the #1519 event grammar, D-J1): the fold
+    /// membership the window's derivations attribute at pre-command
+    /// time, each member with its tombstone state (live members are
+    /// `None` — the fold only attributes live events). One variant
+    /// serves every habit write class: `LogHabit`/`SkipHabit`/
+    /// `UnskipHabit` (the pre-state for the minted-id extraction) and
+    /// `AdjustHabitLog` (the exact restore source). Snapshot, not
+    /// recomputation: the entry is the truth forever after.
+    HabitEventWindow {
+        habit: crate::ids::HabitId,
+        window: crate::habit::WindowStart,
+        /// Ascending-`HabitEventId` order (deterministic
+        /// serialization; the undo guard compares elementwise on
+        /// `(id, tombstone-state)` — set semantics).
+        events: Vec<(crate::habit_event::HabitEventId, Option<crate::habit_event::HabitEventTombstone>)>,
+    },
+    /// One habit event row's pre-image (the entity-upsert capture for
+    /// the undo-facing synthesis commands `TombstoneHabitEvent` /
+    /// `RestoreHabitEvent` — the #900 capture posture at event grain).
+    /// `before: None` is unreachable for a real write (the command
+    /// refuses an absent id) but kept for the enum's `before`
+    /// convention (the [`PreImage::HabitLogRow`] precedent).
+    HabitEventRow {
+        id: crate::habit_event::HabitEventId,
+        before: Option<crate::habit_event::HabitEvent>,
     },
     /// One reminder rule the batch hard-deleted (the #900 cascade
     /// capture — `DeleteTask`/`DeleteStack`/`DeleteBoard` cascades and
@@ -226,8 +268,17 @@ pub enum JournalEntity {
     Habit(HabitId),
     TimeEntry(TimeEntryId),
     /// One habit-log window row (appended last — `Ord` is declaration
-    /// order; a new kind never reshuffles existing keys).
+    /// order; a new kind never reshuffles existing keys). **Retired
+    /// writer** (the #1519 event grammar): decode-only for pre-#1520
+    /// entries — no production classifier stamps this key anymore.
     HabitLog(crate::habit::HabitLogKey),
+    /// One habit's addressed window (the #1519 event grammar): the
+    /// post-write snapshot key for the four habit write classes.
+    /// Appended last — `Ord` is declaration order; a new kind never
+    /// reshuffles existing keys.
+    HabitEventWindow(crate::ids::HabitId, crate::habit::WindowStart),
+    /// One habit event row (the synthesis commands' capture key).
+    HabitEvent(crate::habit_event::HabitEventId),
     /// One reminder rule (appended last — #900's capture key; no
     /// `EntityStamps` variant exists: rule deletes carry no clock
     /// stamps, D19).
@@ -251,7 +302,21 @@ pub enum EntityStamps {
     TimeEntry(DateTime<Utc>),
     /// The post-write log row (count AND clock compared as a whole —
     /// any later write to the window moves the clock and refuses).
+    /// **Retired writer** (the #1519 event grammar): decode-only for
+    /// pre-#1520 entries.
     HabitLog(crate::habit::HabitLogEntry),
+    /// The post-write window snapshot (the #1519 event grammar, D-J1):
+    /// the addressed window's per-event tombstone-state set as the
+    /// batch left it — the undo guard's oracle, compared elementwise
+    /// on `(id, deleted-state)`. The same ascending-id Vec shape as
+    /// [`PreImage::HabitEventWindow`].
+    HabitEventWindow(
+        Vec<(crate::habit_event::HabitEventId, Option<crate::habit_event::HabitEventTombstone>)>,
+    ),
+    /// The post-write event row, verbatim (the entity-upsert stamp for
+    /// the synthesis commands — the guard compares the current row as
+    /// a whole; any later write to the id moved a fact and refuses).
+    HabitEvent(crate::habit_event::HabitEvent),
 }
 
 /// One divergent clocked field, named by a refusal (the toast payload;
@@ -281,8 +346,15 @@ pub enum UndoField {
     /// The habit anchor chip's write clock (`HabitClocks.anchor_time`).
     HabitAnchorTime,
     /// The log window row's count (the row's whole `(count, clock)` shape
-    /// is compared — the field names the refused scope).
+    /// is compared — the field names the refused scope). **Retired
+    /// refuse-site** (the #1519 event grammar): decode-only — legacy
+    /// entries recorded before the event grammar can still refuse
+    /// through it.
     HabitLogCount,
+    /// The addressed window's event snapshot (the #1519 event grammar):
+    /// the window's whole `(id, tombstone-state)` set is compared
+    /// elementwise — the field names the refused scope.
+    HabitEvents,
 }
 
 /// The persisted undo line (R-U10): the entries in append order
@@ -545,6 +617,7 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::LogHabit { .. } => "Log habit".into(),
         StateCommand::SkipHabit { .. } => "Skip habit".into(),
         StateCommand::UnskipHabit { .. } => "Unskip habit".into(),
+
         StateCommand::PauseHabit { .. } => "Pause habit".into(),
         StateCommand::AdjustHabitLog { .. } => "Adjust habit log".into(),
         StateCommand::DeleteHabit { .. } => "Delete habit".into(),
