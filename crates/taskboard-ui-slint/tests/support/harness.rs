@@ -47,10 +47,13 @@ pub struct Harness {
     /// The request lane's receiver half (the tests drain it directly —
     /// the `FakeEngine` pattern, minus the engine). Drained by the
     /// width journeys (round-1 T-10–T-12); the request-lane plumbing
-    /// commit leaves it as harness surface.
+    /// commit leaves it as harness surface. `None` after
+    /// [`Harness::close_request_lane`] — the lane stays closed for
+    /// the remainder of that journey.
     #[allow(dead_code)]
-    pub requests_rx:
-        std::sync::Mutex<tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>>,
+    pub requests_rx: std::sync::Mutex<
+        Option<tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>>,
+    >,
 }
 
 impl Harness {
@@ -159,7 +162,7 @@ impl Harness {
             engine,
             guard: Guard::default(),
             files_tx: None,
-            requests_rx: std::sync::Mutex::new(requests_rx),
+            requests_rx: std::sync::Mutex::new(Some(requests_rx)),
         };
         harness.driver.bind(&harness.handle);
         // The desktop default is Today (chunk 10 D2); the board-level
@@ -183,7 +186,18 @@ impl Harness {
     #[allow(dead_code)]
     pub fn drain_requests(&self) -> Vec<taskboard_ui_slint::requests::UiRequest> {
         let mut rx = self.requests_rx.lock().expect("requests lock");
-        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        std::iter::from_fn(|| rx.as_mut().and_then(|rx| rx.try_recv().ok())).collect()
+    }
+
+    /// Closes the request lane for the remainder of the journey:
+    /// drops the stored receiver half, so every subsequent
+    /// `try_send` fails. The send-rejection law's driver (#1515) —
+    /// a pick after this routes nothing and must revert its
+    /// optimistic apply synchronously at the seam.
+    #[allow(dead_code)]
+    pub fn close_request_lane(&self) {
+        let mut rx = self.requests_rx.lock().expect("requests lock");
+        *rx = None;
     }
 
     /// The visible context chain (the adapter's `shell.chain()`

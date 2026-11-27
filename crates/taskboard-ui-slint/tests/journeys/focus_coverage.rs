@@ -243,6 +243,8 @@ fn try_next_request(mounted: &Mounted) -> Option<taskboard_ui_slint::requests::U
         .requests_rx
         .lock()
         .expect("requests lock")
+        .as_mut()
+        .expect("the request lane is open")
         .try_recv()
         .ok()
 }
