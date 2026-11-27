@@ -187,9 +187,12 @@ switch therefore lands on both lanes in one chunk:
   `UiRequest::SetTheme { choice, reply }` request patterned on
   `SetScale` at requests.rs:893).
 - **Ops/kiosk**: `[ui] theme` in `taskboard.toml` plus the
-  `TASKBOARD_UI_THEME` env override through the existing figment ladder
+  `TASKBOARD_UI__THEME` env override through the existing figment ladder
   (defaults → file → env). Kiosk machines are configured by file; that
-  is their "CLI".
+  is their "CLI". *(Recorded correction, #1511: this document
+  originally spelled the nested env keys with a single underscore —
+  the figment ladder splits on `__`, so only the double-underscore
+  spelling is supported.)*
 
 ### 3.2 Decision D4 — live apply, no restart
 
@@ -216,9 +219,9 @@ push is ~14 setter calls.
   Choosing a theme in the settings view writes the key immediately
   (the scale lane's established ceremony); the config file remains the
   single source of truth across restarts.
-- Env precedence: `TASKBOARD_UI_THEME` wins over the file (figment
+- Env precedence: `TASKBOARD_UI__THEME` wins over the file (figment
   ladder order) — the kiosk override story, consistent with
-  `TASKBOARD_UI_SCALE`-class overrides.
+  `TASKBOARD_UI__SCALE`-class overrides.
 
 ## 5. The file-driven extension path (deferred, but not blocked)
 
