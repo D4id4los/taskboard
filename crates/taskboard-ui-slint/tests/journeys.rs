@@ -3128,6 +3128,110 @@ fn the_scale_echo_renders_the_committed_scale() {
 }
 
 // ---------------------------------------------------------------------
+// #1437 D3/D4: the theme row's switch journey
+// ---------------------------------------------------------------------
+
+/// The theme pick's journey (#1437): the segmented control routes
+/// exactly one typed `SetTheme`, the palette live-applies on the pick
+/// itself (D4 — before any reply), the echoed index follows the
+/// reply (the reply, never the click, is the selection's source), and
+/// an `Err` reply reverts the palette. Typed outcomes only: the
+/// palette values and the model index, never status text.
+#[test]
+fn a_theme_pick_routes_one_set_theme_and_an_err_reply_reverts_the_palette() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        },
+        move |driver: &mut SlintDriver| {
+            use taskboard_ui_slint::palette::{Palette, ThemeName};
+
+            // The generated getters return slint `Color`s; the
+            // byte-splitting shifts are exact (masked palette words).
+            let color = |rgb: u32| {
+                #[allow(clippy::cast_possible_truncation)]
+                slint::Color::from_rgb_u8(
+                    ((rgb >> 16) & 0xff) as u8,
+                    ((rgb >> 8) & 0xff) as u8,
+                    (rgb & 0xff) as u8,
+                )
+            };
+            let harness = Harness::mount(SlintDriver::default(), state);
+            driver.bind(&harness.handle);
+            driver.set_window_size(1000, 900);
+            let window = harness.handle.window();
+            let theme = || window.global::<taskboard_ui_slint::Theme>();
+            let semantic = || window.global::<taskboard_ui_slint::Semantic>();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // Mount: the dark defaults, the echoed index seeded.
+            assert_eq!(model().get_theme_index(), 0);
+            assert_eq!(theme().get_background(), color(Palette::DARK.background));
+
+            // Pick Light: the palette live-applies BEFORE any reply
+            // (D4), the echo still reads dark, one typed request.
+            window.invoke_settings_theme_picked(1);
+            assert_eq!(
+                theme().get_background(),
+                color(Palette::LIGHT.background),
+                "the live push re-renders immediately"
+            );
+            assert_eq!(
+                semantic().get_success(),
+                color(Palette::LIGHT.success),
+                "the semantic layer pushes too"
+            );
+            assert_eq!(model().get_theme_index(), 0, "the echo waits for the reply");
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "one SetTheme per pick");
+            let taskboard_ui_slint::requests::UiRequest::SetTheme {
+                theme: chosen,
+                reply,
+            } = requests.remove(0)
+            else {
+                panic!("the theme request routed");
+            };
+            assert_eq!(chosen, ThemeName::LIGHT, "the choice rides typed");
+            reply.send(Ok(())).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            driver.advance_time(0);
+            assert_eq!(model().get_theme_index(), 1, "the reply commits the echo");
+
+            // Pick Dark again; the persist fails: the palette reverts
+            // to the persisted theme (light) and the echo keeps the
+            // persisted selection.
+            window.invoke_settings_theme_picked(0);
+            assert_eq!(theme().get_background(), color(Palette::DARK.background));
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "one SetTheme per pick");
+            let taskboard_ui_slint::requests::UiRequest::SetTheme { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the second theme request routed");
+            };
+            reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::PersistFailed,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            driver.advance_time(0);
+            assert_eq!(
+                theme().get_background(),
+                color(Palette::LIGHT.background),
+                "the Err reply reverts the palette"
+            );
+            assert_eq!(
+                model().get_theme_index(),
+                1,
+                "the echo keeps the persisted theme"
+            );
+        },
+    );
+}
+
+// ---------------------------------------------------------------------
 // r3 D20c: the scale commit's scroll anchor
 // ---------------------------------------------------------------------
 

@@ -2492,6 +2492,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ui_theme_defaults_to_dark_and_round_trips() {
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .extract()
+            .expect("defaults extract");
+        assert_eq!(round.ui.theme, "dark", "absent decodes to the default");
+        let mut c = valid();
+        c.ui.theme = "light".into();
+        c.validate().expect("light validates");
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string("[ui]\ntheme = \"light\""))
+            .extract()
+            .expect("light decodes");
+        assert_eq!(round.ui.theme, "light", "light round-trips");
+    }
+
+    #[test]
+    fn ui_theme_rejects_unknown_words_as_the_typed_variant() {
+        for word in ["", "Dark", "system", "solarized"] {
+            let mut c = valid();
+            c.ui.theme = word.to_owned();
+            assert!(
+                matches!(
+                    c.validate(),
+                    Err(ConfigError::InvalidTheme { field: "ui.theme" })
+                ),
+                "{word} must be rejected as InvalidTheme"
+            );
+        }
+    }
+
+    #[test]
+    fn ui_theme_error_kind_is_the_stable_discriminant() {
+        assert_eq!(
+            ConfigError::InvalidTheme { field: "ui.theme" }.kind(),
+            "invalid-theme"
+        );
+    }
+
     /// T-14 — the `stack_widths` section round-trips (nested tables,
     /// uuid keys, u32 values).
     #[test]
