@@ -61,7 +61,7 @@ absent; every "—" on a core verb needs a ruling below. -->
 
 | Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
 |---|---|---|---|---|---|---|---|
-| theme.pick | — | — | — | — | E US-1, US-2, US-3 | — | — |
+| theme.pick | — | — | — | — | E US-1, US-2, US-3, US-6 | — | — |
 | theme.boot-apply | D US-4 | D US-4 | D US-4 | D US-4 | D US-4 | D US-4 | — |
 | theme.config-word | — | — | — | — | D US-4, US-5 | — | E US-5 |
 
@@ -178,6 +178,31 @@ absent; every "—" on a core verb needs a ruling below. -->
     When the overlay writes, Then comments and unrelated tables
     survive — verified by seam test.
 
+### US-6 — The env-locked Theme row (added 2026-11-27, per #1512)
+
+- **Story**: When the machine's theme is pinned by
+  `TASKBOARD_UI__THEME` (the kiosk/deployment posture), I want the
+  Settings row to say so honestly — rendered disabled with the
+  env-locked annotation — so the GUI never pretends a pick would
+  take.
+- **Platforms**: both (deployment config exists on desktops too)
+- **Entry points**: the Settings theme row under
+  `ui.theme` in the hand-over `env_overridden` set — the
+  `SettingsModel.theme-env-locked` posture (the
+  focus-enabled-env-locked grammar: disabled `SegmentedControl` +
+  conditional annotation)
+- **Priority**: P2
+- **Acceptance**:
+  - AC-1: Given `ui.theme` in `env_overridden`, When the settings
+    view opens, Then the row's locked posture is pushed and drives
+    both the control's disabled state and the annotation's
+    visibility — verified by journey test.
+  - AC-2: Given the locked posture, the widget path to
+    `settings-theme-picked` is structurally unreachable (the control
+    is disabled, so `picked` cannot fire); the seam-level typed
+    refusal is issue #1529's (no `Field::Theme` on the GUI lattice
+    yet) — verified by journey test (the lane stays empty).
+
 ## 4. Journey specs
 
 ### US-1 — Pick dark → light
@@ -185,7 +210,7 @@ absent; every "—" on a core verb needs a ruling below. -->
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
 | US-1/S1 | Settings view, general section, "Theme" row (`SegmentedControl`, `SettingsModel.theme-index`) | Opens the settings view (display only) | — display only | The row renders with the echo seeded from the persisted theme (dark index 0); `help-theme` carries the row's InfoTip text | A persisted invalid word never reaches the row: config validation refuses at boot (US-3/S3) |
-| US-1/S2 | Same segmented control | Picks "Light" (index 1) | `UiRequest::SetTheme { theme: Light, reply }` | Optimistic live push first (D4): all 14 `Theme` + `Semantic` colour properties re-render every view before any reply; the echo still reads dark | A pick while another settings request is pending is refused with the typed `RequestPending` class (no push, no request); a lane that rejects the send degrades to the typed `Failed` outcome at the choke point |
+| US-1/S2 | Same segmented control | Picks "Light" (index 1) | `UiRequest::SetTheme { theme: Light, reply }` | Optimistic live push first (D4): all 14 `Theme` + `Semantic` colour properties re-render every view before any reply; the echo still reads dark | A pick while another settings request is pending is refused with the typed `RequestPending` class (no push, no request); a lane that rejects the send reverts the optimistic push synchronously at the seam (US-3/S4 — amended per #1515) and degrades to the typed `Failed` outcome at the choke point |
 | US-1/S3 | The pick's reply lane (`PendingReply::Theme`) | Waits (no action) | — | The `Ok` reply commits the echo to Light (the reply, never the click, is the selection's source — the `preset-index` contract) | An `Err` reply reverts instead — US-3/S1 |
 | US-1/S4 | The persist lane (`connections.rs` overlay, atomic write) | Waits (no action) | — | `[ui] theme = "light"` lands in `taskboard.toml` immediately, comments and sibling keys preserved | A persist `Err` reaches the UI as US-3/S1's revert; a full/closed request inbox degrades to the typed `Failed` outcome, never a wedge |
 
@@ -193,7 +218,7 @@ absent; every "—" on a core verb needs a ruling below. -->
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-2/S1 | Settings theme row (`SegmentedControl`) | Picks "Dark" (index 0) | `UiRequest::SetTheme { theme: Dark, reply }` | Optimistic live push to the dark palette (verbatim `Palette::DARK`), echo waits for the reply | Pending-lane pick refused (`RequestPending`); send rejection degrades to typed `Failed` (US-1/S2's escape, same choke point) |
+| US-2/S1 | Settings theme row (`SegmentedControl`) | Picks "Dark" (index 0) | `UiRequest::SetTheme { theme: Dark, reply }` | Optimistic live push to the dark palette (verbatim `Palette::DARK`), echo waits for the reply | Pending-lane pick refused (`RequestPending`); send rejection reverts the optimistic push and degrades to typed `Failed` (US-1/S2's escape, same choke point — amended per #1515) |
 | US-2/S2 | The pick's reply lane + persist lane | Waits (no action) | — | The `Ok` reply commits the echo to Dark and the word persists; the commit law is theme-agnostic (asserted on the symmetric light pick in the same journey test) | An `Err` reply reverts to the persisted (light) palette and echo — US-3/S1 |
 
 ### US-3 — Reverted or invalid pick
@@ -203,6 +228,7 @@ absent; every "—" on a core verb needs a ruling below. -->
 | US-3/S1 | Settings theme row with a failing persist lane | Picks (e.g. Dark while persisted is Light) | `UiRequest::SetTheme { theme: Dark, reply }` | The optimistic push shows Dark momentarily, then the `Err(PersistFailed)` reply reverts the palette to the persisted Light and the echo keeps the persisted index; the typed error class renders via the status lane | None further — the revert *is* the terminal state; no retry is auto-attempted (the user may re-pick) |
 | US-3/S2 | The pick seam (`settings_theme_picked`, index guard) | An out-of-range index arrives at the seam (defensive; the control offers 0–1) | — | `ThemeName::from_index` returns `None`; the seam returns early — no push, no request, no state change | The control cannot produce this input; the guard exists so the seam contract is total (design D1's closed set) |
 | US-3/S3 | Config decode (`[ui] theme` from file or env) | An unknown word is placed in config or env | — | `AppConfig::validate` refuses with the typed `ConfigError::InvalidTheme` (stable kind `invalid-theme`); the app does not boot with an unmapped palette | The serde default (`dark`) covers the key's absence; only present-and-invalid words refuse |
+| US-3/S4 | The pick seam with a rejected send (the request lane full or closed — #1515, amended 2026-11-27) | Picks; the lane rejects the send | — (nothing routes, nothing parks) | The optimistic push reverts synchronously at the seam (`revert_theme_live`, the D1 law): the palette returns to the persisted theme, the echo keeps the persisted index, and the typed `Failed` outcome renders at the choke point | None further — the revert *is* the terminal state; no pending state survives (a follow-up pick reaches the seam again, never a `RequestPending` wedge) |
 
 ### US-4 — Persisted theme survives restart
 
@@ -216,8 +242,15 @@ absent; every "—" on a core verb needs a ruling below. -->
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
 | US-5/S1 | `taskboard.toml` on a kiosk machine | Operator writes `[ui] theme = "light"` (deployment config, no GUI) | — | Boot renders light (US-4/S2's push; the file is kiosk's "CLI", O-5 parity) | Invalid word refuses at boot validation — US-3/S3 |
-| US-5/S2 | `TASKBOARD_UI__THEME` env override (figment ladder) | Operator exports the env on the machine | — | The env word beats the file's word (ladder order: defaults → file → env); spelling per #1511 | Same typed refusal for an invalid env word — US-3/S3 |
+| US-5/S2 | `TASKBOARD_UI__THEME` env override (figment ladder) | Operator exports the env on the machine | — | The env word beats the file's word (ladder order: defaults → file → env); spelling per #1511 | Same typed refusal for an invalid env word — US-3/S3. GUI-side consequence (amended per #1512): the row renders env-locked — US-6 |
 | US-5/S3 | The GUI writeback lane (`toml_edit` overlay) on a shared config | A desktop-side user picks a theme in the GUI | `UiRequest::SetTheme` | The overlay preserves comments and unrelated tables, so deployment config survives the GUI edit | Overlay failure surfaces as the persist `Err` class — US-3/S1's revert at the GUI |
+
+### US-6 — The env-locked Theme row (added 2026-11-27, per #1512)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-6/S1 | Settings theme row (`SettingsModel.theme-env-locked` pushed from the `ui.theme` fact) | Opens the settings view (display only) | — display only | The `SegmentedControl` renders disabled (all segments' `segment-enabled` false) and the conditional env-locked annotation renders (`Semantic.warning` caption) — the focus-enabled-env-locked grammar verbatim | Without the `ui.theme` fact the row renders enabled and behaves exactly as before (no behaviour change when env is not set) |
+| US-6/S2 | The locked row's pick path | Attempts to pick | — (structurally unreachable: the disabled control cannot fire `picked`) | The request lane stays empty — the GUI cannot fight the env override | A programmatic seam invocation bypasses the widget grammar: the typed seam-level refusal is #1529's (no `Field::Theme` on the lattice yet — deliberate out-of-scope) |
 
 ## 5. Interaction flows
 
@@ -247,7 +280,7 @@ flowchart LR
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | crates/taskboard-ui-slint/ui/views/settings-view.slint | SegmentedControl (options Dark, Light; group-label Theme) | settings_theme_picked | crates/taskboard-ui-slint/src/adapter/settings.rs settings_theme_picked | — | UiRequest::SetTheme | The pick's index: 0 = Dark, 1 = Light — the `ThemeName::from_index`/`index` contract (the `preset-index` twin) | US-1/S1, US-1/S2, US-1/S3, US-2/S1, US-2/S2, US-3/S1, US-3/S2 | crates/taskboard-ui-slint/tests/journeys.rs::a_theme_pick_routes_one_set_theme_and_an_err_reply_reverts_the_palette; crates/taskboard-ui-slint/src/palette.rs::index_name_and_palette_agree_per_choice |
+| W-1 | crates/taskboard-ui-slint/ui/views/settings-view.slint | SegmentedControl (options Dark, Light; group-label Theme) | settings_theme_picked | crates/taskboard-ui-slint/src/adapter/settings.rs settings_theme_picked | — | UiRequest::SetTheme | The pick's index: 0 = Dark, 1 = Light — the `ThemeName::from_index`/`index` contract (the `preset-index` twin); the env-locked posture rides `SettingsModel.theme-env-locked` (#1512) | US-1/S1, US-1/S2, US-1/S3, US-2/S1, US-2/S2, US-3/S1, US-3/S2, US-3/S4, US-6/S1, US-6/S2 | crates/taskboard-ui-slint/tests/journeys.rs::a_theme_pick_routes_one_set_theme_and_an_err_reply_reverts_the_palette; crates/taskboard-ui-slint/tests/journeys.rs::us3_s4_a_send_rejected_theme_pick_reverts_the_palette_and_reports_failed; crates/taskboard-ui-slint/tests/journeys.rs::us6_s1_an_env_locked_theme_row_renders_the_locked_posture; crates/taskboard-ui-slint/src/palette.rs::index_name_and_palette_agree_per_choice |
 | W-2 | crates/taskboard-ui-slint/src/lib.rs (mount) + src/palette.rs | — (the `Theme`/`Semantic` globals' construction push; no widget) | — (construction push, not a callback) | crates/taskboard-ui-slint/src/palette.rs apply | — | — | The boot push is per-window construction state, the `base-scale` push's twin — no user addressing | US-4/S2, US-5/S1 | crates/taskboard-ui-slint/tests/journeys/golden_visuals.rs::the_board_light_golden_holds |
 | W-3 | crates/taskboard-app/src/connections.rs + src/ui_requests.rs | — (headless writeback lane) | — (no UI surface on this row's seam) | crates/taskboard-app/src/connections.rs overlay_set_ui_theme | — | UiRequest::SetTheme | The lane addresses the config file's `[ui] theme` key only; no widget | US-1/S4, US-2/S2, US-3/S1, US-5/S3 | crates/taskboard-app/tests/services/ui_settings.rs::the_theme_flow_persists_the_word_immediately; crates/taskboard-app/src/connections.rs::overlay_set_ui_theme_preserves_comments_and_unrelated_tables |
 
@@ -279,6 +312,9 @@ bound-test: US-2/S2 -> crates/taskboard-ui-slint/tests/journeys.rs::a_theme_pick
 bound-test: US-3/S1 -> crates/taskboard-ui-slint/tests/journeys.rs::a_theme_pick_routes_one_set_theme_and_an_err_reply_reverts_the_palette
 bound-test: US-3/S2 -> crates/taskboard-ui-slint/src/palette.rs::index_name_and_palette_agree_per_choice
 bound-test: US-3/S3 -> crates/taskboard-app/tests/core/config.rs::ui_theme_rejects_unknown_words_as_the_typed_variant
+bound-test: US-3/S4 -> crates/taskboard-ui-slint/tests/journeys.rs::us3_s4_a_send_rejected_theme_pick_reverts_the_palette_and_reports_failed
+bound-test: US-6/S1 -> crates/taskboard-ui-slint/tests/journeys.rs::us6_s1_an_env_locked_theme_row_renders_the_locked_posture
+bound-test: US-6/S2 -> crates/taskboard-ui-slint/tests/journeys.rs::us6_s1_an_env_locked_theme_row_renders_the_locked_posture
 bound-test: US-4/S1 -> crates/taskboard-app/tests/core/config.rs::ui_theme_defaults_to_dark_and_round_trips
 bound-test: US-4/S2 -> crates/taskboard-ui-slint/tests/journeys/golden_visuals.rs::the_board_light_golden_holds
 bound-test: US-5/S1 -> crates/taskboard-app/tests/core/config.rs::ui_theme_defaults_to_dark_and_round_trips
