@@ -165,6 +165,21 @@ fn map_status(raw: &Raw) -> Result<(), TransportError> {
     }
 }
 
+/// Bounds the dial of every files-sync request: an unreachable/dead
+/// peer fails the connect phase after 10 s instead of hanging on the
+/// OS TCP stack's minute-scale retransmission ladder (#1485).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bounds the *idle-read* gap of every files-sync request: 30 s
+/// without any bytes from the peer aborts the attempt (#1485). This is
+/// reqwest's `read_timeout`, deliberately chosen over a total
+/// `.timeout()` — section documents are small, but the conditional-PUT
+/// bodies and any future transfer may be arbitrary-size, and a global
+/// total timeout would cap legitimately slow but flowing transfers. A
+/// stalled or black-holed established connection has no other bound:
+/// without this the retry wrapper only bounds failures, never hangs.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl WebDavFilesTransport {
     /// Builds the transport over `{server}/remote.php/dav/files/{user}/`.
     ///
@@ -174,6 +189,32 @@ impl WebDavFilesTransport {
     /// usable http(s) URL; [`TransportError::Transport`] when the HTTP
     /// client itself cannot be built.
     pub fn new(base_url: &str, user: &str, token: &str) -> Result<Self, TransportError> {
+        Self::with_timeouts(base_url, user, token, CONNECT_TIMEOUT, READ_TIMEOUT)
+    }
+
+    /// [`WebDavFilesTransport::new`] with explicit transport timeouts.
+    ///
+    /// Test seam (#1485): the production path is `new`, whose only
+    /// sources of values are [`CONNECT_TIMEOUT`] and [`READ_TIMEOUT`];
+    /// the timeout experiments inject sub-second bounds so the
+    /// typed-timeout oracle runs in wall-clock-fraction time instead of
+    /// waiting out the production 10 s / 30 s budget.
+    ///
+    /// Constraint: `None` is for paused-clock test harnesses only —
+    /// never a production call site. `new` is the only sanctioned
+    /// production constructor.
+    ///
+    /// # Errors
+    ///
+    /// See [`WebDavFilesTransport::new`].
+    #[doc(hidden)]
+    pub fn with_timeouts(
+        base_url: &str,
+        user: &str,
+        token: &str,
+        connect_timeout: Duration,
+        read_timeout: Duration,
+    ) -> Result<Self, TransportError> {
         let mut url = Url::parse(base_url).map_err(|_| TransportError::InvalidBaseUrl)?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(TransportError::InvalidBaseUrl);
@@ -192,7 +233,10 @@ impl WebDavFilesTransport {
         // verbs are root-inclusive substrate paths.
         url.set_path(&format!("/{DAV_FILES_PATH}/{user}/"));
         Ok(Self {
-            http: Client::builder().build()?,
+            http: Client::builder()
+                .connect_timeout(connect_timeout)
+                .read_timeout(read_timeout)
+                .build()?,
             base_url: url,
             credentials: format!("{user}:{token}"),
             backoff: BackoffPolicy::new(),
