@@ -6,10 +6,13 @@
 //! `journal_entries`. Every future file is subject to the same scan —
 //! the guard is the drift fence, stage 3's diff grep is the second net.
 //!
-//! Environment gate, not a weakened assertion: the suite reads the
-//! crate's own sources from disk, which Miri's isolation scopes out.
-
-#![cfg_attr(miri, ignore)]
+//! Environment gate, not a weakened assertion: the source-scanning
+//! guards read the crate's own sources from disk *and* locate them via
+//! `CARGO_MANIFEST_DIR`, both of which Miri's isolation scopes out (the
+//! env var reads `NotPresent` under Miri — #1479, run 46043812493). The
+//! gate is per-test: a crate-level `#![cfg_attr(miri, ignore)]` is a
+//! no-op (the `ignore` attribute is only valid on functions) and let
+//! the guards run — and panic — in the miri lane.
 
 use std::path::{Path, PathBuf};
 
@@ -107,7 +110,10 @@ fn rel(path: &Path) -> String {
     )
 }
 
+// Miri-gated: reads crate sources from disk via CARGO_MANIFEST_DIR (see
+// the module docs). The ordinary suite still enforces the guard.
 #[test]
+#[cfg_attr(miri, ignore)]
 fn no_journal_spelled_code_symbols_outside_the_undo_substrate() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets the manifest dir");
     let src = Path::new(&manifest).join("src");
@@ -138,7 +144,10 @@ fn no_journal_spelled_code_symbols_outside_the_undo_substrate() {
     );
 }
 
+// Miri-gated: reads crate sources from disk via CARGO_MANIFEST_DIR (see
+// the module docs). The ordinary suite still enforces the guard.
 #[test]
+#[cfg_attr(miri, ignore)]
 fn journal_entries_appears_nowhere_in_the_crate_sources() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets the manifest dir");
     let src = Path::new(&manifest).join("src");
