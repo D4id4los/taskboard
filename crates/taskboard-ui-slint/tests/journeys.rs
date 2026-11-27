@@ -3232,6 +3232,132 @@ fn a_theme_pick_routes_one_set_theme_and_an_err_reply_reverts_the_palette() {
 }
 
 // ---------------------------------------------------------------------
+// #1515 D1: the send-rejection reverts (journey US-3/S4 + the scale
+// law's twin — a closed lane leaves no optimistic apply standing)
+// ---------------------------------------------------------------------
+
+/// US-3/S4 (#1515, plan D1): a pick whose send is rejected (the
+/// request lane closed — nothing parked, no later event will arrive)
+/// reverts the optimistic palette push synchronously at the seam, the
+/// echo keeps the persisted index, and the typed `Failed` outcome
+/// renders. No pending state is left: the follow-up pick reaches the
+/// seam again (refused as `Failed`, never wedged as `RequestPending`).
+#[test]
+fn us3_s4_a_send_rejected_theme_pick_reverts_the_palette_and_reports_failed() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        },
+        move |driver: &mut SlintDriver| {
+            use taskboard_ui_slint::palette::Palette;
+
+            let color = |rgb: u32| {
+                #[allow(clippy::cast_possible_truncation)]
+                slint::Color::from_rgb_u8(
+                    ((rgb >> 16) & 0xff) as u8,
+                    ((rgb >> 8) & 0xff) as u8,
+                    (rgb & 0xff) as u8,
+                )
+            };
+            let harness = Harness::mount(SlintDriver::default(), state);
+            driver.bind(&harness.handle);
+            driver.set_window_size(1000, 900);
+            let window = harness.handle.window();
+            let theme = || window.global::<taskboard_ui_slint::Theme>();
+            let semantic = || window.global::<taskboard_ui_slint::Semantic>();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            assert_eq!(model().get_theme_index(), 0);
+            assert_eq!(theme().get_background(), color(Palette::DARK.background));
+
+            harness.close_request_lane();
+            window.invoke_settings_theme_picked(1);
+            assert_eq!(
+                theme().get_background(),
+                color(Palette::DARK.background),
+                "the rejected send reverts the optimistic push"
+            );
+            assert_eq!(
+                semantic().get_success(),
+                color(Palette::DARK.success),
+                "the semantic layer reverts with the palette"
+            );
+            assert_eq!(
+                model().get_theme_index(),
+                0,
+                "the echo keeps the persisted theme"
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Failed,
+                "the typed Failed outcome renders"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the closed lane routes nothing"
+            );
+
+            // No pending state survived: the follow-up pick reaches
+            // the seam again and fails the same honest way (never a
+            // `RequestPending` wedge).
+            window.invoke_settings_theme_picked(0);
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Failed,
+                "the seam is not wedged by the rejected pick"
+            );
+            assert_eq!(theme().get_background(), color(Palette::DARK.background));
+            assert_eq!(model().get_theme_index(), 0);
+        },
+    );
+}
+
+/// The scale commit's twin of the send-rejection law (#1515, plan D1
+/// — the scale journeys predate the UX mandate, so this is named for
+/// the law, not a journey token): a commit whose send is rejected
+/// reverts the live base scale synchronously and reports the typed
+/// `Failed` outcome; the live value never lies about what persisted.
+#[test]
+fn a_scale_send_rejection_reverts_the_live_scale_and_reports_failed() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        },
+        move |driver: &mut SlintDriver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            driver.bind(&harness.handle);
+            driver.set_window_size(1000, 900);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+            let theme = || window.global::<taskboard_ui_slint::Theme>();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            harness.close_request_lane();
+            window.invoke_settings_scale_committed("3.0".into());
+            #[allow(clippy::float_cmp)]
+            {
+                assert!(
+                    (theme().get_base_scale() - 1.0).abs() < 0.001,
+                    "the rejected send reverts the live base scale"
+                );
+            }
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Failed,
+                "the typed Failed outcome renders"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the closed lane routes nothing"
+            );
+        },
+    );
+}
+
+// ---------------------------------------------------------------------
 // r3 D20c: the scale commit's scroll anchor
 // ---------------------------------------------------------------------
 
@@ -15688,7 +15814,9 @@ fn a_general_op_in_flight_gates_the_other_settings_ops() {
 
             // The reply lands: the gate lifts, the next op routes.
             let mut lane = harness.requests_rx.lock().expect("requests lock");
-            let drained: Vec<_> = std::iter::from_fn(|| lane.try_recv().ok()).collect();
+            let drained: Vec<_> =
+                std::iter::from_fn(|| lane.as_mut().and_then(|lane| lane.try_recv().ok()))
+                    .collect();
             assert_eq!(
                 drained.len(),
                 1,
@@ -16105,7 +16233,9 @@ fn a_focus_op_in_flight_gates_the_other_settings_ops() {
                 taskboard_ui_slint::SettingsOutcome::Rejected
             );
             let mut lane = harness.requests_rx.lock().expect("requests lock");
-            let drained: Vec<_> = std::iter::from_fn(|| lane.try_recv().ok()).collect();
+            let drained: Vec<_> =
+                std::iter::from_fn(|| lane.as_mut().and_then(|lane| lane.try_recv().ok()))
+                    .collect();
             drop(lane);
             assert_eq!(
                 drained.len(),

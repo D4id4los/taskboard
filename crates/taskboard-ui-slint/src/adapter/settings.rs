@@ -144,13 +144,16 @@ impl Adapter {
                     }
                     Ok(Err(err)) => {
                         landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
-                        // The live-apply revert (D4's twin of the
-                        // scale revert): the palette pushes back.
-                        crate::palette::apply(window, previous.palette());
+                        Self::revert_theme_live(window, *previous);
                         true
                     }
                     Err(oneshot::error::TryRecvError::Empty) => false,
                     Err(oneshot::error::TryRecvError::Closed) => {
+                        // The reply channel died without a verdict:
+                        // the optimistic apply must go back (the same
+                        // honesty gap as a send rejection — one law,
+                        // one helper, plan D1).
+                        Self::revert_theme_live(window, *previous);
                         landed = Some((SettingsOutcome::Failed, None));
                         true
                     }
@@ -162,20 +165,16 @@ impl Adapter {
                     }
                     Ok(Err(err)) => {
                         landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
-                        // The live-apply revert (D9): the theme value
-                        // goes back to the previous setting, and the
-                        // scroll re-anchors on the scale row (r3
-                        // D20c) — the content height returns and the
-                        // row stays where it was.
-                        request_scale_anchor(window);
-                        #[allow(clippy::cast_possible_truncation)]
-                        window
-                            .global::<crate::Theme>()
-                            .set_base_scale(*previous as f32);
+                        Self::revert_scale_live(window, *previous);
                         true
                     }
                     Err(oneshot::error::TryRecvError::Empty) => false,
                     Err(oneshot::error::TryRecvError::Closed) => {
+                        // The reply channel died without a verdict:
+                        // the optimistic apply must go back (the same
+                        // honesty gap as a send rejection — one law,
+                        // one helper, plan D1).
+                        Self::revert_scale_live(window, *previous);
                         landed = Some((SettingsOutcome::Failed, None));
                         true
                     }
@@ -201,6 +200,29 @@ impl Adapter {
             // `push_settings`, so no separate push here.
             self.refresh_forced(window);
         }
+    }
+
+    /// The live-apply reverts (plan D1, #1515): every lane exit that
+    /// follows an optimistic apply restores exactly what the apply
+    /// moved — `Ok(Ok)` commits, `Ok(Err)` reverts, `Closed` reverts,
+    /// a send rejection reverts. One helper per seam, used by all
+    /// three of its sites; the echo is never touched here (the reply
+    /// owns it). Associated functions — they touch only the window,
+    /// never the reply state being drained.
+    fn revert_theme_live(window: &AppWindow, previous: crate::palette::ThemeName) {
+        // The palette pushes back (D4's twin of the scale revert).
+        crate::palette::apply(window, previous.palette());
+    }
+
+    fn revert_scale_live(window: &AppWindow, previous: f64) {
+        // The scale value goes back to the previous setting, and the
+        // scroll re-anchors on the scale row (r3 D20c) — the content
+        // height returns and the row stays where it was.
+        request_scale_anchor(window);
+        #[allow(clippy::cast_possible_truncation)]
+        window
+            .global::<crate::Theme>()
+            .set_base_scale(previous as f32);
     }
 
     /// The single outcome choke point (r2 D28): every assignment of
@@ -1888,15 +1910,15 @@ impl Adapter {
             PendingReply::Theme(reply_rx, chosen, previous),
             "",
         );
-        self.set_settings_outcome(
-            window,
-            if sent {
-                SettingsOutcome::Busy
-            } else {
-                SettingsOutcome::Failed
-            },
-            None,
-        );
+        if sent {
+            self.set_settings_outcome(window, SettingsOutcome::Busy, None);
+        } else {
+            // The send never parked anything — no later event will
+            // arrive, so the revert is synchronous at the seam (plan
+            // D1).
+            Self::revert_theme_live(window, previous);
+            self.set_settings_outcome(window, SettingsOutcome::Failed, None);
+        }
     }
 
     /// The scale commit core (r2 D29): live-apply first (the mount
@@ -1922,15 +1944,15 @@ impl Adapter {
             PendingReply::Scale(reply_rx, previous),
             "",
         );
-        self.set_settings_outcome(
-            window,
-            if sent {
-                SettingsOutcome::Busy
-            } else {
-                SettingsOutcome::Failed
-            },
-            None,
-        );
+        if sent {
+            self.set_settings_outcome(window, SettingsOutcome::Busy, None);
+        } else {
+            // The send never parked anything — no later event will
+            // arrive, so the revert is synchronous at the seam (plan
+            // D1).
+            Self::revert_scale_live(window, previous);
+            self.set_settings_outcome(window, SettingsOutcome::Failed, None);
+        }
     }
 
     /// The scale commit seam (field, Return-authoritative): live-apply
