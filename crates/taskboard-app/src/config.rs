@@ -1998,10 +1998,52 @@ pub(crate) fn url_is_cleartext(raw: &str) -> bool {
 
 /// The provider chain (binding, plan §4.1).
 fn figment(path: Option<PathBuf>) -> Figment {
+    warn_theme_env_near_miss();
     let path = path.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
     Figment::from(Serialized::defaults(AppConfig::default()))
         .merge(Toml::file(path)) // absent file contributes nothing
         .merge(Env::prefixed(ENV_PREFIX).split("__"))
+}
+
+/// The theme env key's canonical spelling: the nested-ladder form the
+/// `Env::prefixed(..).split("__")` provider maps onto `[ui] theme`
+/// (#1511).
+const THEME_ENV_CANONICAL: &str = "TASKBOARD_UI__THEME";
+
+/// The theme env key's near-miss spelling: a single underscore. It
+/// contains no `__`, so the ladder decodes it as the root key
+/// `ui_theme`, which no [`AppConfig`] field binds — figment merges
+/// unknown keys silently and the override is dropped without
+/// complaint (#1511).
+const THEME_ENV_NEAR_MISS: &str = "TASKBOARD_UI_THEME";
+
+/// The pure near-miss core (#1511): the near-miss names present
+/// (per `is_set`) whose canonical spelling is absent. The detection
+/// stays pure so the truth table is structurally testable (plan T3);
+/// the boot-time `warn!` is a one-line consumer (log text is never
+/// asserted, AGENTS §5).
+fn theme_env_near_misses(is_set: &dyn Fn(&str) -> bool) -> Vec<&'static str> {
+    if is_set(THEME_ENV_CANONICAL) || !is_set(THEME_ENV_NEAR_MISS) {
+        Vec::new()
+    } else {
+        vec![THEME_ENV_NEAR_MISS]
+    }
+}
+
+/// The boot-time consumer (#1511): an operator who exported the
+/// single-underscore spelling is told at boot instead of being
+/// silently ignored. No alias ships (plan D3 — the `__` nesting is
+/// the global figment convention; an alias for one key would diverge
+/// every other key's spelling contract).
+fn warn_theme_env_near_miss() {
+    let is_set = |key: &str| std::env::var_os(key).is_some();
+    for near_miss in theme_env_near_misses(&is_set) {
+        tracing::warn!(
+            near_miss,
+            canonical = THEME_ENV_CANONICAL,
+            "environment variable has no effect: the nested config ladder splits on '__'"
+        );
+    }
 }
 
 /// `<data-dir>/taskboard/taskboard.db`, or `None` when the platform has
@@ -2375,6 +2417,35 @@ mod tests {
         assert!(!super::url_is_cleartext("https://cloud.example.com"));
         assert!(!super::url_is_cleartext("ftp://x"));
         assert!(!super::url_is_cleartext("not a url"));
+    }
+
+    /// The #1511 near-miss detector's truth table over injected
+    /// presence sets (the pure core takes a lookup, so no process-env
+    /// mutation is needed — the crate forbids `unsafe`, and edition
+    /// 2024 makes `set_var` unsafe; the boot consumer's `var_os` read
+    /// is a one-line shell around this core).
+    #[test]
+    fn theme_env_near_miss_detector_truth_table() {
+        let lookup = |set: &'static [&'static str]| move |key: &str| set.contains(&key);
+
+        // Neither set: empty.
+        assert_eq!(super::theme_env_near_misses(&lookup(&[])), [] as [&str; 0]);
+
+        // The near-miss alone: exactly the single-underscore spelling.
+        assert_eq!(
+            super::theme_env_near_misses(&lookup(&[super::THEME_ENV_NEAR_MISS])),
+            vec![super::THEME_ENV_NEAR_MISS]
+        );
+
+        // The canonical form set: empty, even with the near-miss
+        // alongside (the working override needs no warning).
+        assert_eq!(
+            super::theme_env_near_misses(&lookup(&[
+                super::THEME_ENV_NEAR_MISS,
+                super::THEME_ENV_CANONICAL
+            ])),
+            [] as [&str; 0]
+        );
     }
 
     #[test]
