@@ -390,7 +390,11 @@ pub fn authority_of(raw: &str) -> (Option<&str>, &str) {
 /// Bounds the dial of every Deck request: an unreachable/dead peer
 /// fails the connect phase after 10 s instead of hanging on the OS TCP
 /// stack's minute-scale retransmission ladder (#1485).
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Public as the config default's single definition: `taskboard-app`'s
+/// `DEFAULT_HTTP_CONNECT_TIMEOUT_SECS` is derived from this const (plan
+/// D-1 of the configurable-timeouts chunk), so the two can never drift.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Bounds the *idle-read* gap of every Deck request: 30 s without any
 /// bytes from the peer aborts the attempt (#1485). This is reqwest's
@@ -400,7 +404,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// legitimately flowing) transfers. A stalled or black-holed
 /// established connection has no other bound: without this the retry
 /// wrapper only bounds failures, never hangs.
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// Public as the config default's single definition, like
+/// [`CONNECT_TIMEOUT`] (plan D-1 of the configurable-timeouts chunk).
+pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl DeckClient {
     /// Builds a client for `{base_url}/index.php/apps/deck/api/v1.0`.
@@ -1794,6 +1801,15 @@ mod tests {
 
     fn err_of(base: &str) -> Result<DeckClient, DeckError> {
         DeckClient::new(base, "user", "token")
+    }
+
+    /// The consts are the issue's stated defaults; pinned as typed
+    /// values (the config layer derives its defaults from them, so a
+    /// silent edit here would move every install's timeout).
+    #[test]
+    fn transport_timeout_consts_pin_the_issue_defaults() {
+        assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(READ_TIMEOUT, Duration::from_secs(30));
     }
 
     #[test]
