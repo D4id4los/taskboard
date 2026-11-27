@@ -2256,6 +2256,14 @@ async fn execute_batch(
     let mut habit_upserts = Vec::new();
     let mut habit_log_rows = Vec::new();
     let mut habit_day_log_rows = Vec::new();
+    // Inert partition arm (#1519 chunk 2, the stage-1 plan's D-P): the
+    // rows are collected and dropped — event persistence lands with
+    // migration 0032 (a later chunk). The events map itself round-trips
+    // through `PersistedState` serde in every fake/memory path from the
+    // day this arm lands; a sqlite-backed restart before that chunk
+    // drops the events (recorded transitional risk, unshippable-state
+    // only — the dispatch chunks merge serially into one release).
+    let mut habit_event_rows = Vec::new();
     let mut habit_time_upserts = Vec::new();
     let mut habit_time_deletes = Vec::new();
     // DR-7 chunk 2 (R-11 exception, the tracking DR-5/1 precedent):
@@ -2312,6 +2320,9 @@ async fn execute_batch(
             PersistenceAction::UpsertTimeEntry(entry) => entry_upserts.push(entry),
             PersistenceAction::DeleteTimeEntry(entry_id) => entry_deletes.push(*entry_id),
             PersistenceAction::UpsertHabit(habit) => habit_upserts.push(habit),
+            PersistenceAction::UpsertHabitEvent(event) => {
+                habit_event_rows.push(*event);
+            }
             PersistenceAction::RecordHabitLog(key, entry) => {
                 habit_log_rows.push((key, entry));
             }
