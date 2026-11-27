@@ -505,6 +505,13 @@ pub enum PersistenceAction {
     /// Insert or replace a habit (entity upsert discipline — replace by
     /// id; the tombstone rides the row).
     UpsertHabit(crate::habit::Habit),
+    /// Insert or replace a habit event by its id (the entity-upsert
+    /// discipline: identical uuid = identical fact; the deletion
+    /// tombstone rides the row — the #1519 event-log Ruling C2). The
+    /// sqlite twin is INSERT OR REPLACE by primary key (migration
+    /// 0032, a later chunk); no LWW guards — the fold arbitrates
+    /// nothing, the event's own facts carry the order.
+    UpsertHabitEvent(crate::habit_event::HabitEvent),
     /// Insert or replace a reflection entry (entity upsert discipline —
     /// replace by id; the tombstone rides the row, so delete is an
     /// upsert — DR-7 D-J13). Device-local: never enters a sync lane.
@@ -683,6 +690,14 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 if habit.deleted {
                     crate::reminders::remove_habit_nudge(&mut state.reminders, habit.id);
                 }
+            }
+            PersistenceAction::UpsertHabitEvent(event) => {
+                // Entity upsert: replace by id — identical uuid is the
+                // identical fact, and the tombstone rides the row (the
+                // `UpsertHabit` discipline; no LWW guard — the event's
+                // own `at`/tombstone facts carry the order, the fold
+                // arbitrates nothing).
+                state.habits.events.insert(event.id, *event);
             }
             PersistenceAction::UpsertReflectionEntry(entry) => {
                 state.reflection.entries.insert(entry.id, entry.clone());
@@ -1687,6 +1702,54 @@ mod tests {
         apply_actions(&mut state, &[PersistenceAction::UpsertHabit(renamed)]);
         assert_eq!(state.habits.habits.len(), 1, "replace, not append");
         assert_eq!(state.habits.habits[&habit.id].title, "renamed");
+    }
+
+    fn habit_event_row(raw: u128) -> crate::habit_event::HabitEvent {
+        crate::habit_event::HabitEvent {
+            id: crate::habit_event::HabitEventId::from(uuid::Uuid::from_u128(raw)),
+            habit: crate::ids::HabitId::from(uuid::Uuid::from_u128(1)),
+            kind: crate::habit_event::HabitEventKind::Completion,
+            at: ts(1_000),
+            by: None,
+            deleted: None,
+        }
+    }
+
+    #[test]
+    fn upsert_habit_event_replaces_by_id_and_the_tombstone_rides_the_row() {
+        let mut state = PersistedState::default();
+        let event = habit_event_row(10);
+        apply_actions(&mut state, &[PersistenceAction::UpsertHabitEvent(event)]);
+        assert_eq!(state.habits.events.len(), 1);
+        assert!(state.habits.events[&event.id].is_live());
+        // An older re-emission of the same id replaces (the entity-upsert
+        // discipline: identical uuid = identical fact; no LWW guard).
+        let mut tombstoned = event;
+        tombstoned.deleted = Some(crate::habit_event::HabitEventTombstone {
+            at: ts(2_000),
+            by: None,
+        });
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::UpsertHabitEvent(tombstoned)],
+        );
+        assert_eq!(state.habits.events.len(), 1, "replace, not append");
+        assert!(!state.habits.events[&tombstoned.id].is_live());
+        // A second id is an independent row (set-union shape).
+        let other = habit_event_row(11);
+        apply_actions(&mut state, &[PersistenceAction::UpsertHabitEvent(other)]);
+        assert_eq!(state.habits.events.len(), 2);
+    }
+
+    #[test]
+    fn habit_events_round_trip_through_the_persisted_state_serde() {
+        let mut state = PersistedState::default();
+        let mut event = habit_event_row(12);
+        event.by = Some(crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(9)));
+        apply_actions(&mut state, &[PersistenceAction::UpsertHabitEvent(event)]);
+        let json = serde_json::to_string(&state).expect("serializes");
+        let decoded: PersistedState = serde_json::from_str(&json).expect("decodes");
+        assert_eq!(decoded.habits.events, state.habits.events);
     }
 
     #[test]
