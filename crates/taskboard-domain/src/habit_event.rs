@@ -205,6 +205,11 @@ fn participates(event: &HabitEvent, habit: &Habit, want_mark: bool) -> bool {
 struct SharedFold {
     counts: BTreeMap<WindowStart, u32>,
     marks: BTreeMap<WindowStart, BTreeMap<(DateTime<Utc>, HabitEventId), bool>>,
+    /// The per-window attributed completion members, ascending `(at,
+    /// id)` insertion order (the fold's own order) — the reconcile
+    /// diff's membership source (the audited correction tombstones the
+    /// newest first) and the journal snapshot's completion leg.
+    completions: BTreeMap<WindowStart, Vec<(DateTime<Utc>, HabitEventId)>>,
 }
 
 fn shared_fold<'a>(
@@ -222,6 +227,7 @@ fn shared_fold<'a>(
     let mut fold = SharedFold {
         counts: BTreeMap::new(),
         marks: BTreeMap::new(),
+        completions: BTreeMap::new(),
     };
     for event in live {
         let window = crate::habit::attribute_window(
@@ -234,6 +240,10 @@ fn shared_fold<'a>(
         match event.kind {
             HabitEventKind::Completion => {
                 *fold.counts.entry(window).or_default() += 1;
+                fold.completions
+                    .entry(window)
+                    .or_default()
+                    .push((event.at, event.id));
             }
             HabitEventKind::Skip { .. } => {
                 fold.marks
@@ -250,6 +260,47 @@ fn shared_fold<'a>(
         }
     }
     fold
+}
+
+/// The window's attributed live completion members, **newest `(at,
+/// id)` first** — the audited correction's tombstone-order rule (a
+/// correction removes the most recent completions first). Pure and
+/// total; an absent window derives empty.
+#[must_use]
+pub fn window_completion_members<'a>(
+    habit: &Habit,
+    events: impl Iterator<Item = &'a HabitEvent>,
+    day: DayCalendar,
+    window: WindowStart,
+) -> Vec<HabitEventId> {
+    shared_fold(habit, events, day)
+        .completions
+        .remove(&window)
+        .map(|members| members.into_iter().rev().map(|(_, id)| id).collect())
+        .unwrap_or_default()
+}
+
+/// The window's attributed live mark members (skip/unskip alike) with
+/// their `(at, id)` order — the journal snapshot's mark leg. Newest
+/// first, matching [`window_completion_members`].
+#[must_use]
+pub fn window_mark_members<'a>(
+    habit: &Habit,
+    events: impl Iterator<Item = &'a HabitEvent>,
+    day: DayCalendar,
+    window: WindowStart,
+) -> Vec<HabitEventId> {
+    shared_fold(habit, events, day)
+        .marks
+        .remove(&window)
+        .map(|history| {
+            history
+                .into_keys()
+                .rev()
+                .map(|(_, id)| id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 /// The derived per-window completion counts (#1519): the event-log

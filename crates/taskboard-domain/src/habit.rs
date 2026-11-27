@@ -2133,6 +2133,7 @@ mod tests {
                         habit,
                         window,
                         count: receipt,
+                        ..
                     } = plan.outcome
                     else {
                         panic!("wrong receipt");
