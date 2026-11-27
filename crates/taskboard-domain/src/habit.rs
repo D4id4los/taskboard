@@ -4506,3 +4506,162 @@ mod statistics_tests {
         assert_eq!(HabitSnooze::days(0), None, "zero days unmintable");
     }
 }
+
+#[cfg(test)]
+mod habit_event_derivation_tests {
+    //! The `us6_s1` kind-change re-derivation property (the #1519 UX
+    //! plan's W-11): the event log re-derives all history under a
+    //! config change — marks re-derive exactly like completions, and
+    //! nothing is stranded in a former-kind window.
+
+    use super::*;
+    use crate::habit_event::{
+        HabitEvent, HabitEventId, HabitEventKind, derive_skip_posture, derive_window_counts,
+    };
+    use crate::test_support::{habit_strategy, proptest_config};
+    use chrono::NaiveTime;
+    use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    fn day_calendar_strategy() -> impl Strategy<Value = DayCalendar> {
+        (
+            prop::sample::select(vec![0_u32, 3 * 3600, 9 * 3600]),
+            prop::sample::select(vec![-18_000_i32, 0, 18_000]),
+        )
+            .prop_map(|(secs, off)| DayCalendar {
+                day_start_time: NaiveTime::from_num_seconds_from_midnight_opt(secs, 0)
+                    .expect("in-range seconds"),
+                offset: chrono::FixedOffset::east_opt(off).expect("in-range offset"),
+            })
+    }
+
+    /// A mixed completion+mark sequence over the plan's bounded
+    /// domain: instants within a seeded day ± 40 h, distinct
+    /// increasing ids, marks interleaved with completions (the stored
+    /// mark windows are provenance-only and deliberately arbitrary —
+    /// the fold never reads them).
+    fn mixed_event_strategy() -> impl Strategy<Value = Vec<HabitEvent>> {
+        (
+            prop::sample::select(vec![
+                chrono::NaiveDate::from_ymd_opt(2025, 6, 1).expect("bound"),
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 15).expect("bound"),
+            ]),
+            prop::collection::vec((-144_000_i64..=144_000, 0_u8..3), 0..30),
+            day_calendar_strategy(),
+        )
+            .prop_map(|(anchor, items, day)| {
+                let base = crate::days::window_start(anchor, day.day_start_time, day.offset);
+                let fixture_day = anchor;
+                items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (off, kind_raw))| {
+                        let id =
+                            HabitEventId::from(uuid::Uuid::from_u128(u128::from(i as u64) + 1));
+                        let kind = match kind_raw {
+                            0 => HabitEventKind::Completion,
+                            1 => HabitEventKind::Skip {
+                                window: WindowStart::of_period(PeriodKind::Day, fixture_day),
+                            },
+                            _ => HabitEventKind::Unskip {
+                                window: WindowStart::of_period(PeriodKind::Day, fixture_day),
+                            },
+                        };
+                        HabitEvent {
+                            id,
+                            habit: HabitId::from(uuid::Uuid::from_u128(42)),
+                            kind,
+                            at: base + chrono::TimeDelta::try_seconds(off).expect("in-range"),
+                            by: None,
+                            deleted: None,
+                        }
+                    })
+                    .collect()
+            })
+    }
+
+    fn bounded_target_strategy() -> impl Strategy<Value = HabitTarget> {
+        (0_u8..3, prop::sample::select(vec![1_u32, 2, 3])).prop_map(|(kind_raw, quota)| {
+            let quota = NonZeroCount::new(quota).expect("nonzero");
+            match kind_raw {
+                0 => HabitTarget::PerDay(quota),
+                1 => HabitTarget::PerWeek(quota),
+                _ => HabitTarget::PerMonth(quota),
+            }
+        })
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(48))]
+
+        /// The design-named property: the *same event set* derives
+        /// wholly under any config — (i) every derived key is a
+        /// canonical window of the current kind (nothing stranded in
+        /// former-kind windows — the D-H12 luggage has no successor),
+        /// (ii) every mark's derived window equals the window the
+        /// shared fold's `attribute_window` picks for its `at` (marks
+        /// re-derive exactly like completions), and (iii) the posture
+        /// is identical under a permutation of the input
+        /// (order-identity: the fold's (at, id) sort carries the
+        /// whole law).
+        #[test]
+        fn us6_s1_kind_change_rederives_history(
+            mut habit in habit_strategy(),
+            events in mixed_event_strategy(),
+            day in day_calendar_strategy(),
+            target_b in bounded_target_strategy(),
+        ) {
+            habit.deleted = false;
+            habit.id = HabitId::from(uuid::Uuid::from_u128(42));
+            prop_assume!(events.iter().any(|e| matches!(e.kind, HabitEventKind::Completion)));
+            // Config A is whatever the strategy minted; the *changed*
+            // config B rides as its own strategy input.
+            habit.target = target_b;
+            let kind_b = habit.target.kind();
+                let counts_b = derive_window_counts(&habit, events.iter(), day);
+                for key in counts_b.keys() {
+                    prop_assert_eq!(WindowStart::of_period(kind_b, key.as_date()), *key);
+                }
+                let posture_b = derive_skip_posture(&habit, events.iter(), day);
+                for key in posture_b.keys() {
+                    prop_assert_eq!(WindowStart::of_period(kind_b, key.as_date()), *key);
+                }
+
+                // (ii) the mark-window law: replay the shared fold
+                // semantics locally and collect the windows marks
+                // attribute to.
+                let mut ordered: Vec<&HabitEvent> = events.iter().collect();
+                ordered.sort_by_key(|e| (e.at, e.id));
+                let quota = habit.target.quota().get();
+                let mut running: BTreeMap<WindowStart, u32> = BTreeMap::new();
+                let mut mark_windows: BTreeSet<WindowStart> = BTreeSet::new();
+                for event in ordered {
+                    let window = attribute_window(
+                        kind_b,
+                        quota,
+                        |w| running.get(&w).copied().unwrap_or(0),
+                        event.at,
+                        day,
+                    );
+                    match event.kind {
+                        HabitEventKind::Completion => {
+                            *running.entry(window).or_default() += 1;
+                        }
+                        HabitEventKind::Skip { .. } | HabitEventKind::Unskip { .. } => {
+                            mark_windows.insert(window);
+                        }
+                    }
+                }
+                let posture_windows: BTreeSet<WindowStart> =
+                    posture_b.keys().copied().collect();
+                prop_assert_eq!(posture_windows, mark_windows);
+
+                // (iii) order-identity under permutation.
+                let mut shuffled = events.clone();
+                shuffled.reverse();
+
+                let posture_shuffled = derive_skip_posture(&habit, shuffled.iter(), day);
+                prop_assert_eq!(posture_shuffled, posture_b);
+        }
+    }
+}
