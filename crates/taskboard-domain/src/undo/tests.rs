@@ -955,9 +955,9 @@ fn an_absent_window_adjust_journals_not_undoable() {
         panic!("the absent-window adjust journals PreImages");
     };
     assert!(
-        images
-            .iter()
-            .any(|image| matches!(image, PreImage::HabitEventWindow { events, .. } if events.is_empty())),
+        images.iter().any(
+            |image| matches!(image, PreImage::HabitEventWindow { events, .. } if events.is_empty())
+        ),
         "the empty pre snapshot rides the entry"
     );
     h.exec(&StateCommand::Undo)
@@ -1188,10 +1188,13 @@ fn a_same_window_burst_pops_one_event_per_undo() {
             other => panic!("expected HabitCreated, got {other:?}"),
         }
     };
-    h.exec(&StateCommand::LogHabit { habit }).expect("first log");
-    h.exec(&StateCommand::LogHabit { habit }).expect("second log");
+    h.exec(&StateCommand::LogHabit { habit })
+        .expect("first log");
+    h.exec(&StateCommand::LogHabit { habit })
+        .expect("second log");
     h.exec(&StateCommand::Undo).expect("the newest log undoes");
-    h.exec(&StateCommand::Undo).expect("the older log undoes too");
+    h.exec(&StateCommand::Undo)
+        .expect("the older log undoes too");
     let live = h
         .disk
         .habits
@@ -1225,16 +1228,16 @@ fn us3_s1_week_undo_tombstones_event_id() {
             other => panic!("expected HabitCreated, got {other:?}"),
         }
     };
-    let CommandOutcome::HabitLogged { event, .. } = h
-        .exec(&StateCommand::LogHabit { habit })
-        .expect("logged")
+    let CommandOutcome::HabitLogged { event, .. } =
+        h.exec(&StateCommand::LogHabit { habit }).expect("logged")
     else {
         panic!("expected HabitLogged");
     };
     let minted = event.expect("the receipt names the minted event");
     let day = Harness::day();
     let row = h.disk.habits.habits[&habit].clone();
-    let before_days = crate::habit_event::derive_day_counts(&row, h.disk.habits.events.values(), day);
+    let before_days =
+        crate::habit_event::derive_day_counts(&row, h.disk.habits.events.values(), day);
     assert_eq!(before_days.values().sum::<u32>(), 1);
     h.exec(&StateCommand::Undo).expect("undone");
     let tombstoned = h
@@ -1247,7 +1250,8 @@ fn us3_s1_week_undo_tombstones_event_id() {
     assert_eq!(tombstoned, 1, "exactly the minted id tombstoned");
     assert!(h.disk.habits.events[&minted].deleted.is_some());
     let row = h.disk.habits.habits[&habit].clone();
-    let after_days = crate::habit_event::derive_day_counts(&row, h.disk.habits.events.values(), day);
+    let after_days =
+        crate::habit_event::derive_day_counts(&row, h.disk.habits.events.values(), day);
     assert_eq!(
         after_days.values().sum::<u32>(),
         0,

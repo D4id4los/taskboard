@@ -1424,10 +1424,6 @@ async fn undo_after_burst_pops_one_increment() {
 async fn pause_habit_keeps_the_policy_fence() {
     let mut rig = Rig::start().await;
     let habit = habit_fixture(&mut rig).await;
-    let window = taskboard_domain::WindowStart::of_period(
-        taskboard_domain::PeriodKind::Day,
-        chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
-    );
     // DELIBERATE DELTA (2026-11-27, #1519): the D24 absent-window fence
     // is DELETED — the backfill journals the empty event snapshot and
     // undoes exactly. The engine-layer fence representative is now the
