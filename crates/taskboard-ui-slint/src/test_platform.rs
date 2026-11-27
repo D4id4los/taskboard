@@ -158,6 +158,16 @@ impl Platform for NullPlatform {
         LAST_ADAPTER.with(|slot| *slot.borrow_mut() = Some(Rc::downgrade(&adapter)));
         Ok(adapter)
     }
+
+    // The animation driver's tick IS the test clock: `mock_elapsed_time`
+    // advances that tick, and slint's timer deadlines read this method —
+    // anchoring both to one clock keeps zero-shot timers activatable in
+    // the keymap tests (the #1490 post-echo re-grab timer's harness
+    // seam). The default wall-clock anchoring would leave timers
+    // permanently in the future against the never-advancing tick.
+    fn duration_since_start(&self) -> core::time::Duration {
+        core::time::Duration::from_millis(i_slint_core::animations::current_tick().0)
+    }
 }
 
 /// Registers the null platform as Slint's process-global platform and

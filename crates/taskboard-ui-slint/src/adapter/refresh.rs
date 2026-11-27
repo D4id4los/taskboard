@@ -132,6 +132,11 @@ impl Adapter {
                 window.invoke_refocus_view();
             }
         }
+        // The remount re-grab arm's outcome-pass twin (#1490): the
+        // outcome writes mount the create field exactly like a push
+        // pass (the apply_outcomes echo-window comment above); the
+        // same consumed-once arm covers its rebuild echo.
+        self.arm_create_refocus();
         self.applying_outcomes = false;
     }
 
@@ -1026,6 +1031,26 @@ impl Adapter {
         // (the seam's absorb-and-disarm) or on any user-intent seam
         // (the macro arms) — a genuine interaction un-arms before its
         // own focus move can be mis-absorbed.
+        // The remount re-grab arm (#1490): see [`Self::arm_create_refocus`].
+        self.arm_create_refocus();
+    }
+
+    /// Arms the remount re-grab when this pass could have rebuilt an
+    /// open create field's subtree (the clip-focus law's remount
+    /// half, #1490 / #1419 option A; plan
+    /// 2026-11-27-focus-remount-wrap §2.3 A): a zero-duration timer
+    /// fires after the deferred change-handler pass, when the
+    /// rebuilt field's release and the visibility drop have both
+    /// landed, and routes the mounted field's grab-focus through the
+    /// `TryRefocus` global. Consumed-once (the R-d one-shot law):
+    /// only an open `Flow::Create` arms, one arm per fire — a
+    /// flowless pass arms nothing, so the nonce's steal failure mode
+    /// (`detail_focus_journeys` rows 3/4) stays structurally absent.
+    fn arm_create_refocus(&mut self) {
+        if matches!(self.view_state.flow(), Flow::Create { .. }) {
+            self.refocus_create_armed.set(true);
+            self.refocus_timer.restart();
+        }
     }
 
     /// Recomposes the setter's grammar text + fire instant from the

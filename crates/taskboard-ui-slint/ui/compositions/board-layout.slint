@@ -23,6 +23,7 @@ import { GhostOpener, GhostOrientation } from "../widgets/ghost-opener.slint";
 import { BoardBar, BoardBarModel } from "board-bar.slint";
 import { DragState } from "../drag-state.slint";
 import { FocusScrollHint } from "../focus-scroll.slint";
+import { TryRefocus } from "../try-refocus.slint";
 import { ListView } from "../widgets/listview.slint";
 import { ScrollPageHint } from "../scroll-page.slint";
 
@@ -710,6 +711,18 @@ export component BoardLayout inherits Rectangle {
                                 placeholder: "New task title";
                                 label: "New task title";
                                 commit-affordance: true;
+                                // The remount re-grab consumption
+                                // (#1490): the adapter's post-echo
+                                // timer bumps the TryRefocus nonce in
+                                // a later event-loop turn; this
+                                // derived-property edge (the
+                                // FocusScrollHint consumption idiom)
+                                // re-grabs this instance's own focus —
+                                // the rebuilt instance is the one
+                                // mounted, so it is the one that
+                                // consumes.
+                                property <int> refocus-arm: TryRefocus.create-nonce;
+                                changed refocus-arm => { self.grab-focus(); }
                                 accepted(text) => root.create-committed(column-index, text);
                                 edited(text) => root.create-edited(column-index, text);
                                 focus-lost() => root.text-flow-focus-lost();
@@ -1042,6 +1055,14 @@ export component BoardLayout inherits Rectangle {
                     placeholder: "New task title";
                     label: "New task title";
                     commit-affordance: true;
+                    // The remount re-grab consumption (#1490): the
+                    // adapter's post-echo timer bumps the TryRefocus
+                    // nonce in a later event-loop turn; this
+                    // derived-property edge (the FocusScrollHint
+                    // consumption idiom) re-grabs this instance's own
+                    // focus.
+                    property <int> refocus-arm: TryRefocus.create-nonce;
+                    changed refocus-arm => { self.grab-focus(); }
                     accepted(text) => root.create-committed(root.effective-selected(), text);
                     edited(text) => root.create-edited(root.effective-selected(), text);
                     focus-lost() => root.text-flow-focus-lost();

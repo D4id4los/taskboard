@@ -41,20 +41,41 @@ pub(in crate::adapter) fn install_task_seam(window: &AppWindow, adapter: &Rc<Ref
         // (recorded): a genuine blur arriving as the very first
         // event of a window is absorbed once — the flow stays armed
         // and the next focus cycle settles it; Return-commit is
-        // unaffected. (The law's remount half — a rebuild-focusless
-        // field re-grabbing — is NOT implemented here; its first
-        // mechanism was withdrawn and the requirement rides #1490.)
+        // unaffected. (The law's remount half — the rebuild-focusless
+        // field re-grabbing — is adapter-owned: the push pass arms
+        // `refocus_create_armed` and the zero-duration timer routes
+        // the mounted field's grab-focus through the `TryRefocus`
+        // global AFTER this pass; see adapter/mod.rs.)
         if a.refresh_push_in_progress.get() {
             a.refresh_push_in_progress.set(false);
-            // Flow-aware classification (see the comment head): an
-            // armed flow's loss is a genuine dismissal and settles; a
-            // flowless loss is the reconcile's teardown echo — settle
-            // would only clear the selection and clobber the pass's
-            // focus-origin restore (us1_s2).
-            if matches!(a.view_state.flow(), crate::view_state::Flow::None) {
+            // Flow-aware classification, wrap re-land (#1419 option A;
+            // #1490): with the wrap, a model push that rebuilds the
+            // per-column create field's subtree makes the echo the
+            // FIRST loss of the window while the create flow is live
+            // — and an echo is never a dismissal (settling it closed
+            // a live create mid-edit: the lib.rs:3473 pin). Absorb
+            // and return; the remount re-grab arm stays armed so the
+            // timer restores the window's focus item. The echo exists
+            // ONLY for that field (the one flow field mounted inside
+            // the wrapped columns row): every other armed flow's
+            // first loss is a genuine dismissal and settles (the
+            // task-view walk's background settle rule — the
+            // stop-inventory journey pins it), and a flowless loss is
+            // the reconcile's teardown echo (us1_s2). The recorded
+            // leniency (see the comment head) covers the rare
+            // genuine-first loss of a create flow: it stays armed and
+            // the next focus cycle settles it.
+            if matches!(
+                a.view_state.flow(),
+                crate::view_state::Flow::Create { .. } | crate::view_state::Flow::None
+            ) {
                 return;
             }
         }
+        // A genuine settle un-arms any pending re-grab — the flow
+        // that field rode is ending; the re-grab must never fire
+        // after it (the consumed-once law).
+        a.refocus_create_armed.set(false);
         let state = a.state.load_full();
     a.settle_flow(&window, &state);
 
