@@ -381,3 +381,51 @@ name = "today-two-column-1.0-1600"
 fixture = "today_overdue_enriched_at(PINNED_NOW)"
 state = "today view; the two-column grid arm at 1600 (band above, sections left, habits/review right)"
 axes = { scale = 1.0, width = 1600, height = 900 }
+
+[[golden]]
+name = "board-light-0.5-600"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "board view at 0.5/600; the light palette (#1437 D7 subset; dark twin: board-0.5-600)"
+axes = { scale = 0.5, width = 600, height = 900 }
+
+[[golden]]
+name = "board-light-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "board view; the light palette (#1437 D7 subset; dark twin: board-1.0-1000)"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "review-empty-light-1.0-1000"
+fixture = "golden_state; tracking + reflection entries cleared"
+state = "review view; empty tier; the light palette (#1437 D7 subset; dark twin: review-empty-1.0-1000)"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "focus-overlay-light-1.0-1000"
+fixture = "golden_state_enriched_at + FocusTiming settings"
+state = "concentration overlay; work caption + pool + quick note; the light palette (#1437 D7 subset; dark twin: focus-overlay-1.0-1000)"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "today-light-1.0-1000"
+fixture = "today_overdue_enriched_at(PINNED_NOW)"
+state = "today view; overdue rows + tracked chip; the light palette (#1437 D7 subset; dark twin: today-1.0-1000)"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "task-view-light-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "task detail; header/summary/description regions; the light palette (#1437 D7 subset)"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "settings-light-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "settings view; the theme row + scale row; the light palette (#1437 D7 subset)"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "today-two-column-light-1.0-1600"
+fixture = "today_overdue_enriched_at(PINNED_NOW)"
+state = "today view; the two-column grid arm at 1600; the light palette (#1437 D7 subset; dark twin: today-two-column-1.0-1600)"
+axes = { scale = 1.0, width = 1600, height = 900 }
