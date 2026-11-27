@@ -327,8 +327,19 @@ bound-test: US-5/S3 -> crates/taskboard-app/src/connections.rs::overlay_set_ui_t
   pass the INVENTORY cross-check against the existing
   `seam_inventory.rs` entry.
 - [x] Every P1 story's journey completes end-to-end including escapes
-- [ ] Walkthrough protocol executed at stage 3; findings resolved or
-  homed
+- [x] Walkthrough protocol executed at stage 3 (2026-11-27, round-8
+  C1-impl review): every P1 story (US-1..US-5) completes end-to-end
+  with its escape column holding — the four questions answered per
+  step against `settings-view.slint`'s theme row, the
+  `SegmentedControl` primitive (keyboard-operable, round-5 F19), the
+  `settings_theme_picked` seam and the `PendingReply::Theme` revert;
+  the six-heuristic pass found no BLOCKER and no MAJOR (the row
+  inherits the keymap preset's grammar and the scale lane's writeback
+  ceremony, so consistency/recognition/recovery all carry existing
+  evidence). Findings resolved or homed: the env-spelling gap is
+  homed on #1511 (option (a) confirmed by the walkthrough), the
+  inherited contrast debt on #1414/#1415/#1450, the optimistic-apply
+  send-failure escape hole on #1515.
 - [x] All matrix absences carry rulings (R-1–R-4)
 - [x] Non-goals filed as backlog issues (#1441 pre-existing; the
   send-failure optimistic-apply escape hole observed while writing this
