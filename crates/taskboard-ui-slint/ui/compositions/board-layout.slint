@@ -175,6 +175,13 @@ export component BoardLayout inherits Rectangle {
     // Any flow holds (the D9 XOR belt): the DragAreas refuse to arm
     // while a flow is open — the view-state refusal is the suspenders.
     in property <bool> flow-open: false;
+    // The dead-zone click-out (#1543, UX plan R-3): a stationary
+    // press+release on empty board space while a flow holds settles
+    // it — the same funnel the Escape resolution lands in (click ≡
+    // key, §7.1). Both dead-zone layers fire the one callback; the
+    // adapter owns commit-vs-discard-vs-noop (the UI never branches
+    // on flow content).
+    callback board-dead-zone-clicked();
     callback board-bar-activated(int);
     // The archived-boards roster's row activation (UX R-1 D-1, #785),
     // threaded through to the window's unarchive seam.
@@ -208,6 +215,20 @@ export component BoardLayout inherits Rectangle {
             DragState.pointer-y = self.absolute-position.y + event.position.y;
             DragAction.none
         }
+    }
+
+    // The board-level dead-zone click-out layer (#1543, R-3(b)):
+    // owns the board background OUTSIDE the columns viewport (the
+    // empty-board leg, the margins). Declared beside the dead-zone
+    // DropArea = lowest z — every aimed surface (cards, fields,
+    // CTAs, chrome) hit-tests above it, so it steals no aimed click.
+    // Gated on the flow: disabled, it is invisible to hit-testing
+    // and pan plus every aimed surface behave exactly as before.
+    dead-zone-click-out := TouchArea {
+        width: 100%;
+        height: 100%;
+        enabled: root.flow-open;
+        clicked => root.board-dead-zone-clicked();
     }
 
     // The rendering fact for tests and reviews (§6 test 2): compact
@@ -327,6 +348,20 @@ export component BoardLayout inherits Rectangle {
         // subject; the native pan affordance carries the regime until
         // it lands.
         columns-row := Flickable {
+            // The in-viewport dead-zone click-out layer (#1543,
+            // R-3(a)): the Flickable consumes presses over its
+            // viewport, so a board-level layer cannot own in-viewport
+            // dead space — this layer does. Declared BEFORE the
+            // columns layout (declared-first = hit-tested last =
+            // beneath every column), filling the viewport; a press
+            // that pans is still consumed by the Flickable's native
+            // gesture (R-2: no new click/drag threshold).
+            dead-zone-click-out-viewport := TouchArea {
+                width: 100%;
+                height: 100%;
+                enabled: root.flow-open;
+                clicked => root.board-dead-zone-clicked();
+            }
             columns := HorizontalLayout {
             spacing: Theme.space-3;
             padding-left: Theme.space-3;

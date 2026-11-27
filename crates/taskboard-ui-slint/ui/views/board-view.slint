@@ -64,6 +64,9 @@ export component BoardView inherits FocusScope {
     callback task-clicked(int, int);
     // The focus-loss settle (round-3 L1), threaded to the layout.
     callback text-flow-focus-lost();
+    // The dead-zone click-out (#1543), threaded layout → window —
+    // the layout's layers fire it; the window's seam settles.
+    callback board-dead-zone-clicked();
     callback task-context(int, int, float, float);
     callback header-activated(int);
     callback switcher-activated(int);
@@ -227,6 +230,7 @@ export component BoardView inherits FocusScope {
 
             BoardLayout {
                 text-flow-focus-lost() => root.text-flow-focus-lost();
+                board-dead-zone-clicked() => root.board-dead-zone-clicked();
                 stacks: root.board.stacks;
                 selected-stack: root.board.selected-stack;
                 flow-open: root.flow-open;
