@@ -15,6 +15,7 @@
 //! [`configured_connectors`] is the N-actor seam.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -77,6 +78,11 @@ pub struct NextcloudModule {
     server_url: String,
     username: String,
     credentials: Arc<dyn CredentialStore>,
+    /// The resolved `[sync]` HTTP timeout bounds (plan D-4 of the
+    /// configurable-timeouts chunk): minted from the config at module
+    /// construction, applied by every `build_and_spawn` of this module.
+    connect_timeout: Duration,
+    read_timeout: Duration,
 }
 
 impl NextcloudModule {
@@ -86,12 +92,16 @@ impl NextcloudModule {
         server_url: String,
         username: String,
         credentials: Arc<dyn CredentialStore>,
+        connect_timeout: Duration,
+        read_timeout: Duration,
     ) -> Self {
         Self {
             id,
             server_url,
             username,
             credentials,
+            connect_timeout,
+            read_timeout,
         }
     }
 }
@@ -123,8 +133,14 @@ impl ConnectorModule for NextcloudModule {
                  travels unencrypted — prefer https"
             );
         }
-        let client = DeckClient::new(&self.server_url, &self.username, password.expose())
-            .map_err(AttachError::Client)?;
+        let client = DeckClient::with_timeouts(
+            &self.server_url,
+            &self.username,
+            password.expose(),
+            self.connect_timeout,
+            self.read_timeout,
+        )
+        .map_err(AttachError::Client)?;
         let join = spawn_sync_actor(
             self.id.clone(),
             client,
