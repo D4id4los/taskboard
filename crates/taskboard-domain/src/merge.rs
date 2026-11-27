@@ -7030,6 +7030,7 @@ mod habit_fold_tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let board = BoardId::from(uuid::Uuid::from_u128(800));
         // Equal effective clock: local stands.
@@ -7070,6 +7071,7 @@ mod habit_fold_tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let mut clocks = HabitClocks::all(ts(100));
         clocks.description = ts(300);
@@ -7110,6 +7112,7 @@ mod habit_fold_tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let rows = [(
             id.as_uuid().to_string(),
@@ -7166,6 +7169,7 @@ mod habit_fold_tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let rows = [(
             uuid_text.clone(),
@@ -7188,6 +7192,7 @@ mod habit_fold_tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let rows = [(
             uuid_text.clone(),
@@ -7207,6 +7212,7 @@ mod habit_fold_tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let rows = [(
             uuid_text.clone(),
@@ -7239,6 +7245,7 @@ mod habit_fold_tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let board = BoardId::from(uuid::Uuid::from_u128(800));
         let id = state.habits.keys().copied().next().unwrap();
@@ -7262,6 +7269,7 @@ mod habit_fold_tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let id = state.habits.keys().copied().next().unwrap();
         let rows = [(id.as_uuid().to_string(), live_row(300, "older"))]
@@ -7400,6 +7408,7 @@ mod habit_fold_tests {
                 .collect(),
                 day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
+                events: std::collections::BTreeMap::default(),
             };
             fold_habits(&mut state, &rows.into_iter().cloned().collect(), board);
             fold_habit_log(&mut state, &logs.into_iter().cloned().collect());
@@ -7884,6 +7893,7 @@ mod author_duel_tests {
                         log: std::collections::BTreeMap::new(),
                         day_log: std::collections::BTreeMap::default(),
                         time_log: std::collections::BTreeMap::default(),
+                        events: std::collections::BTreeMap::default(),
                     };
                     let rows = [(
                         habit_id.as_uuid().to_string(),
@@ -7934,6 +7944,7 @@ mod author_duel_tests {
                     .collect(),
                     day_log: std::collections::BTreeMap::default(),
                     time_log: std::collections::BTreeMap::default(),
+                    events: std::collections::BTreeMap::default(),
                 };
                 let rows = [(
                     log_key.wire_form(),
@@ -8134,6 +8145,7 @@ mod author_duel_tests {
                 log: std::collections::BTreeMap::new(),
                 day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
+                events: std::collections::BTreeMap::default(),
             };
             let rows = [(
                 habit_id.as_uuid().to_string(),
@@ -8187,6 +8199,7 @@ mod author_duel_tests {
                 .collect(),
                 day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
+                events: std::collections::BTreeMap::default(),
             };
             let rows = [(
                 log_key.wire_form(),
@@ -8406,6 +8419,7 @@ mod author_duel_tests {
                 log: std::collections::BTreeMap::new(),
                 day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
+                events: std::collections::BTreeMap::default(),
             };
             fold_habits(&mut state, &rows, board);
             fold_habits(&mut state, &rows, board);
@@ -8453,6 +8467,7 @@ mod author_duel_tests {
                 .collect(),
                 day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
+                events: std::collections::BTreeMap::default(),
             };
             fold_habit_log(&mut state, &rows);
             fold_habit_log(&mut state, &rows);
@@ -8799,6 +8814,7 @@ mod sidecar_convergence_prop {
                     log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
                 for c in 0..cycles {
                     let rows = map(std::iter::once(doc(&facts[arrival[c] % n])));
@@ -8844,6 +8860,7 @@ mod sidecar_convergence_prop {
                     log: map(seeded.iter().map(|fact| (log_key, local(fact)))),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
                 for c in 0..cycles {
                     let rows = map(std::iter::once(doc(&facts[arrival[c] % n])));

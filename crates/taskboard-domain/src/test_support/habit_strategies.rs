@@ -264,6 +264,7 @@ impl HabitFixture {
             log: self.log.clone(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         }
     }
 }

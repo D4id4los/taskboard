@@ -845,6 +845,17 @@ pub struct HabitState {
     /// duration data only (D-2): no stats projection reads it.
     #[serde(default)]
     pub time_log: BTreeMap<crate::ids::HabitTimeEntryId, crate::habit_time::HabitTimeEntry>,
+    /// The per-completion event log (the #1519 event-log design): the
+    /// future sole source of truth. Additive this chunk — `log` /
+    /// `day_log` stay and every existing reader is untouched (the
+    /// next chunk rewires the writers; the final chunk deletes the
+    /// maps). `BTreeMap` keyed by mint-instant-ordered v7 ids:
+    /// deterministic serialization, and the `(at, id)` iteration
+    /// order the derivations' tie-breaks rely on. `serde(default)`:
+    /// the additive default-absent law — states persisted before the
+    /// map decode with an empty map, never a decode failure.
+    #[serde(default)]
+    pub events: BTreeMap<crate::habit_event::HabitEventId, crate::habit_event::HabitEvent>,
 }
 
 /// The period-start local date of `date`'s period: the day itself;
@@ -971,21 +982,41 @@ pub fn log_window(
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> WindowStart {
-    let kind = habit.target.kind();
-    let quota = habit.target.quota().get();
-    let count = |window: WindowStart| {
-        log.get(&HabitLogKey {
-            habit: habit.id,
-            window,
-        })
-        .map_or(0, |entry| entry.count)
-    };
-    let natural = WindowStart::of_period(kind, day.today(now));
+    attribute_window(
+        habit.target.kind(),
+        habit.target.quota().get(),
+        |window| {
+            log.get(&HabitLogKey {
+                habit: habit.id,
+                window,
+            })
+            .map_or(0, |entry| entry.count)
+        },
+        now,
+        day,
+    )
+}
+
+/// The attribution core behind [`log_window`]: the natural window /
+/// 24 h grace / guarded surplus-repair rule, parameterized over the
+/// count source. `log_window` wraps it reading the stored log rows;
+/// the event-log derivation fold (the #1519 design, chunk 1) calls it
+/// with its *running* per-window counts — one attribution rule, two
+/// count sources. Pure extraction: no behavior change.
+#[must_use]
+pub(crate) fn attribute_window(
+    kind: PeriodKind,
+    quota: u32,
+    count: impl Fn(WindowStart) -> u32,
+    at: DateTime<Utc>,
+    day: DayCalendar,
+) -> WindowStart {
+    let natural = WindowStart::of_period(kind, day.today(at));
     let prev_date = period_before(kind, natural.as_date());
     let prev = WindowStart::of_period(kind, prev_date);
     let grace_end = period_end(kind, prev_date, day)
         + chrono::TimeDelta::try_hours(24).expect("24 h is representable");
-    let in_grace = now < grace_end;
+    let in_grace = at < grace_end;
     if in_grace && count(prev) < quota && count(natural) >= quota {
         prev
     } else {
