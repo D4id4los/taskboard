@@ -1217,11 +1217,21 @@ async fn save_connection(
 
     // Detach-first, then attach (the session ceremony's swap rule).
     let _ = workspace.control.detach_connector_named(&id).await;
-    let client = DeckClient::new(&profile.server_url, &profile.username, &profile.password.0)
-        .map_err(|err| {
-            tracing::warn!(variant = %err, "settings save: the draft client was refused");
-            SettingsError::AttachFailed
-        })?;
+    // The attach client becomes a running connector's client, so it
+    // obeys the configured `[sync]` HTTP timeouts like every long-lived
+    // client (plan D-4) — not the ceremony probes' const defaults (D-5).
+    let (connect_timeout, read_timeout) = raw.http_timeouts();
+    let client = DeckClient::with_timeouts(
+        &profile.server_url,
+        &profile.username,
+        &profile.password.0,
+        connect_timeout,
+        read_timeout,
+    )
+    .map_err(|err| {
+        tracing::warn!(variant = %err, "settings save: the draft client was refused");
+        SettingsError::AttachFailed
+    })?;
     workspace
         .control
         .attach_connector(id, client)

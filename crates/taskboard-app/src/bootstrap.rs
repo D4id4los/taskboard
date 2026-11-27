@@ -256,7 +256,14 @@ async fn files_sync_spawn(
             "files sync over cleartext http; the app password travels unencrypted — prefer https"
         );
     }
-    let transport = WebDavFilesTransport::new(&spec.server_url, &spec.username, password.expose())?;
+    let (connect_timeout, read_timeout) = config.http_timeouts();
+    let transport = WebDavFilesTransport::with_timeouts(
+        &spec.server_url,
+        &spec.username,
+        password.expose(),
+        connect_timeout,
+        read_timeout,
+    )?;
     let (join, status_rx) = spawn_files_sync_actor(
         transport,
         device_json,
@@ -1128,12 +1135,17 @@ pub async fn bootstrap_in(
     let modules: Vec<Arc<dyn crate::connectors::ConnectorModule>> = specs
         .iter()
         .map(|spec| match spec.backend {
-            SyncBackend::Nextcloud => Arc::new(crate::connectors::NextcloudModule::new(
-                spec.name.clone(),
-                spec.server_url.clone(),
-                spec.username.clone(),
-                credentials.clone(),
-            )) as Arc<dyn crate::connectors::ConnectorModule>,
+            SyncBackend::Nextcloud => {
+                let (connect_timeout, read_timeout) = config.http_timeouts();
+                Arc::new(crate::connectors::NextcloudModule::new(
+                    spec.name.clone(),
+                    spec.server_url.clone(),
+                    spec.username.clone(),
+                    credentials.clone(),
+                    connect_timeout,
+                    read_timeout,
+                )) as Arc<dyn crate::connectors::ConnectorModule>
+            }
             // The synthesis never yields a standalone spec; a module list
             // built by hand (tests) simply never contains one.
             SyncBackend::Standalone => unreachable!("standalone synthesizes no connector"),
