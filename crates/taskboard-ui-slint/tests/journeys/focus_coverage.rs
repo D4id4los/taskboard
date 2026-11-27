@@ -124,6 +124,26 @@ const EXEMPT: &[(&str, &str)] = &[
         "TouchArea:AppWindow::focus-overlay-backdrop",
         "modal dismissal surface; the overlay closes on its toggle/Escape",
     ),
+    // The board dead-zone click-out (#1543): the dismissal-backdrop
+    // class — a pointer convenience whose keyboard twin is the
+    // Escape settle (click ≡ key §7.1: both route the one settle
+    // funnel), so a walk must never tab into a dismissal backstop.
+    // Gated `enabled: flow-open` — without a flow it does not exist
+    // to the pointer (or to this audit, whose interactivity test
+    // reads `enabled`), and the layers sit beneath every aimed
+    // surface (the no-fire law, UX plan US-2). Two layers, one
+    // callback: the in-viewport one exists because the columns
+    // Flickable consumes presses over its viewport.
+    (
+        "TouchArea:BoardLayout::dead-zone-click-out",
+        "the board-level dead-zone click-out; Escape settles every \
+         flow — the same funnel — and the layer is flow-gated",
+    ),
+    (
+        "TouchArea:BoardLayout::dead-zone-click-out-viewport",
+        "the in-viewport dead-zone click-out (beneath the columns \
+         layout inside the Flickable); same Escape twin, same gating",
+    ),
 ];
 
 /// The item-walk hosts (#665 plan D-V1): a delegate the host's item
