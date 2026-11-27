@@ -19,9 +19,8 @@
   `.artifacts/plans/2026-11-27-habit-event-log-ux-plan.md`; dispatch plan
   `.artifacts/plans/2026-11-27-habit-event-log-dispatch-plan.md` (written
   after this design and the UX plan, per the ux_planning law).
-- **Status**: DRAFT — the operator may overrule any §0 ruling; the plans
-  proceed on the recommended defaults and remain dispatchable if none
-  are overruled.
+- **Status**: ACCEPTED — the operator accepted every §0 ruling A–I on
+  its recommended default (2026-11-27); no ruling was overruled.
 
 ---
 

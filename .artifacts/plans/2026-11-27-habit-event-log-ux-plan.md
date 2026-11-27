@@ -8,8 +8,9 @@
 - **Origin**: the #1519 design round
   (`.artifacts/plans/2026-11-27-habit-event-log-design.md`, Rulings
   A–I) and the operator ruling recorded on #1519 (2026-11-27).
-- **Status**: DRAFT — accepted by the operator before the dispatch
-  plan chunks implementation.
+- **Status**: ACCEPTED — the operator accepted the design and all §0
+  rulings A–I on their recommended defaults (2026-11-27, relayed by the
+  dispatcher on #1519).
 - **Surfaces touched**: Today (habit rows: quota badge, streak, log
   button), Review (habit history day-grid heatmap + skip badge), CLI
   (`taskboard habits log/adjust/skip/list`).
