@@ -272,7 +272,21 @@ fn spawn_with_settings(
     settings: taskboard_domain::SettingsSnapshot,
 ) -> Actor {
     repo.set_settings(settings);
-    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    // Paused-clock harness rule (#1485, operator ruling 2026-11-27 on
+    // the a26 incident): this suite runs under
+    // `#[tokio::test(start_paused)]` against real wiremock I/O, and
+    // tokio's auto-advance jumps the virtual clock to the nearest armed
+    // timer deadline while the runtime waits on real I/O. ANY armed
+    // client transport bound therefore fires spuriously mid-response —
+    // regardless of its value (a 1 h bound was observed firing within
+    // ~10 ms) — retrying the attempt and shifting the pinned request
+    // counts. The only deterministic posture is to arm no client timer
+    // at all: a local wiremock response cannot genuinely stall, and
+    // this is exactly the pre-#1485 posture. Production keeps the real
+    // bounds via `new` (the consts are its only value source); timeout
+    // behaviour is pinned with real sub-second bounds over the real
+    // clock in `timeout_wiremock`.
+    let client = DeckClient::with_timeouts(&server.uri(), "u", "t", None, None).unwrap();
     let (commands, command_rx) = mpsc::channel(16);
     let (report_tx, report_rx) = mpsc::channel(16);
     let (system_tx, system_rx) = broadcast::channel(16);

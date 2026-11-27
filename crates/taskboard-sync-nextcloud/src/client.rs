@@ -415,7 +415,13 @@ impl DeckClient {
     /// http(s) URL; [`DeckError::Transport`] when the HTTP client itself
     /// cannot be built.
     pub fn new(base_url: &str, user: &str, token: &str) -> Result<Self, DeckError> {
-        Self::with_timeouts(base_url, user, token, CONNECT_TIMEOUT, READ_TIMEOUT)
+        Self::with_timeouts(
+            base_url,
+            user,
+            token,
+            Some(CONNECT_TIMEOUT),
+            Some(READ_TIMEOUT),
+        )
     }
 
     /// [`DeckClient::new`] with explicit transport timeouts.
@@ -424,7 +430,12 @@ impl DeckClient {
     /// sources of values are [`CONNECT_TIMEOUT`] and [`READ_TIMEOUT`];
     /// the timeout experiments inject sub-second bounds so the
     /// typed-timeout oracle runs in wall-clock-fraction time instead of
-    /// waiting out the production 10 s / 30 s budget.
+    /// waiting out the production 10 s / 30 s budget. `None` arms no
+    /// timer: a paused-clock harness must, because under
+    /// `tokio::time::start_paused` auto-advance jumps the virtual clock
+    /// to the nearest armed deadline while the runtime waits on real
+    /// wiremock I/O — any armed bound fires spuriously regardless of
+    /// its value (a 1 h bound was observed firing within ~10 ms).
     ///
     /// Constraint: `None` is for paused-clock test harnesses only —
     /// never a production call site. `new` is the only sanctioned
@@ -438,8 +449,8 @@ impl DeckClient {
         base_url: &str,
         user: &str,
         token: &str,
-        connect_timeout: Duration,
-        read_timeout: Duration,
+        connect_timeout: Option<Duration>,
+        read_timeout: Option<Duration>,
     ) -> Result<Self, DeckError> {
         let mut url = Url::parse(base_url).map_err(|_| DeckError::InvalidBaseUrl)?;
         if !matches!(url.scheme(), "http" | "https") {
@@ -465,11 +476,15 @@ impl DeckClient {
             url.set_path(&path);
         }
 
+        let mut builder = Client::builder();
+        if let Some(bound) = connect_timeout {
+            builder = builder.connect_timeout(bound);
+        }
+        if let Some(bound) = read_timeout {
+            builder = builder.read_timeout(bound);
+        }
         Ok(Self {
-            http: Client::builder()
-                .connect_timeout(connect_timeout)
-                .read_timeout(read_timeout)
-                .build()?,
+            http: builder.build()?,
             base_url: url,
             credentials: format!("{user}:{token}"),
             backoff: BackoffPolicy::new(),

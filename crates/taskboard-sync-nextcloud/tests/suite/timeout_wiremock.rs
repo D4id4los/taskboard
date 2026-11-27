@@ -47,8 +47,8 @@ async fn stalled_response_surfaces_as_typed_transport_timeout() {
         &server.uri(),
         "it-user",
         "it-token",
-        Duration::from_secs(5),
-        Duration::from_millis(500),
+        Some(Duration::from_secs(5)),
+        Some(Duration::from_millis(500)),
     )
     .unwrap()
     .with_sleeper(Arc::new(InstantSleep))
@@ -70,8 +70,8 @@ async fn unroutable_dial_surfaces_as_typed_connect_timeout() {
         "http://10.255.255.1:9",
         "u",
         "t",
-        Duration::from_millis(500),
-        Duration::from_secs(5),
+        Some(Duration::from_millis(500)),
+        Some(Duration::from_secs(5)),
     )
     .unwrap()
     .with_sleeper(Arc::new(InstantSleep))
