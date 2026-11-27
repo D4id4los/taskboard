@@ -334,6 +334,33 @@ find_evidence() { # find_evidence <name>
   return 0
 }
 
+# Adapter evidence universe (#1514): since the E1 split the seams live
+# under `adapter/` module directories, not in a single `adapter.rs` —
+# a name-based universe is empty and every wiring callback reads
+# MISSING. Same find/prune/tier discipline as find_evidence, with a
+# *path* predicate: any `.rs` under an `adapter/` segment, plus the
+# legacy flat `adapter*.rs` shape (the self-test fixture tree still
+# carries a flat adapter.rs). The #1073 tier post-filter is applied
+# identically — a token present in both a production adapter file and
+# a tests/-twin must cite the production file deterministically.
+find_evidence_adapter() {
+  local -a args=(find "$EVID_ROOT")
+  if [[ -n ${FX_ROOT:-} ]]; then
+    args+=(-path "$FX_ROOT" -prune -o)
+  fi
+  args+=(-name target -prune -o
+         -name node_modules -prune -o
+         -path "$EVID_ROOT/.git" -prune -o
+         -type f \( -path '*/adapter/*' -o -name 'adapter*.rs' \) -name '*.rs' -print)
+  local raw tier0 tier1
+  raw=$("${args[@]}" 2>/dev/null || true)
+  tier0=$(grep -vE '/(test_support|tests)/' <<<"$raw" | LC_ALL=C sort -u || true)
+  tier1=$(grep -E '/(test_support|tests)/' <<<"$raw" | LC_ALL=C sort -u || true)
+  [[ -n $tier0 ]] && printf '%s\n' "$tier0"
+  [[ -n $tier1 ]] && printf '%s\n' "$tier1"
+  return 0
+}
+
 # Boundary fn-name match: `fn <name>` not followed by another name
 # character — `fn us1_s1` must not match `fn us1_s1_settings_cards`.
 # Emits `file:line:fn-line` excerpt lines (callers count and consume
@@ -867,6 +894,30 @@ self_test() {
     rc=1
   fi
 
+  # 27. #1514 modular adapter layout: the same PASS fixture plan run
+  #     against a tree whose adapter lives at adapter/settings.rs (the
+  #     post-E1 module shape) resolves identically — exit 0, exactly
+  #     1 BOUND row, no MISSING. Pre-#1514 the universe was the single
+  #     name `adapter.rs`, so the modular tree yielded zero adapter
+  #     evidence (the callback row MISSING, exit 1). The adapter-side
+  #     citation is pinned with the INVENTORY-MISS fixture, the one
+  #     row whose output carries the adapter evidence path: it must
+  #     cite adapter/settings.rs.
+  bash "${BASH_SOURCE[0]}" "$fx/plan.md" --gate --root "$fx/tree-modular" \
+    >"$tmp/modular.out" 2>&1 && code=0 || code=$?
+  n=$(grep -c ' BOUND (' "$tmp/modular.out" || true)
+  m=$(grep -c 'MISSING$' "$tmp/modular.out" || true)
+  bash "${BASH_SOURCE[0]}" "$fx/plan-inventmiss.md" --gate --root "$fx/tree-modular" \
+    >"$tmp/modular-inv.out" 2>&1 && code2=0 || code2=$?
+  c=$(grep -cE 'INVENTORY-MISS \(.*adapter/settings\.rs:[0-9]+\)' "$tmp/modular-inv.out" || true)
+  if [[ $code -eq 0 && $n -eq 1 && $m -eq 0 && $code2 -eq 1 && $c -eq 1 ]]; then
+    echo "self-test 27 (#1514 modular adapter tree resolves, adapter citation names adapter/settings.rs): PASS"
+  else
+    echo "self-test 27 (#1514 modular adapter tree resolves, adapter citation names adapter/settings.rs): FAIL (exit $code/$code2, $n BOUND, $m MISSING, $c adapter/settings.rs citations)"
+    sed 's/^/    /' "$tmp/modular.out" "$tmp/modular-inv.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -941,7 +992,7 @@ main() {
   local -a slint_files=() adapter_files=() messages_files=() \
         requests_files=() actions_files=() test_files=()
   mapfile -t slint_files < <(find_evidence '*.slint')
-  mapfile -t adapter_files < <(find_evidence 'adapter.rs')
+  mapfile -t adapter_files < <(find_evidence_adapter)
   mapfile -t messages_files < <(find_evidence 'messages.rs')
   mapfile -t requests_files < <(find_evidence 'requests.rs')
   mapfile -t actions_files < <(find_evidence 'actions.rs')

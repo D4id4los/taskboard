@@ -1,0 +1,16 @@
+// Fixture .slint surface carrying the #965 boundary-match variant
+// spellings. Comment text deliberately avoids the standalone probe
+// tokens: a boundary-anchored grep does not skip comments.
+export component CollideView inherits Rectangle {
+    // (#1282) second kebab twin: a snake cell matching both callbacks must
+    // stay a single deterministic match (never a double credit)
+    callback habit-edit-asked();
+    // prefixmiss: only the suffixed spelling exists here, so the plan
+    // row naming the shorter callback must NOT resolve against it.
+    callback save_extra();
+    // prefixfound: the honest callback, adjacent to the suffixed one.
+    callback load();
+    // prefixfound: the suffixed spelling must not shadow the honest
+    // one nor satisfy a plan row naming the shorter callback.
+    callback load_extra();
+}
