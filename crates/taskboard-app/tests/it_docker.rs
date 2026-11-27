@@ -337,11 +337,17 @@ async fn it_nextcloud_docker_cli_standalone_publish() {
         )
         .await
         .expect("stand-alone stack add");
+        // The stack selector is explicit by contract: a stackless `tasks
+        // add` on exactly one live board captures into that board's
+        // Backlog stack (minted on demand — chunk 10 D10, the deliberate
+        // landing change), which would publish a second stack and break
+        // the one-stack server expectation below. Same diagnosis as the
+        // editing-push journey (live Deck 1.19.0, CI run 45728295667).
         let task_receipt = tasks::add(
             standalone,
             Arc::clone(&no_store),
             &format!("{run}-task"),
-            None,
+            Some(&format!("{run}-col")),
         )
         .await
         .expect("stand-alone task add");
@@ -458,10 +464,22 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     let stack_receipt = stacks::add(standalone.clone(), Arc::clone(&no_store), None, "col", None)
         .await
         .expect("stack");
-    let survivor = tasks::add(standalone.clone(), Arc::clone(&no_store), "survivor", None)
-        .await
-        .expect("task");
-    let doomed = tasks::add(standalone, Arc::clone(&no_store), "doomed", None)
+    // The stack selector is explicit by contract: a stackless `tasks add`
+    // on exactly one live board captures into that board's Backlog stack
+    // (minted on demand — chunk 10 D10, the deliberate landing change),
+    // which would mint a second stack and break the journey's one-stack
+    // server expectation. Diagnosed against live Deck 1.19.0 (CI run
+    // 45728295667): the journey's edits landed in a minted "Backlog"
+    // stack, so the server held two stacks at the :607 read.
+    let survivor = tasks::add(
+        standalone.clone(),
+        Arc::clone(&no_store),
+        "survivor",
+        Some("col"),
+    )
+    .await
+    .expect("task");
+    let doomed = tasks::add(standalone, Arc::clone(&no_store), "doomed", Some("col"))
         .await
         .expect("task");
 
