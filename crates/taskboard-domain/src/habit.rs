@@ -2105,8 +2105,15 @@ mod tests {
                     // (With interleaved corrections the Σ invariant is
                     // pinned separately, over log-only sequences — an
                     // audited adjust may legitimately lower a window.)
-                    let (key, entry) = match &plan.actions[0] {
-                        crate::persistence::PersistenceAction::RecordHabitLog(k, e) => (*k, *e),
+                    // The #1519 event rides actions[0]; the mirror row
+                    // follows it.
+                    let (key, entry) = match plan
+                        .actions
+                        .iter()
+                        .find(|action| {
+                            matches!(action, crate::persistence::PersistenceAction::RecordHabitLog(_, _))
+                        }) {
+                        Some(crate::persistence::PersistenceAction::RecordHabitLog(k, e)) => (*k, *e),
                         other => panic!("unexpected action: {other:?}"),
                     };
                     let pre = stored_count(&fixture, key.window);
@@ -2688,10 +2695,17 @@ mod tests {
     }
 
     fn minted_clock(plan: &crate::command::CommandPlan) -> DateTime<Utc> {
-        match &plan.actions[0] {
-            crate::persistence::PersistenceAction::RecordHabitLog(_, entry) => entry.clock,
-            other => panic!("unexpected action: {other:?}"),
-        }
+        // The #1519 event grammar rides the minted event first in the
+        // batch; the mirror row's clock is the test's subject.
+        plan.actions
+            .iter()
+            .find_map(|action| match action {
+                crate::persistence::PersistenceAction::RecordHabitLog(_, entry) => {
+                    Some(entry.clock)
+                }
+                _ => None,
+            })
+            .expect("the plan carries a mirror row")
     }
 
     // ---- Deterministic streak cases (§5.3) -------------------------------

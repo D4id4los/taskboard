@@ -617,7 +617,10 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::LogHabit { .. } => "Log habit".into(),
         StateCommand::SkipHabit { .. } => "Skip habit".into(),
         StateCommand::UnskipHabit { .. } => "Unskip habit".into(),
-
+        // The undo-facing synthesis verbs (the `RestoreTask` label
+        // precedent): catalogue labels only, never a user surface.
+        StateCommand::TombstoneHabitEvent { .. } => "Remove habit entry".into(),
+        StateCommand::RestoreHabitEvent { .. } => "Restore habit entry".into(),
         StateCommand::PauseHabit { .. } => "Pause habit".into(),
         StateCommand::AdjustHabitLog { .. } => "Adjust habit log".into(),
         StateCommand::DeleteHabit { .. } => "Delete habit".into(),

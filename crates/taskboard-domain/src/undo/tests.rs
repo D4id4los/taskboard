@@ -318,6 +318,9 @@ fn log_time_capture_journals_the_minted_entry_id_and_pre_absence() {
 
 #[test]
 fn record_habit_log_capture_carries_the_pre_row_and_post_stamp() {
+    // (The harness habit is quota 1; this test's audited target needs
+    // the target within quota so the touched window's mirror row
+    // actually moves — see the recorded over-quota grammar limit.)
     let mut h = Harness::new();
     let board = h.board();
     let habit = {
@@ -325,7 +328,9 @@ fn record_habit_log_capture_carries_the_pre_row_and_post_stamp() {
             .exec(&StateCommand::CreateHabit {
                 board,
                 title: "habit".into(),
-                target: habit_target(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(5).expect("valid quota"),
+                ),
             })
             .expect("created")
         {
@@ -354,13 +359,17 @@ fn record_habit_log_capture_carries_the_pre_row_and_post_stamp() {
     let UndoFacts::PreImages { images, watermark } = &entry.facts else {
         panic!("an existing-window adjust journals PreImages");
     };
+    // DELIBERATE DELTA (2026-11-27, #1519): the reconcile's minted
+    // events may repair into the previous window, so the batch's
+    // mirror rows can span two keys — the capture is asserted for the
+    // TOUCHED window's row.
     assert_eq!(
         images.iter().find_map(|image| match image {
-            PreImage::HabitLogRow { key: k, before } => Some((*k, *before)),
+            PreImage::HabitLogRow { key: k, before } if *k == key => Some((*k, *before)),
             _ => None,
         }),
         Some((key, Some(pre_row))),
-        "the pre row rides the entry"
+        "the touched window's pre row rides the entry"
     );
     let post_row = h.disk.habits.log[&key];
     assert_eq!(
@@ -741,12 +750,18 @@ fn habit_reorder_undo_restores_the_section() {
 fn adjust_habit_log_round_trips() {
     let mut h = Harness::new();
     let board = h.board();
+    // DELIBERATE DELTA (2026-11-27, #1519): the audited target sits at
+    // the quota — an over-quota audited count is not expressible as
+    // derived facts (the attribution rule repairs the synthesized
+    // events into an unmet predecessor; the recorded grammar limit).
     let habit = {
         match h
             .exec(&StateCommand::CreateHabit {
                 board,
                 title: "habit".into(),
-                target: habit_target(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(5).expect("valid quota"),
+                ),
             })
             .expect("created")
         {
@@ -769,7 +784,15 @@ fn adjust_habit_log_round_trips() {
     h.exec(&StateCommand::Undo).expect("undone");
     let after = h.disk.habits.log[&key];
     assert_eq!(after.count, pre_row.count, "the pre count restored");
-    assert_eq!(after.clock, ts(h.now), "fresh row clock; the row stays");
+    // DELIBERATE DELTA (2026-11-27, #1519): the inverse is now the
+    // per-event snapshot restore; the mirror row is recomputed from
+    // the post-restore derivations, so the row clock is the monotone
+    // mint PAST the adjust's own stamp (per inverse in the batch),
+    // not exactly `now`. Structural fact asserted, not a pinned value.
+    assert!(
+        after.clock > pre_row.clock,
+        "the restored row stamps strictly past the adjust's write"
+    );
     h.exec(&StateCommand::Redo).expect("redone");
     assert_eq!(h.disk.habits.log[&key].count, 5);
 }
@@ -924,24 +947,36 @@ fn an_absent_window_adjust_journals_not_undoable() {
         count: 3,
     })
     .expect("accepted (the backfill itself is legal)");
+    // DELIBERATE DELTA (2026-11-27, #1519): the D24 fence is DELETED —
+    // the absent window journals an EMPTY event snapshot, and the
+    // inverse restores emptiness exactly (the fence's successor law).
     let entry = h.journal.entries.last().unwrap();
-    assert_eq!(
-        entry.facts,
-        UndoFacts::NotUndoable(NotUndoableReason::HabitSurface),
-        "the absent window refuses at record time (D24)"
+    let UndoFacts::PreImages { images, .. } = &entry.facts else {
+        panic!("the absent-window adjust journals PreImages");
+    };
+    assert!(
+        images
+            .iter()
+            .any(|image| matches!(image, PreImage::HabitEventWindow { events, .. } if events.is_empty())),
+        "the empty pre snapshot rides the entry"
     );
-    let head = h.journal.head;
-    assert!(matches!(
-        h.exec(&StateCommand::Undo),
-        Err(CommandError::TargetNotUndoable(
-            NotUndoableReason::HabitSurface
-        ))
-    ));
-    assert_eq!(h.journal.head, head);
+    h.exec(&StateCommand::Undo)
+        .expect("the absent-window adjust undoes — emptiness restores exactly");
+    let tombstoned = h
+        .disk
+        .habits
+        .events
+        .values()
+        .filter(|event| event.deleted.is_some())
+        .count();
+    assert!(
+        tombstoned > 0,
+        "every synthesized fact is a tombstone again"
+    );
 }
 
 #[test]
-fn a_seam_addressed_update_journals_not_undoable_for_the_whole_edit() {
+fn a_seam_addressed_update_journals_and_restores_the_whole_edit() {
     let mut h = Harness::new();
     let board = h.board();
     let habit = {
@@ -957,9 +992,11 @@ fn a_seam_addressed_update_journals_not_undoable_for_the_whole_edit() {
             other => panic!("expected HabitCreated, got {other:?}"),
         }
     };
-    // Mixed with a clocked change: the whole edit refuses, not just the
-    // seam field — a partial restore would print "Undone" over an
-    // unrestored field (D25).
+    // DELIBERATE DELTA (2026-11-27, #1519): the D25 seam fence is
+    // DELETED — windows are derived, there is no clock slot to
+    // watermark against anymore, so a seam-addressed edit journals the
+    // ordinary `PreImage::Habit` row pre-image and inverts exactly
+    // like any other edit leg.
     h.exec(&StateCommand::UpdateHabit {
         habit,
         changes: crate::messages::HabitChanges {
@@ -972,21 +1009,23 @@ fn a_seam_addressed_update_journals_not_undoable_for_the_whole_edit() {
     })
     .expect("accepted");
     let entry = h.journal.entries.last().unwrap();
-    assert_eq!(
-        entry.facts,
-        UndoFacts::NotUndoable(NotUndoableReason::HabitSurface),
+    let UndoFacts::PreImages { images, .. } = &entry.facts else {
+        panic!("the seam edit journals pre-images");
+    };
+    assert!(
+        images
+            .iter()
+            .any(|image| matches!(image, PreImage::Habit { .. })),
+        "the ordinary habit row pre-image covers the seam leg"
     );
-    let head = h.journal.head;
-    assert!(matches!(
-        h.exec(&StateCommand::Undo),
-        Err(CommandError::TargetNotUndoable(
-            NotUndoableReason::HabitSurface
-        ))
-    ));
-    assert_eq!(h.journal.head, head);
+    h.exec(&StateCommand::Undo).expect("the seam edit undoes");
     assert_eq!(
-        h.disk.habits.habits[&habit].title, "renamed",
-        "the accepted edit stands"
+        h.disk.habits.habits[&habit].title, "habit",
+        "the rename restored"
+    );
+    assert!(
+        h.disk.habits.habits[&habit].continued_from.is_none(),
+        "the seam leg restored with the rest"
     );
 }
 
@@ -1067,7 +1106,15 @@ fn a_logged_entry_adjusted_since_refuses_the_log_time_undo() {
 }
 
 #[test]
-fn a_log_window_written_since_refuses_the_older_adjust_undo() {
+fn consecutive_adjust_undos_restore_exactly_in_the_event_grammar() {
+    // DELIBERATE DELTA (2026-11-27, #1519): the legacy row-clock guard
+    // refused the older adjust's undo (its own restore re-stamped the
+    // compared row — the burst-undo deadlock the stage-1 plan's R5
+    // names). The snapshot grammar's inverse tombstones/restores
+    // *different* facts than the compared snapshot, so consecutive
+    // same-window pops are exact and refuse nothing; an interleaved
+    // write still refuses (pinned by
+    // `an_interleaved_tombstone_refuses_the_older_log_undo`).
     let mut h = Harness::new();
     let board = h.board();
     let habit = {
@@ -1098,21 +1145,196 @@ fn a_log_window_written_since_refuses_the_older_adjust_undo() {
         count: 7,
     })
     .expect("second adjust");
-    // The first undo pops the newest adjust (its own stamps stand).
     h.exec(&StateCommand::Undo)
         .expect("the newest adjust undoes");
-    assert_eq!(h.disk.habits.log[&key].count, 5);
-    // The older adjust's recorded post-row has diverged (the restore
-    // wrote a fresh clock) — refuse, the v1 covered-field-edit echo.
-    let err = h.exec(&StateCommand::Undo).expect_err("refused");
-    assert!(matches!(
-        err,
-        CommandError::TargetNoLongerInvertible {
-            field: UndoField::HabitLogCount,
-            ..
+    h.exec(&StateCommand::Undo)
+        .expect("the older adjust undoes too — exact, no deadlock");
+    // Both adjusts' synthesized facts are tombstones again; exactly
+    // the seed completion stays live.
+    let live = h
+        .disk
+        .habits
+        .events
+        .values()
+        .filter(|event| event.is_live())
+        .count();
+    assert_eq!(live, 1, "the seed completion is the one live fact");
+    assert_eq!(
+        h.disk.habits.log[&key].count, 1,
+        "the window derives the seed count again"
+    );
+}
+
+#[test]
+fn a_same_window_burst_pops_one_event_per_undo() {
+    // The snapshot grammar's burst-undo law (the stage-1 plan R5,
+    // re-derived): consecutive same-window pops each tombstone a
+    // DIFFERENT fact, so the guard — which no longer re-stamps the
+    // compared row — cannot deadlock. A tombstoned sibling is not an
+    // interleaved live write: it is exactly the state the older
+    // entry's inverse must produce, so the pop succeeds.
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: habit_target(),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
         }
-    ));
-    assert_eq!(h.disk.habits.log[&key].count, 5, "state untouched");
+    };
+    h.exec(&StateCommand::LogHabit { habit }).expect("first log");
+    h.exec(&StateCommand::LogHabit { habit }).expect("second log");
+    h.exec(&StateCommand::Undo).expect("the newest log undoes");
+    h.exec(&StateCommand::Undo).expect("the older log undoes too");
+    let live = h
+        .disk
+        .habits
+        .events
+        .values()
+        .filter(|event| event.is_live())
+        .count();
+    assert_eq!(live, 0, "both burst facts tombstoned, one per pop");
+}
+
+#[test]
+fn us3_s1_week_undo_tombstones_event_id() {
+    // W-8/US-3 AC-1: a Week-kind log undone tombstones exactly the
+    // receipt's minted id; the derived count AND the day attribution
+    // drop it — the #1341 phantom-cell class pinned dead at the
+    // engine layer.
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "week".into(),
+                target: crate::habit::HabitTarget::PerWeek(
+                    crate::habit::NonZeroCount::new(1).expect("valid quota"),
+                ),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    let CommandOutcome::HabitLogged { event, .. } = h
+        .exec(&StateCommand::LogHabit { habit })
+        .expect("logged")
+    else {
+        panic!("expected HabitLogged");
+    };
+    let minted = event.expect("the receipt names the minted event");
+    let day = Harness::day();
+    let row = h.disk.habits.habits[&habit].clone();
+    let before_days = crate::habit_event::derive_day_counts(&row, h.disk.habits.events.values(), day);
+    assert_eq!(before_days.values().sum::<u32>(), 1);
+    h.exec(&StateCommand::Undo).expect("undone");
+    let tombstoned = h
+        .disk
+        .habits
+        .events
+        .values()
+        .filter(|event| event.deleted.is_some())
+        .count();
+    assert_eq!(tombstoned, 1, "exactly the minted id tombstoned");
+    assert!(h.disk.habits.events[&minted].deleted.is_some());
+    let row = h.disk.habits.habits[&habit].clone();
+    let after_days = crate::habit_event::derive_day_counts(&row, h.disk.habits.events.values(), day);
+    assert_eq!(
+        after_days.values().sum::<u32>(),
+        0,
+        "the day attribution dropped the undone completion"
+    );
+}
+
+#[test]
+fn us2_s2_adjust_preimage_restores_exactly() {
+    // W-5/US-2 S2: undo of an adjust restores the exact pre
+    // tombstone-state set — the synthesized completions tombstone and
+    // the pre-existing tombstone un-tombstones (the second undo pops
+    // the tombstone the first adjust wrote).
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(3).expect("valid quota"),
+                ),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    h.exec(&StateCommand::LogHabit { habit }).expect("log one");
+    h.exec(&StateCommand::LogHabit { habit }).expect("log two");
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: h.disk.habits.log.keys().next().expect("row").window,
+        count: 1,
+    })
+    .expect("audited down to one");
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: h.disk.habits.log.keys().next().expect("row").window,
+        count: 3,
+    })
+    .expect("audited up to three");
+    h.exec(&StateCommand::Undo).expect("the up-adjust undoes");
+    // Exact pre state: one live completion, the down-adjust's
+    // tombstone standing, the synthesized pair gone.
+    let live = h
+        .disk
+        .habits
+        .events
+        .values()
+        .filter(|event| event.is_live())
+        .count();
+    let tombstoned = h
+        .disk
+        .habits
+        .events
+        .values()
+        .filter(|event| event.deleted.is_some())
+        .count();
+    assert_eq!(live, 1);
+    assert_eq!(
+        tombstoned, 3,
+        "the pre tombstone stands; both synthesized mints are tombstones again"
+    );
+    h.exec(&StateCommand::Undo).expect("the down-adjust undoes");
+    let tombstoned = h
+        .disk
+        .habits
+        .events
+        .values()
+        .filter(|event| event.deleted.is_some())
+        .count();
+    assert_eq!(
+        tombstoned, 2,
+        "the un-tombstone restored the pre fact; the synthesized pair stays tombstoned"
+    );
+    let row = h.disk.habits.habits[&habit].clone();
+    let day = Harness::day();
+    assert_eq!(
+        crate::habit_event::derive_window_counts(&row, h.disk.habits.events.values(), day)
+            .values()
+            .sum::<u32>(),
+        2,
+        "both completions derive again"
+    );
 }
 
 // ---- the synthesis catalogue -------------------------------------------
@@ -1629,10 +1851,10 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
             NotUndoableReason::TrackingSurface
         ))
     ));
-    // Habit surface (the absent-window `AdjustHabitLog` keeps its D24
-    // fence — R-7's 2026-11-21 supersession removed `LogHabit` from the
-    // fence only; CreateHabit is undoable now, so it is seeded first
-    // and simply becomes part of the line).
+    // Habit policy (DELIBERATE DELTA, 2026-11-27 #1519: the D24/D25
+    // HabitSurface fences are DELETED — the absent-window adjust now
+    // journals and undoes exactly; the policy fence survives on
+    // `PauseHabit`, whose change mask has no `paused_until` leg).
     h.exec(&StateCommand::CreateHabit {
         board,
         title: "habit".into(),
@@ -1640,19 +1862,15 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
     })
     .expect("created");
     let habit = *h.disk.habits.habits.keys().next().expect("habit row");
-    h.exec(&StateCommand::AdjustHabitLog {
+    h.exec(&StateCommand::PauseHabit {
         habit,
-        window: crate::habit::WindowStart::of_period(
-            crate::habit::PeriodKind::Day,
-            chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
-        ),
-        count: 3,
+        until: Some(chrono::NaiveDate::from_ymd_opt(2026, 12, 31).expect("valid date")),
     })
-    .expect("the backfill itself is legal");
+    .expect("the pause applies");
     assert!(matches!(
         h.exec(&StateCommand::Undo),
         Err(CommandError::TargetNotUndoable(
-            NotUndoableReason::HabitSurface
+            NotUndoableReason::HabitPolicy
         ))
     ));
     // (`DeleteStack` left the restore-class family in #356's D-1
@@ -2715,14 +2933,14 @@ fn both_convert_directions_journal_not_undoable_and_refuse_typed() {
     let entry = h.journal.entries.last().unwrap();
     assert!(matches!(
         entry.facts,
-        UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+        UndoFacts::NotUndoable(NotUndoableReason::HabitPolicy)
     ));
     let err = h.exec(&StateCommand::Undo);
     assert!(
         matches!(
             err,
             Err(CommandError::TargetNotUndoable(
-                NotUndoableReason::HabitSurface
+                NotUndoableReason::HabitPolicy
             ))
         ),
         "the composite refuses-and-names, never skips"
@@ -2750,13 +2968,13 @@ fn both_convert_directions_journal_not_undoable_and_refuse_typed() {
     let entry = h.journal.entries.last().unwrap();
     assert!(matches!(
         entry.facts,
-        UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+        UndoFacts::NotUndoable(NotUndoableReason::HabitPolicy)
     ));
     let err = h.exec(&StateCommand::Undo);
     assert!(matches!(
         err,
         Err(CommandError::TargetNotUndoable(
-            NotUndoableReason::HabitSurface
+            NotUndoableReason::HabitPolicy
         ))
     ));
     // The seams stay readable from state: the retired habit is
