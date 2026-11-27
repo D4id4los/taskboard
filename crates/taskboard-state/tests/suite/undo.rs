@@ -720,11 +720,15 @@ async fn move_habit_round_trips_through_the_engine() {
 async fn adjust_habit_log_round_trips_through_the_engine() {
     let mut rig = Rig::start().await;
     let board = rig.state().boards.keys().next().copied().expect("seed");
+    // DELIBERATE DELTA (2026-11-27, #1519): the audited target sits at
+    // the quota — an over-quota audited count is not expressible as
+    // derived facts (the attribution rule repairs the synthesized
+    // events into an unmet predecessor; the recorded grammar limit).
     let habit = expect_created_habit(
         rig.run(StateCommand::CreateHabit {
             board,
             title: "water".into(),
-            target: quota(3),
+            target: quota(5),
         })
         .await
         .expect("accepted"),
@@ -1417,29 +1421,33 @@ async fn undo_after_burst_pops_one_increment() {
 /// `NotUndoable(HabitSurface)` posture — the audited correction valve
 /// keeps its fence.
 #[tokio::test]
-async fn adjust_habit_log_newest_keeps_the_typed_fence() {
+async fn pause_habit_keeps_the_policy_fence() {
     let mut rig = Rig::start().await;
     let habit = habit_fixture(&mut rig).await;
     let window = taskboard_domain::WindowStart::of_period(
         taskboard_domain::PeriodKind::Day,
         chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
     );
-    rig.run(StateCommand::AdjustHabitLog {
+    // DELIBERATE DELTA (2026-11-27, #1519): the D24 absent-window fence
+    // is DELETED — the backfill journals the empty event snapshot and
+    // undoes exactly. The engine-layer fence representative is now the
+    // `PauseHabit` policy fence (`HabitPolicy`; the change mask has no
+    // `paused_until` leg).
+    rig.run(StateCommand::PauseHabit {
         habit,
-        window,
-        count: 3,
+        until: Some(chrono::NaiveDate::from_ymd_opt(2026, 12, 31).expect("valid date")),
     })
     .await
-    .expect("the backfill itself is legal");
+    .expect("the pause applies");
     let err = rig
         .run(StateCommand::Undo)
         .await
-        .expect_err("the absent-window adjust stays fenced");
+        .expect_err("the pause stays fenced");
     assert!(
         matches!(
             err,
             ExecuteError::Rejected(taskboard_domain::CommandError::TargetNotUndoable(
-                taskboard_domain::NotUndoableReason::HabitSurface
+                taskboard_domain::NotUndoableReason::HabitPolicy
             ))
         ),
         "typed refusal: {err:?}"

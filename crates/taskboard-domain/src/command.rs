@@ -3498,7 +3498,20 @@ pub fn plan_command(
                 *window,
             );
             let derived = u32::try_from(members.len()).expect("window count fits u32");
-            if derived == *count {
+            // The identical-count early return compares the STORED row
+            // (the legacy gate verbatim): a row already showing the
+            // audited count is the no-churn no-op. A derived count
+            // equal to the target with a disagreeing (or absent) row is
+            // NOT a no-op — the audited valve still owns the mirror
+            // row's absolute write (an empty-window backfill seeds the
+            // count-0 row; the transitional restart drift — events not
+            // yet persisted, the recorded R2 risk — gets the row
+            // rewritten from the derivation).
+            let key = HabitLogKey {
+                habit: *id,
+                window: *window,
+            };
+            if app.habits.log.get(&key).is_some_and(|entry| entry.count == *count) {
                 return Ok(no_op());
             }
             let mut event_writes: Vec<crate::habit_event::HabitEvent> = Vec::new();
@@ -3569,6 +3582,35 @@ pub fn plan_command(
                 .into_iter()
                 .map(PersistenceAction::UpsertHabitEvent)
                 .collect();
+            if derived == *count {
+                // The event diff is empty (the derivation already
+                // reaches the target): the audited write is
+                // mirror-only — the legacy absolute row write stands
+                // (the audited count, the #986 monotone mint, the
+                // derived skip posture — never the legacy bit reset).
+                let skip_after = crate::habit_event::derive_skip_posture(
+                    habit,
+                    post_events.iter(),
+                    day,
+                )
+                .get(window)
+                .copied()
+                .unwrap_or(false);
+                let clock = crate::habit::mint_log_clock(
+                    now,
+                    app.habits.log.get(&key).map(|entry| entry.clock),
+                );
+                actions.push(PersistenceAction::RecordHabitLog(
+                    key,
+                    HabitLogEntry {
+                        count: *count,
+                        clock,
+                        by: author,
+
+                        skip: skip_after,
+                    },
+                ));
+            }
             actions.extend(habit_mirror_refresh(
                 app,
                 habit,

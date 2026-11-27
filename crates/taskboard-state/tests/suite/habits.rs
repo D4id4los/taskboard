@@ -128,8 +128,12 @@ async fn h1_habit_journey_create_log_adjust_delete() {
         .execute(StateCommand::CreateHabit {
             board,
             title: "meditate".into(),
+            // DELIBERATE DELTA (2026-11-27, #1519): the journey's
+            // audited adjust target sits at the quota — an over-quota
+            // audited count is not expressible as derived facts (the
+            // recorded grammar limit).
             target: taskboard_domain::HabitTarget::PerDay(
-                taskboard_domain::NonZeroCount::new(3).unwrap(),
+                taskboard_domain::NonZeroCount::new(5).unwrap(),
             ),
         })
         .await
