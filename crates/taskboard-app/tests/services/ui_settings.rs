@@ -794,6 +794,44 @@ async fn a_settings_request_inside_a_quiet_window_is_never_debounced() {
     forwarder.await.expect("forwarder joins cleanly");
 }
 
+/// The `SetTheme` flow (#1437 D5): the typed choice persists the
+/// `[ui] theme` word immediately through the same writeback lane —
+/// and the request carries no unvalidated payload (the closed-set
+/// `ThemeName` is minted UI-side), so the reply cannot be a typed
+/// refusal: the persist is the whole lane.
+#[tokio::test]
+async fn the_theme_flow_persists_the_word_immediately() {
+    let _env = crate::common::taskboard_env_lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+    let (_app, workspace) =
+        booted_workspace(config.clone(), Arc::new(FakeCredentialStore::default())).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        Arc::new(ArcSwap::from_pointee(taskboard_domain::AppState::default())),
+        workspace,
+    );
+
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(UiRequest::SetTheme {
+        theme: taskboard_ui_slint::palette::ThemeName::LIGHT,
+        reply,
+    })
+    .expect("capacity holds");
+    reply_rx
+        .await
+        .expect("reply lane alive")
+        .expect("the theme persisted immediately");
+    let written = std::fs::read_to_string(&config).expect("read back");
+    assert!(written.contains("theme = \"light\""), "the word lands");
+    assert!(written.contains("scale = 1.0"), "the sibling key survives");
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
 /// The `SetKeymapPreset` flow: the preset persists, the reply carries the
 /// rebuilt keymap (vi resolves the colon in the vi-normal context).
 #[tokio::test]

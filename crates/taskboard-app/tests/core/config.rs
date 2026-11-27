@@ -458,6 +458,27 @@ fn c15_ui_scale_env_override() {
     assert!((defaults.ui.scale - taskboard_app::config::DEFAULT_UI_SCALE).abs() < f64::EPSILON);
 }
 
+/// C15's theme twin (#1437 D5): `TASKBOARD_UI__THEME` wins over the
+/// file through the same figment ladder — the kiosk override story.
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn c15b_ui_theme_env_override_wins_over_the_file() {
+    let _env = xdg_lock();
+    let dir = tempdir();
+    let path = dir.path().join("taskboard.toml");
+    std::fs::write(
+        &path,
+        "[ui]\ntheme = \"dark\"\n[storage]\ndb_path = '/tmp/t.db'\n",
+    )
+    .expect("seed config");
+    let _theme = EnvOverride::set("TASKBOARD_UI__THEME", "light");
+    let config = AppConfig::load(Some(path.clone())).expect("loads with the override");
+    assert_eq!(
+        config.ui.theme, "light",
+        "the env override beats the file's dark"
+    );
+}
+
 /// C16: the `config path` diagnosis is pure resolution — an explicit
 /// `--config` is reported for reads and writes alike, existence never
 /// checked (that is `config print`/`load`'s typed failure, not this

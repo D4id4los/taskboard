@@ -714,4 +714,33 @@ mod overlay_tests {
             "the process-global kind survives"
         );
     }
+
+    /// The theme writeback (#1437 D5): the overlay creates the absent
+    /// `[ui]` table, flips an existing word, and preserves the
+    /// leading comment plus every unrelated table — and the file
+    /// round-trips through `AppConfig::load` with the new value.
+    #[test]
+    fn overlay_set_ui_theme_preserves_comments_and_unrelated_tables() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = seed_config(
+            &dir,
+            "# hand-tuned\n\
+             [storage]\ndb_path = '/tmp/t.db'\n\
+             [ui]\nscale = 1.5\n[ui.keymap]\npreset = \"vi\"\n",
+        );
+
+        overlay_set_ui_theme(&config, taskboard_ui_slint::palette::ThemeName::LIGHT)
+            .expect("overlay lands");
+
+        let written = std::fs::read_to_string(&config).expect("read back");
+        assert!(written.contains("# hand-tuned"), "comment survives");
+        assert!(written.contains("scale = 1.5"), "[ui] scale survives");
+        assert!(written.contains("preset = \"vi\""), "[ui.keymap] survives");
+        assert!(written.contains("theme = \"light\""), "the word lands");
+
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
+        assert_eq!(loaded.ui.theme, "light");
+        assert!((loaded.ui.scale - 1.5).abs() < f64::EPSILON);
+    }
 }
