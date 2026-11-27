@@ -407,6 +407,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "settings_save_clicked",
     "settings_scale_committed",
     "settings_scale_focus_lost",
+    "settings_theme_picked", // the theme row's commit seam (#1437 D3)
     "settings_scale_pressed",
     "settings_scale_released",
     "settings_sink_picked",
