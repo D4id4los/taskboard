@@ -710,6 +710,7 @@ export component AppWindow inherits Window {
                 rename-committed(c, t) => root.board-stack-rename-committed(c, t);
                 rename-edited(c, t) => root.board-stack-rename-edited(c, t);
                 text-flow-focus-lost() => root.text-flow-focus-lost();
+                board-dead-zone-clicked() => root.board-dead-zone-clicked();
                 create-committed(c, t) => root.board-create-committed(c, t);
                 create-edited(c, t) => root.board-create-edited(c, t);
                 add-task-activated(c) => root.board-add-task-activated(c);
@@ -2475,6 +2476,11 @@ export component AppWindow inherits Window {
     // field forwards here — the adapter settles per the flow-kind
     // rule (commit non-empty / discard empty / close the modal).
     pure callback text-flow-focus-lost();
+    // The dead-zone click-out (#1543): the board's gated layers fire
+    // it; the adapter settles through the one funnel (the Escape
+    // resolution's path — click ≡ key §7.1). No key binds it; no
+    // resolver reads it (an L2 pointer seam, not an ActionId).
+    pure callback board-dead-zone-clicked();
     pure callback task-title-committed(string);
     pure callback task-title-edited(string);
     // The back button (round-1 D12): routes nav.focus-board — no new
