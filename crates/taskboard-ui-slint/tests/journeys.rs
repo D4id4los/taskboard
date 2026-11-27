@@ -16135,6 +16135,79 @@ fn the_theme_rows_env_lock_push_follows_the_snapshot_truth_table() {
     );
 }
 
+/// T6 (#1528, plan D3, invariant 6): the push truth table's other
+/// half at the scale row — without the `ui.scale` key in
+/// `env_overridden` the Scale row's locked posture stays false, so
+/// the row renders enabled and behaves exactly as before the
+/// property existed.
+#[test]
+fn the_scale_rows_env_lock_push_follows_the_snapshot_truth_table() {
+    let (_fixture, state) = fixture::golden_state();
+    let snapshot = general_snapshot();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, snapshot);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+            assert!(
+                !window
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_scale_env_locked(),
+                "no ui.scale override, no lock"
+            );
+        },
+    );
+}
+
+/// T7 (#1528, plan D3): under a `ui.scale` env override the Scale
+/// row renders its env-locked posture (the pushed property drives
+/// the slider's `enabled`, the field's `read-only` and the
+/// annotation's visibility), and a commit attempt through the seam
+/// is structurally inert: the typed defence arm at
+/// `apply_scale_commit` routes nothing and refuses with the
+/// `EnvLocked` detail class — the same T-16 projection the sibling
+/// rows render.
+#[test]
+fn an_env_locked_scale_row_refuses_the_commit_seam_typed() {
+    let (_fixture, state) = fixture::golden_state();
+    let mut snapshot = general_snapshot();
+    snapshot.env_overridden = BTreeSet::from(["ui.scale".to_owned()]);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        },
+        move |_driver| {
+            let mut harness = general_harness(state, snapshot);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            assert!(
+                model().get_scale_env_locked(),
+                "the ui.scale override pushes the locked posture"
+            );
+            window.invoke_settings_scale_committed("2".into());
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the locked scale commit never dispatches"
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            assert!(
+                model().get_last_error_env_locked(),
+                "the env-locked detail class renders"
+            );
+        },
+    );
+}
+
 /// T-16 (#799) — the env-locked absorb's second family: the Files
 /// toggle's pick refuses typed (the `EnvLocked` detail class renders)
 /// and never routes; a knob pick on a locked choice row refuses the

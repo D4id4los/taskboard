@@ -28,6 +28,12 @@ export component Slider inherits Rectangle {
     in property <float> maximum;
     in property <float> step;
     in property <float> value;
+    // The disabled posture (#1528, plan D4): false guards every
+    // commit entry point — no pointer gesture, no key step, no AT
+    // action can open one or fire `preview`/`committed` — and dims
+    // the chrome. Default true: every unlocked call site renders and
+    // behaves exactly as before the property existed.
+    in property <bool> enabled: true;
     callback preview(float);
     callback committed(float);
     // The gesture began (the adapter records the revert point here —
@@ -45,6 +51,9 @@ export component Slider inherits Rectangle {
     // One keyboard stroke: the first opens the gesture (`pressed`),
     // each previews `target` without committing.
     function key-step(target: float) {
+        if (!root.enabled) {
+            return;
+        }
         if (!root.key-gesturing) {
             root.key-gesturing = true;
             root.pressed();
@@ -125,6 +134,9 @@ export component Slider inherits Rectangle {
     // tick grid, step one tick, and go through the gesture's release
     // path verbatim.
     public function step-by(direction: int) {
+        if (!root.enabled) {
+            return;
+        }
         root.preview(root.stepped(direction));
         root.committed(root.stepped(direction));
     }
@@ -142,6 +154,14 @@ export component Slider inherits Rectangle {
         );
     }
 
+    // The disabled render (plan D4): a dimmed control, not an
+    // inert-looking live one — the active chrome swaps to the rest
+    // tokens (the text-field read-only grammar's token swap; never an
+    // element opacity, whose binding flips the renderer onto the
+    // layer path and shifts the gesture geometry the grab probes
+    // pin). Unlocked is token-identical to the pre-property renders.
+    out property <color> active-chrome: root.enabled ? Semantic.focus-ring : Theme.border;
+    out property <color> thumb-chrome: root.enabled ? Theme.surface-raised : Theme.surface;
     // The track; the fill and the thumb read `rendered-value` (the
     // gesture mid-drag, the pushed truth otherwise — guarded against a
     // zero/empty range).
@@ -154,7 +174,7 @@ export component Slider inherits Rectangle {
         Rectangle {
             x: 0;
             width: parent.width * self.fraction;
-            background: Semantic.focus-ring;
+            background: root.active-chrome;
             border-radius: self.height / 2;
             in property <float> fraction:
                 clamp((root.rendered-value - root.minimum)
@@ -166,9 +186,9 @@ export component Slider inherits Rectangle {
             width: Theme.space-4;
             height: self.width;
             border-radius: self.width / 2;
-            background: Theme.surface-raised;
+            background: root.thumb-chrome;
             border-width: Theme.focus-ring-width;
-            border-color: Semantic.focus-ring;
+            border-color: root.active-chrome;
             in property <float> fraction:
                 clamp((root.rendered-value - root.minimum)
                     / max(0.0001, root.maximum - root.minimum), 0.0, 1.0);
@@ -184,18 +204,18 @@ export component Slider inherits Rectangle {
         width: parent.width;
         height: parent.height;
         changed pressed => {
-            if (self.pressed) {
+            if (self.pressed && root.enabled) {
                 root.gesture-value = self.value-at(self.mouse-x);
                 root.pressed();
             }
         }
         pointer-event(event) => {
-            if (event.kind == PointerEventKind.up) {
+            if (event.kind == PointerEventKind.up && root.enabled) {
                 root.committed(touch.value-at(touch.mouse-x));
             }
         }
         moved => {
-            if (self.pressed) {
+            if (self.pressed && root.enabled) {
                 root.gesture-value = self.value-at(self.mouse-x);
                 root.preview(root.gesture-value);
             }

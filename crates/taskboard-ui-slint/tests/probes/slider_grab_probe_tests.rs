@@ -251,3 +251,38 @@ fn p4_the_thumb_follows_the_pointer_while_the_theme_holds() {
         assert_eq!(settled_flick_y(window), 0.0, "no pan, no re-layout steal");
     });
 }
+
+/// T8 (#1528, plan D4): the Slider's `enabled` primitive guard — with
+/// it false the same wobbling drag (pan disabled, so the slider gets
+/// every event) opens no gesture and emits nothing: no `pressed`, no
+/// `preview`, no `committed`, and the flick pans nothing either. The
+/// unlocked probes (p3/p4) stay the oracle that `enabled: true` is
+/// behaviour-neutral.
+#[test]
+fn p5_a_disabled_slider_emits_no_gesture_events() {
+    run_probe(|window| {
+        window.global::<GrabProbe>().set_pan_enabled(false);
+        window.global::<GrabProbe>().set_slider_enabled(false);
+        slider_drag(window);
+        assert_eq!(
+            window.global::<GrabProbe>().get_pressed(),
+            0,
+            "a disabled slider opens no gesture"
+        );
+        assert_eq!(
+            window.global::<GrabProbe>().get_previews(),
+            0,
+            "a disabled slider previews nothing"
+        );
+        assert_eq!(
+            window.global::<GrabProbe>().get_committed(),
+            0,
+            "a disabled slider commits nothing"
+        );
+        assert_eq!(
+            settled_flick_y(window),
+            0.0,
+            "the drag pans nothing (pan disabled)"
+        );
+    });
+}
