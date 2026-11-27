@@ -149,7 +149,7 @@ reminders/focus_*/sink/files_poll/mounted/released, clear_general_draft;
 | `seams/status_panel.rs` | 14051–14138 (`install_status_panel_seam`, `status_panel_data`) | ~87 |
 | `seams/toolbar.rs` | 14138–14173 | ~35 |
 | `seams/undo.rs` | 14173–14212 + 14291–14304 (`undo_picker_commit`) | ~50 |
-| `seams/context.rs` | 14320–14511 (`impl Adapter` context-menu block) + 14511–14559 (`install_board_context_seam`, `install_stack_context_seam`) + 14853–14876 (`open_stack_context`) + 14892–14968 (`install_object_context_seams`) | ~330 |
+| `seams/context.rs` | 14320–14511 (`impl Adapter` context-menu block) + 14511–14559 (`install_board_context_seam`, `install_stack_context_seam`) + 14853–14876 (`open_stack_context`) + 14892–14968 (`install_object_context_seams`) — plus `install_menu_dismiss_seam` (census 14304–14320, the undo.rs→context.rs jump), landed here with its contiguous home in the menu family (called by `install_view_seams`; commit c62ca444) | ~330 |
 | `seams/today.rs` | 14559–14853 (`install_today_row_seams`, `focus_tracked_today_row`, `focus_today_row`) | ~294 |
 | `seams/navigation.rs` | 14876–14892 (`install_body_seams`) + 14991–15006 (`install_task_back_seam`) | ~31 |
 | `seams/shell.rs` | 15309–15329 (switcher flyout free fns) + 15329–15395 (`impl Adapter::switcher_flyout_key`) | ~86 |
@@ -170,7 +170,11 @@ recorded home tracking.rs.)*
 The four tail `#[cfg(test)] mod`s moved verbatim into one
 `#[cfg(test)]`-gated sibling file (`mod tests;` in mod.rs). No test
 code changes; the #1357 in-file-test restructure remains that issue's
-follow-up.
+follow-up. **Landed deviation (#1508): `auto_list_backoff_tests` instead
+landed in `adapter/replies.rs` (commit 2da80494), as a sibling of its
+subject type `AutoListBackoff` — the tests assert on its private
+fields/methods, which the mapped single-file home would have forced
+widening.**
 
 ### Completeness check
 Union of the ranges above = 1–20067 with no gap and no overlap:
@@ -222,7 +226,10 @@ compile; the full suite + byte-identical golden regen (stage 2/3).
    (drag/undo/due) — the only non-contiguous assignment in the map.
 5. `apply_time` (18118) → `tracking.rs`.
 6. Tail test mods → single `adapter/tests.rs` (not per-family files) —
-   #1357 owns any finer restructure.
+   #1357 owns any finer restructure. **Landed deviation (#1508):**
+   `auto_list_backoff_tests` → `adapter/replies.rs` (commit 2da80494),
+   sibling of its subject type — its tests assert on `AutoListBackoff`
+   private fields/methods.
 
 ## 6. Stage-2 execution order (suggested, one commit per module)
 
