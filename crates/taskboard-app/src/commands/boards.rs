@@ -1341,12 +1341,19 @@ async fn wait_for_adoption(
                 wiped_refs: None,
             });
         }
-        let fresh_failure = fresh_settled && matches!(phase, SyncPhase::Failed { .. });
+        // Fresh `Offline` is the outage verdict (k7), the adoption
+        // loop's sibling of the `sync` verb's classifier: the engine
+        // holds `Offline` on a lost connector's boards for the episode,
+        // so a settled-but-not-idle row is the network failure — not
+        // patience worth waiting out to `SyncTimedOut`.
+        let fresh_failure =
+            fresh_settled && matches!(phase, SyncPhase::Failed { .. } | SyncPhase::Offline);
         if fresh_failure {
-            let SyncPhase::Failed { last_error } = phase else {
-                unreachable!("checked by fresh_failure");
+            let error = match phase {
+                SyncPhase::Failed { last_error } => last_error,
+                _ => taskboard_domain::SyncErrorKind::Network,
             };
-            return Err(CommandError::SyncFailed(last_error));
+            return Err(CommandError::SyncFailed(error));
         }
         if Instant::now() >= deadline {
             tracing::warn!("board adoption timed out");
@@ -2118,6 +2125,31 @@ mod engine_fixture_tests {
         )
         .await
         .expect_err("fresh failure");
+        assert!(matches!(
+            err,
+            CommandError::SyncFailed(SyncErrorKind::Network)
+        ));
+        fixture.shutdown().await;
+    }
+
+    /// A fresh `Offline` phase is the outage verdict (k7): the engine
+    /// holds `Offline` on a lost connector's boards for the episode, so
+    /// adoption surfaces the typed network failure instead of waiting
+    /// out the deadline to `SyncTimedOut`.
+    #[tokio::test]
+    async fn wait_for_adoption_carries_a_fresh_offline_as_a_network_failure() {
+        let p = adopted_state(row(SyncPhase::Offline, 1));
+        let id = BoardId::from_uuid(Uuid::from_u128(0xB8));
+        let fixture = predicate_engine(p).await;
+        let err = wait_for_adoption(
+            &fixture.engine,
+            id,
+            RemoteBoardId::deck(7),
+            None,
+            Duration::from_millis(200),
+        )
+        .await
+        .expect_err("fresh outage row");
         assert!(matches!(
             err,
             CommandError::SyncFailed(SyncErrorKind::Network)

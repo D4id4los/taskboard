@@ -475,6 +475,14 @@ async fn run_loop(
     // reports channel closes — the sync actor owns the sender, so its
     // exit is exactly when the last cycle's evidence has landed.
     let mut draining = false;
+    // The connectors currently in an offline episode (the per-connector
+    // `ConnectorLost`/`ConnectorRestored` edges, D-W7): while a
+    // connector is lost, its boards' rows *hold* the `Offline` phase —
+    // every backoff cycle's `Failed { Network }` verdict must not
+    // overwrite the `ConnectorLost` stamp (k7; the journey's D5-18
+    // per-board health read depends on the steady state).
+    let mut lost_connectors: std::collections::HashSet<taskboard_domain::ConnectorId> =
+        std::collections::HashSet::new();
     // The reminder tick arm (design §5.2), deadline-driven (D2): the
     // wake is `min(next due instant, now + tick)` at the *live*
     // `settings.tick_secs` — the tick is the fallback sweep, never the
@@ -598,6 +606,7 @@ async fn run_loop(
                         },
                         &metrics,
                         &system_out,
+                        &lost_connectors,
                         report,
                         day,
                     )
@@ -675,6 +684,7 @@ async fn run_loop(
                     // One connector's episode: only its boards flip.
                     // Idempotent per board, so the authority's global
                     // follow-up (N=1) is a no-op second pass.
+                    lost_connectors.insert(c.clone());
                     go_offline(
                         &mut core,
                         &shared,
@@ -686,7 +696,8 @@ async fn run_loop(
                     )
                     .await;
                 }
-                Ok(SystemEvent::ConnectorRestored(_)) if !draining => {
+                Ok(SystemEvent::ConnectorRestored(c)) if !draining => {
+                    lost_connectors.remove(&c);
                     forward_sync_now(&mut sync_outs);
                 }
                 Ok(
@@ -1025,6 +1036,7 @@ async fn ingest_sync_report(
     seams: IngestSeams<'_>,
     metrics: &EngineMetrics,
     system_out: &broadcast::WeakSender<SystemEvent>,
+    lost_connectors: &std::collections::HashSet<taskboard_domain::ConnectorId>,
     report: taskboard_domain::SyncReport,
     day: taskboard_domain::days::DayCalendar,
 ) {
@@ -1215,6 +1227,19 @@ async fn ingest_sync_report(
             // report names its connector). A board-less failure vanishes
             // from the map — the aggregate stays idle.
             let bound = core.app().bound_boards_of(&connector);
+            // The outage is the operative fact while the episode lasts
+            // (k7): a `Network` verdict from a lost connector leaves the
+            // rows the `ConnectorLost` stamp wrote at `Offline`, instead
+            // of flickering `Failed { Network }` over them every backoff
+            // cycle. Non-network kinds (and any verdict from a
+            // connected connector) keep the plain failure phase.
+            let phase = if matches!(kind, taskboard_domain::SyncErrorKind::Network)
+                && lost_connectors.contains(&connector)
+            {
+                SyncPhase::Offline
+            } else {
+                SyncPhase::Failed { last_error: kind }
+            };
             let delta = SyncCounters {
                 cycles: 1,
                 failures: 1,
@@ -1225,10 +1250,7 @@ async fn ingest_sync_report(
                 .iter()
                 .map(|board| {
                     let current = core.sync_status(*board);
-                    PersistenceAction::UpsertSyncStatus(
-                        *board,
-                        sync_status_action(current, SyncPhase::Failed { last_error: kind }),
-                    )
+                    PersistenceAction::UpsertSyncStatus(*board, sync_status_action(current, phase))
                 })
                 .collect::<Vec<PersistenceAction>>();
             // Connector-wide verdict: every bound board's counters carry it.
