@@ -231,20 +231,33 @@ fn journaled_pre_images(app: &AppState, actions: &[PersistenceAction]) -> UndoFa
 /// The event-grammar capture for the four habit write classes (the
 /// stage-1 plan's D-J1): [`journaled_pre_images`]'s entity capture
 /// **plus** the addressed window's per-event snapshot — the pre-image
-/// is the fold membership at pre-command time (live members, all
-/// `None`-tombstoned), the stamp is the post-write snapshot (the pre
-/// ids updated through the batch's `UpsertHabitEvent` rows, the
-/// batch's minted ids appended). Both sorted ascending by id —
-/// deterministic serialization, elementwise `(id, tombstone-state)`
+/// is the fold membership at pre-command time, the stamp is the
+/// post-write snapshot of the same id set. Both sorted ascending by
+/// id — deterministic serialization, elementwise `(id, tombstone-state)`
 /// comparison at undo.
 ///
-/// The window resolves from the batch's own mirror row (every habit
-/// write class writes exactly the addressed window's `RecordHabitLog`
-/// row — the D-C mirror). Defensive fallback: an unresolvable window
-/// degrades to the plain entity capture (unreachable for a real
-/// plan; never a panic).
+/// The window resolves from the **command**, never the batch: a
+/// reconcile's mirror rows can span DISPLACED windows (a tombstone
+/// re-attributes a grace-repaired event into the addressed window), so
+/// the batch's first `RecordHabitLog` row is not reliably the addressed
+/// one — the batch-row scan is the fallback for the mint/mark classes
+/// (whose batches write exactly one mirror row). Defensive fallback:
+/// an unresolvable window degrades to the plain entity capture
+/// (unreachable for a real plan; never a panic).
+///
+/// The snapshot's id set: the pre image covers the window's PRE-fold
+/// membership; the post stamp widens to PRE ∪ batch-written ∪ POST-fold
+/// membership — the displacement capture. A displaced-in id (live
+/// before in another window, attributed here after the command) joins
+/// the post compare set, so the undo guard's live-members containment
+/// (R5) passes for the command's own re-attribution while a genuinely
+/// interleaved write — an id in neither fold — still refuses. The
+/// minted facts are recorded EXPLICITLY (the batch's event writes
+/// outside the pre fold): set-difference at undo cannot distinguish a
+/// mint from a displaced-in member.
 fn journaled_habit_event_images(
     app: &AppState,
+    command: &StateCommand,
     actions: &[PersistenceAction],
     day: DayCalendar,
 ) -> UndoFacts {
@@ -256,54 +269,89 @@ fn journaled_habit_event_images(
     else {
         return facts;
     };
-    // The addressed (habit, window): the batch's mirror row for the
-    // habit the batch's event writes touch.
-    let Some(habit) = actions.iter().find_map(|action| match action {
-        PersistenceAction::UpsertHabitEvent(event) => Some(event.habit),
-        _ => None,
-    }) else {
-        return facts;
-    };
-    let Some((_, window)) = actions.iter().find_map(|action| match action {
-        PersistenceAction::RecordHabitLog(key, _) if key.habit == habit => {
-            Some((key.habit, key.window))
+    // The addressed (habit, window): named by the command where it
+    // carries one; the single-mirror-row classes fall back to the
+    // batch scan.
+    let (habit, window) = match command {
+        StateCommand::AdjustHabitLog { habit, window, .. } => (*habit, *window),
+        StateCommand::LogHabit { habit }
+        | StateCommand::SkipHabit { habit }
+        | StateCommand::UnskipHabit { habit } => {
+            let Some((_, window)) = actions.iter().find_map(|action| match action {
+                PersistenceAction::RecordHabitLog(key, _) if key.habit == *habit => {
+                    Some((key.habit, key.window))
+                }
+                _ => None,
+            }) else {
+                return facts;
+            };
+            (*habit, window)
         }
-        _ => None,
-    }) else {
-        return facts;
+        _ => return facts,
     };
     let Some(row) = app.habits.habits.get(&habit) else {
         return facts;
     };
-    let mut members: BTreeSet<crate::habit_event::HabitEventId> =
+    let pre_members: BTreeSet<crate::habit_event::HabitEventId> =
         crate::habit_event::window_completion_members(row, app.habits.events.values(), day, window)
             .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .chain(crate::habit_event::window_mark_members(
+                row,
+                app.habits.events.values(),
+                day,
+                window,
+            ))
             .collect();
-    members.extend(crate::habit_event::window_mark_members(
+    // The post-write event view: the current rows with the batch's own
+    // upserts applied (replace-by-id, the entity-upsert discipline).
+    let mut post_events = app.habits.events.clone();
+    for action in actions {
+        if let PersistenceAction::UpsertHabitEvent(event) = action {
+            post_events.insert(event.id, *event);
+        }
+    }
+    // The minted facts: the batch's event writes outside the pre fold
+    // (a tombstone re-write of a pre-fold member is not a mint).
+    let minted: Vec<crate::habit_event::HabitEventId> = actions
+        .iter()
+        .filter_map(|action| match action {
+            PersistenceAction::UpsertHabitEvent(event) => Some(event.id),
+            _ => None,
+        })
+        .filter(|id| !pre_members.contains(id))
+        .collect();
+    let mut post_members = pre_members.clone();
+    post_members.extend(minted.iter().copied());
+    post_members.extend(crate::habit_event::window_completion_members(
         row,
-        app.habits.events.values(),
+        post_events.values(),
         day,
         window,
     ));
-    let pre: EventSnapshot = members.iter().map(|id| (*id, None)).collect();
-    // Keyed by id: the batch's own row write for a member REPLACES the
-    // member's pre state (a set of tuples would keep both — the
-    // duplicate id would make the undo guard's elementwise compare
-    // ambiguous).
-    let mut post: std::collections::BTreeMap<
-        crate::habit_event::HabitEventId,
-        Option<crate::habit_event::HabitEventTombstone>,
-    > = members.iter().map(|id| (*id, None)).collect();
-    for action in actions {
-        if let PersistenceAction::UpsertHabitEvent(event) = action {
-            post.insert(event.id, event.deleted);
-        }
-    }
-    let post: Vec<_> = post.into_iter().collect();
+    post_members.extend(crate::habit_event::window_mark_members(
+        row,
+        post_events.values(),
+        day,
+        window,
+    ));
+    // Each id's actual row tombstone state on each side (absent = the
+    // live `None`); the batch's write for a member REPLACES the
+    // member's pre state through the `post_events` view.
+    let pre: EventSnapshot = pre_members
+        .iter()
+        .map(|id| (*id, app.habits.events.get(id).and_then(|e| e.deleted)))
+        .collect();
+    let post: Vec<_> = post_members
+        .iter()
+        .map(|id| (*id, post_events.get(id).and_then(|e| e.deleted)))
+        .collect();
     fact_images.push(PreImage::HabitEventWindow {
         habit,
         window,
         events: pre,
+        minted,
     });
     fact_watermark.0.insert(
         JournalEntity::HabitEventWindow(habit, window),
@@ -376,13 +424,19 @@ fn habit_event_snapshots(
     images: &[PreImage],
     watermark: &UndoWatermark,
     habit: crate::ids::HabitId,
-) -> Option<(crate::habit::WindowStart, EventSnapshot, EventSnapshot)> {
-    let (window, pre) = images.iter().find_map(|image| match image {
+) -> Option<(
+    crate::habit::WindowStart,
+    EventSnapshot,
+    EventSnapshot,
+    Vec<crate::habit_event::HabitEventId>,
+)> {
+    let (window, pre, minted) = images.iter().find_map(|image| match image {
         PreImage::HabitEventWindow {
             habit: image_habit,
             window,
             events,
-        } if *image_habit == habit => Some((*window, events.clone())),
+            minted,
+        } if *image_habit == habit => Some((*window, events.clone(), minted.clone())),
         _ => None,
     })?;
     let post = match watermark
@@ -392,7 +446,7 @@ fn habit_event_snapshots(
         Some(EntityStamps::HabitEventWindow(post)) => post.clone(),
         _ => return None,
     };
-    Some((window, pre, post))
+    Some((window, pre, post, minted))
 }
 
 /// The guard oracle for the snapshot grammar: the recorded post ids'
@@ -441,20 +495,6 @@ fn current_window_snapshot(
         }
     }
     Ok(current)
-}
-
-/// The minted-facts extraction (the per-increment law generalized):
-/// the ids present in the recorded post snapshot and absent from the
-/// recorded pre snapshot — exactly the facts the entry's command
-/// minted, ascending id (deterministic batch order).
-fn minted_event_ids(
-    pre: &EventSnapshot,
-    post: &EventSnapshot,
-) -> Vec<crate::habit_event::HabitEventId> {
-    post.iter()
-        .filter(|(id, _)| !pre.iter().any(|(pid, _)| pid == id))
-        .map(|(id, _)| *id)
-        .collect()
 }
 
 /// Assembles the journal entry for one accepted mutating command: the
@@ -609,7 +649,7 @@ fn record_entry(
             // window's per-event snapshot restores the pre tombstone
             // state exactly, and an empty pre snapshot restores
             // emptiness exactly (the fence's successor law).
-            journaled_habit_event_images(app, actions, day)
+            journaled_habit_event_images(app, command, actions, day)
         }
         // ---- the exclusions stay, reasons restated (§4) ----------------
         StateCommand::StartHabitTracking { .. } | StateCommand::StopHabitTracking { .. } => {
@@ -634,7 +674,7 @@ fn record_entry(
             // Per-increment undoability: one `LogHabit` is one journal
             // entry; a same-second burst pops one event per undo (the
             // ids are distinct facts, the (at, id) order is stable).
-            journaled_habit_event_images(app, actions, day)
+            journaled_habit_event_images(app, command, actions, day)
         }
         StateCommand::SkipHabit { .. } | StateCommand::UnskipHabit { .. } => {
             // Journal-invertible (HF1, 2026-11-21; the #1519 mark
@@ -642,7 +682,7 @@ fn record_entry(
             // snapshot (`PreImage::HabitEventWindow`); the inverse
             // tombstones the minted mark id — a fact, never a forged
             // row shape. The count stays untouched either way.
-            journaled_habit_event_images(app, actions, day)
+            journaled_habit_event_images(app, command, actions, day)
         }
         StateCommand::PauseHabit { .. } => {
             // The pause lives on the habit row, but `HabitChanges` has
@@ -2693,14 +2733,15 @@ fn synthesize_undo(
             }) else {
                 return Err(CommandError::NothingToUndo);
             };
-            if let Some((window, pre, post)) = habit_event_snapshots(images, watermark, habit) {
+            if let Some((window, _pre, post, minted)) =
+                habit_event_snapshots(images, watermark, habit)
+            {
                 let Some(row) = app.habits.habits.get(&habit) else {
                     return Err(CommandError::NothingToUndo);
                 };
                 let entity = JournalEntity::HabitEventWindow(habit, window);
                 current_window_snapshot(app, row, window, day, &post)
                     .map_err(|()| refuse(entity, UndoField::HabitEvents))?;
-                let minted = minted_event_ids(&pre, &post);
                 if minted.is_empty() {
                     // Unreachable for a journaled mark (the mint always
                     // lands); defensive.
@@ -2747,16 +2788,16 @@ fn synthesize_undo(
                 return Err(CommandError::NothingToUndo);
             };
             // The event-grammar inverse (#1519, D-U): the adjust's own
-            // effects are the post-snapshot deltas. Created ids
-            // (post∖pre) tombstone — a tombstone, never a local map
-            // delete (the recorded deviation: a delete cannot survive a
-            // peer union re-import; the tombstone is the deletion fact
+            // effects are the post-snapshot deltas. The recorded minted
+            // ids tombstone — a tombstone, never a local map delete
+            // (the recorded deviation: a delete cannot survive a peer
+            // union re-import; the tombstone is the deletion fact
             // family the fold understands). Changed ids restore the
             // recorded pre tombstone state verbatim
             // (`RestoreHabitEvent`). The absent-window case restores
             // emptiness exactly (empty pre snapshot, all created ids
             // tombstoned) — D24's successor.
-            if let Some((snapshot_window, pre, post)) =
+            if let Some((snapshot_window, pre, post, minted)) =
                 habit_event_snapshots(images, watermark, habit)
             {
                 let Some(row) = app.habits.habits.get(&habit) else {
@@ -2765,7 +2806,7 @@ fn synthesize_undo(
                 let entity = JournalEntity::HabitEventWindow(habit, snapshot_window);
                 current_window_snapshot(app, row, snapshot_window, day, &post)
                     .map_err(|()| refuse(entity, UndoField::HabitEvents))?;
-                let mut batch: Vec<StateCommand> = minted_event_ids(&pre, &post)
+                let mut batch: Vec<StateCommand> = minted
                     .into_iter()
                     .map(|event| StateCommand::TombstoneHabitEvent { event })
                     .collect();
@@ -2842,25 +2883,28 @@ fn synthesize_undo(
                 return Err(CommandError::NothingToUndo);
             };
             // The event-grammar inverse (#1519, the stage-1 plan's
-            // D-U): the minted id(s) = the ids present in the recorded
-            // post snapshot and absent from the recorded pre snapshot;
-            // the inverse tombstones exactly those facts. Exact by
-            // construction — no `AdjustHabitLog` reuse, no `count: 0`
-            // forging, no bump re-stamp. The burst-undo analysis re-
-            // derived for the snapshot grammar (the stage-1 plan R5):
+            // D-U): the minted ids are the facts the entry's command
+            // minted, recorded explicitly on the pre-image (set-
+            // difference at undo cannot separate a mint from a member
+            // the reconcile displaced in); the inverse tombstones
+            // exactly those facts. Exact by construction — no
+            // `AdjustHabitLog` reuse, no `count: 0` forging, no bump
+            // re-stamp. The burst-undo analysis re-derived for the
+            // snapshot grammar (the stage-1 plan R5):
             // consecutive pops of a same-second burst each tombstone a
             // *different* fact, so the guard (which no longer re-stamps
             // the compared row) cannot deadlock; an interleaved write
             // to the window refuses. The old count-only-vs-whole-row
             // guard tension dies with the row grammar.
-            if let Some((window, pre, post)) = habit_event_snapshots(images, watermark, habit) {
+            if let Some((window, _pre, post, minted)) =
+                habit_event_snapshots(images, watermark, habit)
+            {
                 let Some(row) = app.habits.habits.get(&habit) else {
                     return Err(CommandError::NothingToUndo);
                 };
                 let entity = JournalEntity::HabitEventWindow(habit, window);
                 current_window_snapshot(app, row, window, day, &post)
                     .map_err(|()| refuse(entity, UndoField::HabitEvents))?;
-                let minted = minted_event_ids(&pre, &post);
                 if minted.is_empty() {
                     // Unreachable for a journaled log (the mint always
                     // lands); defensive.

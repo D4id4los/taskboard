@@ -202,8 +202,8 @@ pub enum PreImage {
     /// time, each member with its tombstone state (live members are
     /// `None` — the fold only attributes live events). One variant
     /// serves every habit write class: `LogHabit`/`SkipHabit`/
-    /// `UnskipHabit` (the pre-state for the minted-id extraction) and
-    /// `AdjustHabitLog` (the exact restore source). Snapshot, not
+    /// `UnskipHabit` (the pre-state beside the recorded minted ids)
+    /// and `AdjustHabitLog` (the exact restore source). Snapshot, not
     /// recomputation: the entry is the truth forever after.
     HabitEventWindow {
         habit: crate::ids::HabitId,
@@ -215,6 +215,15 @@ pub enum PreImage {
             crate::habit_event::HabitEventId,
             Option<crate::habit_event::HabitEventTombstone>,
         )>,
+        /// The facts this entry's command MINTED — the batch's
+        /// `UpsertHabitEvent` writes whose ids are not pre-fold
+        /// members. Recorded explicitly because set-difference at undo
+        /// cannot distinguish a mint from a member another window
+        /// displaced in (the reconcile's tombstones re-attribute
+        /// grace-repaired events): the post snapshot covers displaced
+        /// members too, so the minted list is the only exact
+        /// tombstone-on-inverse source. Ascending id order.
+        minted: Vec<crate::habit_event::HabitEventId>,
     },
     /// One habit event row's pre-image (the entity-upsert capture for
     /// the undo-facing synthesis commands `TombstoneHabitEvent` /
