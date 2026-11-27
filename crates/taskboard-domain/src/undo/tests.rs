@@ -1388,6 +1388,17 @@ fn undo_of_a_displacing_adjust_restores_exactly() {
         count: 2,
     })
     .expect("audited down to two");
+    // The #1549 limit's mirror case (same ruling, derived truth wins):
+    // the tombstone un-quota'd the natural window, so the repaired
+    // sibling re-attributes INTO it — the window derives 3 against the
+    // audited target of 2 (the arm comment documents the limit).
+    let row = h.disk.habits.habits[&habit].clone();
+    let counts = crate::habit_event::derive_window_counts(&row, h.disk.habits.events.values(), day);
+    assert_eq!(
+        counts.get(&today),
+        Some(&3),
+        "the derived truth overshoots the audited target (documented grammar limit)"
+    );
     h.exec(&StateCommand::Undo)
         .expect("the displacing adjust undoes");
     assert!(

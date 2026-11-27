@@ -3533,6 +3533,15 @@ pub fn plan_command(
                 // completions first). A tombstone is an appended fact
                 // on the row (Ruling C2), never a map delete — a local
                 // delete could not survive a peer union re-import.
+                // Grammar limit, the #1549 limit's mirror case (same
+                // ruling, same accepted posture): the tombstones
+                // RE-ATTRIBUTE grace-repaired completions into this
+                // window (un-quota'd natural windows pull their
+                // repaired siblings back), so the window's post-fold
+                // derived count can land ABOVE the audited target —
+                // the derived truth wins, the mirror follows the
+                // derivation, and the receipt's `count` names the
+                // audited target, not the derived post-count.
                 let excess = usize::try_from(derived - *count).expect("checked above");
                 for member in members.iter().take(excess) {
                     let mut row = app.habits.events[member];
