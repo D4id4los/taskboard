@@ -12715,6 +12715,94 @@ fn a_dead_zone_click_settles_the_create_flow() {
     });
 }
 
+/// US-2/S1 (#1543, UX plan W-4): the click-out owns dead space only —
+/// a click on the create field itself is the field's own click: the
+/// flow stays open and nothing dispatches (the no-fire law; the
+/// dead-zone layers sit beneath every aimed surface).
+#[test]
+fn us2_s1_click_on_the_field_itself_does_not_settle() {
+    let (_fixture, state) = fixture::golden_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1000, 900);
+        let create_open = |harness: &Harness| {
+            harness
+                .handle
+                .window()
+                .get_board_model()
+                .stacks
+                .row_data(0)
+                .expect("column")
+                .create_open
+        };
+        harness.press(ActionId::TaskCreate);
+        assert!(create_open(&*harness));
+        let element = harness
+            .driver
+            .find_by_label("New task title")
+            .expect("the create field is mounted");
+        let (x, y) = support::driver::centre(&element);
+        harness.driver.click_at(x, y);
+        harness.driver.advance_time(0);
+        assert!(
+            create_open(&*harness),
+            "the field's own click keeps the flow open"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
+/// US-2/S2 (#1543, UX plan W-3): with no flow open the dead-zone
+/// layers are disabled (`enabled: flow-open`) — a dead-space click
+/// dispatches nothing and arms nothing (the adapter owns the
+/// decision; with no route the settle funnel is never reached).
+#[test]
+fn us2_s2_flowless_dead_zone_click_dispatches_nothing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1000, 900);
+        harness.driver.advance_time(0);
+        harness.driver.click_at(10.0, 450.0);
+        harness.driver.advance_time(0);
+        harness.assert_commands(&[]);
+        assert!(
+            !harness
+                .handle
+                .window()
+                .get_board_model()
+                .stacks
+                .row_data(0)
+                .expect("column")
+                .create_open,
+            "no flow armed itself"
+        );
+    });
+}
+
+/// US-3/S1 (#1543, UX plan W-2): the click-out covers the legs
+/// outside the columns viewport — on the empty board the armed
+/// stack-create flow settles by its own rule (an empty buffer
+/// discards, nothing dispatches) when the surrounding dead space is
+/// clicked (the board-level layer).
+#[test]
+fn us3_s1_board_level_click_out_settles_stack_create() {
+    let state = fixture::empty_board_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1000, 900);
+        let create_open =
+            |harness: &Harness| harness.handle.window().get_board_model().stack_create_open;
+        harness.press(ActionId::StackCreate);
+        assert!(create_open(&*harness), "the flow arms on the empty board");
+        harness.driver.advance_time(0);
+        harness.driver.click_at(10.0, 450.0);
+        harness.driver.advance_time(0);
+        assert!(
+            !create_open(&*harness),
+            "the board-level click-out settles the stack-create flow"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
 /// DR-3/3 J-T1 — the desktop create→row→cancel loop: the form's
 /// commit dispatches the exact `CreateAdhocAlarm`, the settle makes
 /// the row render in the section (the chip lights up with it), and
