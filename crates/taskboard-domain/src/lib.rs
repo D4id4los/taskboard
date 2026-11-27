@@ -47,6 +47,7 @@ pub mod entities;
 pub mod find;
 pub mod focus;
 pub mod habit;
+pub mod habit_event;
 pub mod habit_time;
 pub mod idgen;
 pub mod ids;
