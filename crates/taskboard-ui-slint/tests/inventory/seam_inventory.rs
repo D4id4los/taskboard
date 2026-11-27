@@ -194,6 +194,10 @@ const SEAM_INVENTORY: &[&str] = &[
     "board_create_edited",
     "board_create_field_committed",
     "board_create_field_edited",
+    // The dead-zone click-out (#1543): the board's gated TouchArea
+    // layers route the one settle funnel (an L2 pointer seam, no
+    // ActionId).
+    "board_dead_zone_clicked",
     "board_default_preset_clicked",
     "board_drag_hovered",
     "board_header_activated",
