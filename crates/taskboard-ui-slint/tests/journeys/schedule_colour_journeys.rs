@@ -142,24 +142,39 @@ fn us27_s2_schedule_tomorrow_reconciles_to_covered_instant() {
 /// US-27 (AC-3) — the day-start setting is honoured: with
 /// `day_start_time` = 05:30 the today verb stamps 05:30 local as the
 /// start (the window's opening instant), never 00:00.
+///
+/// The render clock is frozen at the fixture's pinned instant (#1513,
+/// the clock-discipline law): the verb anchors "today" at the
+/// day-start-aware first instant, so a calendar-today wall-clock
+/// oracle disagrees with it every run inside the local
+/// 00:00–05:30 window. Both fixture and oracle now read the pinned
+/// `now` — date-independent by construction.
 #[test]
 fn us27_s3_day_start_time_is_honoured() {
     let (fixture, mut state) = fixture::journey_state();
     state.settings.day_start_time = chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("05:30");
-    support::harness::run_journey(state, move |harness| {
+    let settings = UiSettings {
+        clock: Some(fixture::PINNED_NOW),
+        ..UiSettings::default()
+    };
+    support::harness::run_journey_with_settings(state, settings, move |harness| {
         let window = harness.handle.window();
         window.invoke_board_task_context_requested(0, 1, 300.0, 300.0);
         harness.driver.advance_time(0);
 
         let offset = UiSettings::default().boot_offset;
-        let today = chrono::Utc::now().with_timezone(&offset).date_naive();
-        let (first, last) = {
-            let day_start = chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("05:30");
-            (
-                taskboard_domain::days::day_first_instant(today, day_start, offset),
-                taskboard_domain::days::day_last_instant(today, day_start, offset),
-            )
-        };
+        let day_start = chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("05:30");
+        // The verb's own anchor: "today" is the calendar date of the
+        // day-start-aware window holding the pinned now — not the
+        // wall clock's calendar-today (#1513).
+        let today = taskboard_domain::days::day_window(fixture::PINNED_NOW, day_start, offset)
+            .0
+            .with_timezone(&offset)
+            .date_naive();
+        let (first, last) = (
+            taskboard_domain::days::day_first_instant(today, day_start, offset),
+            taskboard_domain::days::day_last_instant(today, day_start, offset),
+        );
         // AC-3's face: the start stamps 05:30 local on the named day.
         let local = first.with_timezone(&offset);
         assert_eq!(
