@@ -1486,6 +1486,7 @@ mod tests {
             log,
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         // The empty twin: same shape, no rows.
         let empty = habit(12, 1, 0, false, None);
@@ -1516,6 +1517,7 @@ mod tests {
             log: std::collections::BTreeMap::new(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
+            events: std::collections::BTreeMap::default(),
         };
         let resolved =
             resolve_habit_with_tombstones(&state, &format!("{}", id.as_uuid())).expect("resolves");

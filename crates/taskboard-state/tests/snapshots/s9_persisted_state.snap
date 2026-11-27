@@ -254,6 +254,7 @@ habits:
   log: {}
   day_log: {}
   time_log: {}
+  events: {}
 reflection:
   entries: {}
 roaming: {}

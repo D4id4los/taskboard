@@ -92,6 +92,7 @@ habits:
       count: 1
       clock: "1970-01-01T10:02:00Z"
   time_log: {}
+  events: {}
 reflection:
   entries: {}
 roaming: {}
