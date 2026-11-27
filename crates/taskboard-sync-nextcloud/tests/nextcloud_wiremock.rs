@@ -31,3 +31,5 @@ mod e2e_hermetic;
 mod mapping_bench_fixtures;
 #[path = "suite/move_marker.rs"]
 mod move_marker;
+#[path = "suite/timeout_wiremock.rs"]
+mod timeout_wiremock;

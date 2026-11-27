@@ -13,3 +13,5 @@
 mod client_wiremock;
 #[path = "suite/retained_etag_wiremock.rs"]
 mod retained_etag_wiremock;
+#[path = "suite/timeout_wiremock.rs"]
+mod timeout_wiremock;

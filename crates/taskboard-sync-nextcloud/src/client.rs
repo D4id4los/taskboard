@@ -387,6 +387,21 @@ pub fn authority_of(raw: &str) -> (Option<&str>, &str) {
     (scheme, &rest[..end])
 }
 
+/// Bounds the dial of every Deck request: an unreachable/dead peer
+/// fails the connect phase after 10 s instead of hanging on the OS TCP
+/// stack's minute-scale retransmission ladder (#1485).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bounds the *idle-read* gap of every Deck request: 30 s without any
+/// bytes from the peer aborts the attempt (#1485). This is reqwest's
+/// `read_timeout`, deliberately chosen over a total `.timeout()` —
+/// the attachment verbs upload/download arbitrary-size bodies, and a
+/// global total timeout would be a correctness bug on large (but
+/// legitimately flowing) transfers. A stalled or black-holed
+/// established connection has no other bound: without this the retry
+/// wrapper only bounds failures, never hangs.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl DeckClient {
     /// Builds a client for `{base_url}/index.php/apps/deck/api/v1.0`.
     ///
@@ -400,6 +415,32 @@ impl DeckClient {
     /// http(s) URL; [`DeckError::Transport`] when the HTTP client itself
     /// cannot be built.
     pub fn new(base_url: &str, user: &str, token: &str) -> Result<Self, DeckError> {
+        Self::with_timeouts(base_url, user, token, CONNECT_TIMEOUT, READ_TIMEOUT)
+    }
+
+    /// [`DeckClient::new`] with explicit transport timeouts.
+    ///
+    /// Test seam (#1485): the production path is `new`, whose only
+    /// sources of values are [`CONNECT_TIMEOUT`] and [`READ_TIMEOUT`];
+    /// the timeout experiments inject sub-second bounds so the
+    /// typed-timeout oracle runs in wall-clock-fraction time instead of
+    /// waiting out the production 10 s / 30 s budget.
+    ///
+    /// Constraint: `None` is for paused-clock test harnesses only —
+    /// never a production call site. `new` is the only sanctioned
+    /// production constructor.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckClient::new`].
+    #[doc(hidden)]
+    pub fn with_timeouts(
+        base_url: &str,
+        user: &str,
+        token: &str,
+        connect_timeout: Duration,
+        read_timeout: Duration,
+    ) -> Result<Self, DeckError> {
         let mut url = Url::parse(base_url).map_err(|_| DeckError::InvalidBaseUrl)?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(DeckError::InvalidBaseUrl);
@@ -425,7 +466,10 @@ impl DeckClient {
         }
 
         Ok(Self {
-            http: Client::builder().build()?,
+            http: Client::builder()
+                .connect_timeout(connect_timeout)
+                .read_timeout(read_timeout)
+                .build()?,
             base_url: url,
             credentials: format!("{user}:{token}"),
             backoff: BackoffPolicy::new(),
