@@ -1341,6 +1341,73 @@ fn us2_s2_adjust_preimage_restores_exactly() {
     );
 }
 
+#[test]
+fn undo_of_a_displacing_adjust_restores_exactly() {
+    // The displacement law: a downward adjust's tombstone can
+    // RE-ATTRIBUTE a grace-repaired completion into the addressed
+    // window (the attribution rule's repair arm), so the reconcile's
+    // mirror rows span two windows. The journaled snapshot must stay
+    // bound to the ADDRESSED window (named by the command, never the
+    // batch's first mirror row) and cover the displaced member — the
+    // undo restores exactly: it never tombstones a pre-existing fact,
+    // never silently consumes the entry as a no-op.
+    let mut h = Harness::new();
+    let board = h.board();
+    let habit = {
+        match h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: "habit".into(),
+                target: crate::habit::HabitTarget::PerDay(
+                    crate::habit::NonZeroCount::new(3).expect("valid quota"),
+                ),
+            })
+            .expect("created")
+        {
+            CommandOutcome::HabitCreated(id) => id,
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    };
+    for _ in 0..4 {
+        h.exec(&StateCommand::LogHabit { habit }).expect("logged");
+    }
+    let day = Harness::day();
+    let today =
+        crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, day.today(ts(h.now)));
+    let row = h.disk.habits.habits[&habit].clone();
+    let counts = crate::habit_event::derive_window_counts(&row, h.disk.habits.events.values(), day);
+    assert_eq!(counts.get(&today), Some(&3), "three completions today");
+    assert_eq!(
+        counts.values().sum::<u32>(),
+        4,
+        "the fourth completion repaired into yesterday (the attribution rule)"
+    );
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: today,
+        count: 2,
+    })
+    .expect("audited down to two");
+    h.exec(&StateCommand::Undo)
+        .expect("the displacing adjust undoes");
+    assert!(
+        h.disk
+            .habits
+            .events
+            .values()
+            .all(crate::habit_event::HabitEvent::is_live),
+        "every fact restored live — the tombstone undone, nothing extra tombstoned"
+    );
+    let row = h.disk.habits.habits[&habit].clone();
+    let counts = crate::habit_event::derive_window_counts(&row, h.disk.habits.events.values(), day);
+    assert_eq!(counts.get(&today), Some(&3), "today's count restored");
+    assert_eq!(
+        counts.values().sum::<u32>(),
+        4,
+        "all four completions derive again"
+    );
+}
+
 // ---- the synthesis catalogue -------------------------------------------
 
 #[test]
