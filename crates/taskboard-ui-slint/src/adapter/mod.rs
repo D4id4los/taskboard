@@ -396,6 +396,24 @@ pub(crate) struct Adapter {
     /// echo. A `Cell` because the non-mut seam arms share the
     /// disarm.
     refresh_push_in_progress: std::cell::Cell<bool>,
+    /// The remount re-grab arm (the clip-focus law's remount half,
+    /// #1490 / #1419 option A): `true` from the push pass that could
+    /// rebuild an open create field's subtree until the zero-duration
+    /// timer fires — or until a user-intent seam or a genuine settle
+    /// clears it (the consumed-once law, R-d: one arm, one fire, and
+    /// only while a `Flow::Create` field is mounted, so the nonce's
+    /// per-pass steal failure mode is structurally absent). An
+    /// `Rc<Cell>` because the timer closure installed in [`install`]
+    /// reads the same cell.
+    refocus_create_armed: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The re-grab timer: armed by a push pass, its callback runs in a
+    /// later event-loop turn than the deferred change-handler pass —
+    /// by then the rebuild's focus release and the visibility drop
+    /// have both landed, and routing through the `TryRefocus` global
+    /// reaches the currently mounted field instance (plan
+    /// 2026-11-27-focus-remount-wrap §2.2/§2.3 A). Installed in
+    /// [`install`]; the arm drives whether the callback acts.
+    refocus_timer: std::rc::Rc<slint::Timer>,
     /// The last [`Self::apply_outcomes`] pass's flow liveness (the
     /// flowless enum variant replaces a bool — clippy's
     /// excessive-bools wall). The D15 focus hand-off (and the r4 D20
@@ -955,6 +973,10 @@ macro_rules! install_seam {
             // focus-lost seam absorbed it) or never will; the next
             // focus-lost is genuine and must settle.
             $a.refresh_push_in_progress.set(false);
+            // The remount re-grab arm (the consumed-once law): a real
+            // interaction un-arms the pending re-grab — the echo
+            // window it rode closed with the push.
+            $a.refocus_create_armed.set(false);
             $body
         });
     }};
@@ -973,6 +995,10 @@ macro_rules! install_seam {
             let $a = seam_adapter.borrow_mut();
             // The echo-window disarm — see the default arm.
             $a.refresh_push_in_progress.set(false);
+            // The remount re-grab arm (the consumed-once law): a real
+            // interaction un-arms the pending re-grab — the echo
+            // window it rode closed with the push.
+            $a.refocus_create_armed.set(false);
             $body
         });
     }};
@@ -987,6 +1013,10 @@ macro_rules! install_seam {
             let mut $a = seam_adapter.borrow_mut();
             // The echo-window disarm — see the default arm.
             $a.refresh_push_in_progress.set(false);
+            // The remount re-grab arm (the consumed-once law): a real
+            // interaction un-arms the pending re-grab — the echo
+            // window it rode closed with the push.
+            $a.refocus_create_armed.set(false);
             $body
         });
     }};
@@ -997,6 +1027,10 @@ macro_rules! install_seam {
             let mut $a = seam_adapter.borrow_mut();
             // The echo-window disarm — see the default arm.
             $a.refresh_push_in_progress.set(false);
+            // The remount re-grab arm (the consumed-once law): a real
+            // interaction un-arms the pending re-grab — the echo
+            // window it rode closed with the push.
+            $a.refocus_create_armed.set(false);
             $body
         });
     }};
@@ -1007,6 +1041,10 @@ macro_rules! install_seam {
             let $a = seam_adapter.borrow();
             // The echo-window disarm — see the default arm.
             $a.refresh_push_in_progress.set(false);
+            // The remount re-grab arm (the consumed-once law): a real
+            // interaction un-arms the pending re-grab — the echo
+            // window it rode closed with the push.
+            $a.refocus_create_armed.set(false);
             $body
         });
     }};
@@ -1054,6 +1092,40 @@ pub(crate) fn install(
     delivery_health: tokio::sync::watch::Receiver<crate::presentation::DeliveryHealth>,
     files_sync: Option<tokio::sync::watch::Receiver<crate::presentation::FilesSyncChip>>,
 ) -> Rc<RefCell<Adapter>> {
+    // The remount re-grab timer (the clip-focus law's remount half,
+    // #1490 / #1419 option A): a zero-duration single shot the push
+    // pass arms — its callback runs in a later event-loop turn than
+    // the deferred change-handler pass, so the rebuilt field's
+    // release and the visibility drop have both landed when it
+    // routes the mounted field's own grab-focus through the
+    // `TryRefocus` seam (the tooltip driver's timer precedent).
+    // Consumed-once: the arm cell is taken on fire and disarmed by
+    // the user-intent seams and the genuine settle, so the callback
+    // can never steal focus outside the echo window.
+    let refocus_timer = std::rc::Rc::new(slint::Timer::default());
+    let refocus_arm = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let weak = window.as_weak();
+        let arm = std::rc::Rc::clone(&refocus_arm);
+        refocus_timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::ZERO,
+            move || {
+                // Consumed-once (the R-d one-shot law): the fire
+                // takes the arm; a disarmed fire is a no-op. The
+                // nonce write is the seam: the mounted create field
+                // consumes it edge-triggered (the FocusScrollHint
+                // discipline) and grabs its own focus.
+                if !arm.take() {
+                    return;
+                }
+                if let Some(window) = weak.upgrade() {
+                    let try_refocus = window.global::<crate::TryRefocus>();
+                    try_refocus.set_create_nonce(try_refocus.get_create_nonce() + 1);
+                }
+            },
+        );
+    }
     // The load path (round-1 D16): the uuid-keyed settings map
     // converts once here and seeds the fresh ViewState before the
     // first refresh — widths are applied before the first board
@@ -1190,6 +1262,8 @@ pub(crate) fn install(
         effort_editor: None,
         walk_abort_armed: false,
         refresh_push_in_progress: std::cell::Cell::new(false),
+        refocus_create_armed: std::rc::Rc::clone(&refocus_arm),
+        refocus_timer: std::rc::Rc::clone(&refocus_timer),
         habit_convert_armed: None,
         habit_remove_armed: None,
         habit_restore_armed: None,

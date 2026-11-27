@@ -2849,8 +2849,13 @@ mod keymap_adapter_tests {
 
     /// Injects one key through the same public dispatch path real
     /// backends use (the root `FocusScope`'s capture handler; focused
-    /// by the window's `init`).
+    /// by the window's `init`). The mock clock's tick precedes every
+    /// injected key: a real event loop runs due timers between
+    /// events, and the adapter's post-echo re-grab timer (#1490) is
+    /// one of them — a stroke injected without that turn tests a
+    /// window shape no real backend ever shows.
     fn press(handle: &UiHandle, text: &str) {
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::ZERO);
         handle
             .window
             .window()
@@ -2991,6 +2996,17 @@ mod keymap_adapter_tests {
     fn insert_intent_opens_the_create_row_and_escape_returns() {
         on_slint_thread(|| {
             let (handle, mut commands) = handover_vi();
+            // A real window has geometry: the Flickable wrap's clip
+            // law (#1419) evaluates focus visibility geometrically, so
+            // the null platform's zero-sized window — a shape no real
+            // mount shows — would clip the focused create field out of
+            // the key dispatch entirely.
+            handle
+                .window()
+                .window()
+                .set_size(slint::WindowSize::from(slint::LogicalSize::new(
+                    1000.0_f32, 900.0_f32,
+                )));
             let keyboard = handle.window.global::<KeyboardState>();
             assert!(!keyboard.get_vi_insert());
             // No board yet: the insert intent is inert (no void mode).
@@ -3246,6 +3262,10 @@ mod view_component_tests {
     }
 
     fn press(handle: &UiHandle, text: &str) {
+        // The event-loop turn: due timers (the #1490 re-grab among
+        // them) run between real key events; the injected path pumps
+        // the same turn.
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::ZERO);
         handle
             .window
             .window()
@@ -3474,6 +3494,14 @@ mod view_component_tests {
         on_slint_thread(|| {
             let (handle, mut commands) =
                 handover_with(fixture_state(), UiSettings::default().keymap);
+            // The same geometry realism as the insert-intent pin: the
+            // wrap's clip law evaluates focus visibility geometrically.
+            handle
+                .window()
+                .window()
+                .set_size(slint::WindowSize::from(slint::LogicalSize::new(
+                    1000.0_f32, 900.0_f32,
+                )));
             press(&handle, "N"); // task.create (standard Board — the keymap spells the shifted key)
             assert!(
                 handle

@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The remount re-grab fact (the clip-focus law's remount half, #1490;
+// #1419 option A): the adapter's zero-duration timer — a later
+// event-loop turn than the deferred change-handler pass, so the
+// rebuild's release and visibility drop have both landed — bumps this
+// nonce. The mounted create field consumes it edge-triggered (the
+// FocusFacts / FocusScrollHint discipline: a derived property plus a
+// `changed`, exactly one consumption per write because the adapter's
+// consumed-once arm takes the arm before the write). "When to
+// re-grab" is adapter-owned; the nonce carries no decision. A global
+// callback cannot route into a model-row instance (slint: callback
+// connections parse a single identifier, callback aliases only parse
+// at declaration sites — the three bisected compile failures in the
+// 2026-11-27 experiments report), so the fact write is the seam.
+export global TryRefocus {
+    in property <int> create-nonce: 0;
+}
