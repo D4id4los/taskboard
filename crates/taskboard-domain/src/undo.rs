@@ -286,13 +286,17 @@ fn journaled_habit_event_images(
         window,
     ));
     let pre: EventSnapshot = members.iter().map(|id| (*id, None)).collect();
-    let mut post: BTreeSet<(
+    // Keyed by id: the batch's own row write for a member REPLACES the
+    // member's pre state (a set of tuples would keep both — the
+    // duplicate id would make the undo guard's elementwise compare
+    // ambiguous).
+    let mut post: std::collections::BTreeMap<
         crate::habit_event::HabitEventId,
         Option<crate::habit_event::HabitEventTombstone>,
-    )> = members.iter().map(|id| (*id, None)).collect();
+    > = members.iter().map(|id| (*id, None)).collect();
     for action in actions {
         if let PersistenceAction::UpsertHabitEvent(event) = action {
-            post.insert((event.id, event.deleted));
+            post.insert(event.id, event.deleted);
         }
     }
     let post: Vec<_> = post.into_iter().collect();
@@ -1443,7 +1447,9 @@ enum InverseClass {
     /// the `CreatedTask` scope — D27).
     CreatedHabit,
     /// `UpdateHabit`: inverse changeset from the pre-image diff over
-    /// the three clocked content fields (`continued_from` never — D25).
+    /// the clocked content fields, the `continued_from` seam leg
+    /// included (D25 deleted, #1519 — windows are derived, the seam
+    /// stamps no clock slot to watermark against).
     UpdateHabit,
     /// `MoveHabit`: the order clock.
     MoveHabit,
@@ -2526,10 +2532,12 @@ fn synthesize_undo(
                 return Err(refuse(JournalEntity::Habit(pre.id), UndoField::Title));
             };
             // Per-field diff with per-field clock checks — the
-            // `task_changes_from_pre` shape over the three clocked
-            // content fields. `continued_from` is outside the write set
-            // and the check (D25): a seam-addressed edit never journals
-            // PreImages, and the diff never touches the seam.
+            // `task_changes_from_pre` shape over the clocked content
+            // fields, `continued_from` included: the D25 seam fence is
+            // deleted (#1519) — windows are derived, there is no clock
+            // slot to watermark the seam against, so the seam leg
+            // restores with the rest (the anchor-chip double-option
+            // shape; seam data stamps no clock, D-H7a).
             let entity = JournalEntity::Habit(pre.id);
             let check = |field: UndoField,
                          get: fn(&crate::habit::HabitClocks) -> chrono::DateTime<chrono::Utc>|
@@ -2557,6 +2565,13 @@ fn synthesize_undo(
                 // re-clears; a set chip restores.
                 check(UndoField::HabitAnchorTime, |clocks| clocks.anchor_time)?;
                 changes.anchor_time = Some(pre.anchor_time);
+            }
+            if pre.continued_from != current.continued_from {
+                // The double-option round-trip at the seam (D25's
+                // successor law): the pre value restores verbatim; the
+                // seam stamps no clock, so the whole-row restore is
+                // exact without a watermark leg.
+                changes.continued_from = Some(pre.continued_from);
             }
             Ok(vec![StateCommand::UpdateHabit {
                 habit: pre.id,
