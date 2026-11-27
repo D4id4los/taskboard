@@ -34,8 +34,8 @@ mod verify;
 pub use actor::{SyncActorConfig, spawn_sync_actor};
 pub use backoff::{BackoffPolicy, DeferredBy};
 pub use client::{
-    AttachmentUpload, BoardChanges, CloneOptions, DeckCapabilities, DeckClient, Fetch,
-    LabelChanges, NewCard, RetrySleep, StackChanges, TokioSleep, Validators,
+    AttachmentUpload, BoardChanges, CONNECT_TIMEOUT, CloneOptions, DeckCapabilities, DeckClient,
+    Fetch, LabelChanges, NewCard, READ_TIMEOUT, RetrySleep, StackChanges, TokioSleep, Validators,
 };
 pub use color::{DeckColor, ParseColorError};
 pub use error::DeckError;

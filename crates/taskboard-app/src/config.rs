@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -37,6 +38,43 @@ pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_BACKOFF_INITIAL_SECS: u64 = 5;
 /// `[sync] backoff_max_secs`: backoff saturation.
 pub const DEFAULT_BACKOFF_MAX_SECS: u64 = 300;
+
+/// `[sync] http_connect_timeout_secs`: the dial bound of every Nextcloud
+/// HTTP client. Derived const-eval from
+/// `taskboard_sync_nextcloud::CONNECT_TIMEOUT` — the const is the single
+/// definition (plan D-1 of the configurable-timeouts chunk); editing the
+/// transport const moves this default with it.
+pub const DEFAULT_HTTP_CONNECT_TIMEOUT_SECS: u64 =
+    taskboard_sync_nextcloud::CONNECT_TIMEOUT.as_secs();
+/// `[sync] http_read_timeout_secs`: the idle-read bound of every
+/// Nextcloud HTTP client (reqwest `read_timeout` semantics: the bound
+/// covers the gap between bytes, never a total transfer). Derived
+/// const-eval, like [`DEFAULT_HTTP_CONNECT_TIMEOUT_SECS`].
+pub const DEFAULT_HTTP_READ_TIMEOUT_SECS: u64 = taskboard_sync_nextcloud::READ_TIMEOUT.as_secs();
+
+/// The enforced inclusive upper bound for both `[sync] http_*_timeout_secs`
+/// keys (plan D-2): a unit mistake (milliseconds pasted as seconds) must
+/// not silently disable transport failure detection — a hung attempt
+/// wedges the sync actor inline (#1485). 3600 s is far beyond any
+/// legitimate dial or idle-read bound while still allowing
+/// pathological-but-intentional satellite-link installs.
+pub const HTTP_TIMEOUT_MAX_SECS: u64 = 3600;
+
+/// Compile-time pin (plan D-1): the two transport crates cannot see each
+/// other, so the equality of their timeout consts is asserted here, where
+/// both are visible — a unit-pasting (30 000 "ms") in one crate fails the
+/// build, not a user's evening.
+const _: () = assert!(
+    taskboard_sync_nextcloud::CONNECT_TIMEOUT.as_secs()
+        == taskboard_sync_files_nextcloud::client::CONNECT_TIMEOUT.as_secs()
+        && taskboard_sync_nextcloud::CONNECT_TIMEOUT.subsec_nanos()
+            == taskboard_sync_files_nextcloud::client::CONNECT_TIMEOUT.subsec_nanos()
+        && taskboard_sync_nextcloud::READ_TIMEOUT.as_secs()
+            == taskboard_sync_files_nextcloud::client::READ_TIMEOUT.as_secs()
+        && taskboard_sync_nextcloud::READ_TIMEOUT.subsec_nanos()
+            == taskboard_sync_files_nextcloud::client::READ_TIMEOUT.subsec_nanos(),
+    "the two transport crates' timeout consts must agree",
+);
 
 /// `[app] shutdown_timeout_secs`: graceful-shutdown budget per actor join.
 pub const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
@@ -472,6 +510,18 @@ pub struct SyncSection {
     /// Backoff saturation.
     #[serde(default = "default_backoff_max")]
     pub backoff_max_secs: u64,
+    /// The HTTP connect (dial) bound of the long-lived Nextcloud clients
+    /// (the Deck sync actor, the files-sync transport, and the
+    /// settings-save attach client). The ceremony/verification probes
+    /// deliberately keep the const defaults (plan D-5): an interactive
+    /// one-shot must not inherit a "my server is very slow" patience.
+    #[serde(default = "default_http_connect_timeout")]
+    pub http_connect_timeout_secs: u64,
+    /// The HTTP idle-read bound of the same clients (reqwest
+    /// `read_timeout` semantics — the bound covers the byte gap, never a
+    /// total transfer).
+    #[serde(default = "default_http_read_timeout")]
+    pub http_read_timeout_secs: u64,
 }
 
 impl Default for SyncSection {
@@ -482,6 +532,8 @@ impl Default for SyncSection {
             poll_interval_secs: default_poll_interval(),
             backoff_initial_secs: default_backoff_initial(),
             backoff_max_secs: default_backoff_max(),
+            http_connect_timeout_secs: default_http_connect_timeout(),
+            http_read_timeout_secs: default_http_read_timeout(),
         }
     }
 }
@@ -516,6 +568,14 @@ fn default_backoff_initial() -> u64 {
 
 fn default_backoff_max() -> u64 {
     DEFAULT_BACKOFF_MAX_SECS
+}
+
+fn default_http_connect_timeout() -> u64 {
+    DEFAULT_HTTP_CONNECT_TIMEOUT_SECS
+}
+
+fn default_http_read_timeout() -> u64 {
+    DEFAULT_HTTP_READ_TIMEOUT_SECS
 }
 
 /// `[reminders] sink`: which notifier delivers fired reminders.
@@ -1039,8 +1099,9 @@ pub enum ConfigError {
     /// `nextcloud.username` is empty.
     #[error("username empty")]
     EmptyUsername,
-    /// A `[sync]` duration is zero, or `backoff_initial` exceeds
-    /// `backoff_max`.
+    /// A `[sync]` duration is zero, `backoff_initial` exceeds
+    /// `backoff_max`, or an `http_*_timeout_secs` key exceeds the
+    /// 3600 s ceiling.
     #[error("duration invalid")]
     InvalidDuration {
         /// The dotted config key that is invalid.
@@ -1395,6 +1456,18 @@ impl AppConfig {
         Ok(diff_keys(&file_only, &effective))
     }
 
+    /// The resolved HTTP client timeouts (`connect`, `read`) for the
+    /// long-lived Nextcloud clients (plan D-4): plain `Duration`s minted
+    /// from the validated `[sync]` seconds — the conversion happens once,
+    /// at this mapping; no downstream re-parses.
+    #[must_use]
+    pub fn http_timeouts(&self) -> (Duration, Duration) {
+        (
+            Duration::from_secs(self.sync.http_connect_timeout_secs),
+            Duration::from_secs(self.sync.http_read_timeout_secs),
+        )
+    }
+
     /// The effective sync backend (ADR 0010): the explicit `[sync]
     /// backend` value, else auto — `nextcloud` iff
     /// `nextcloud.server_url` is present (a half-configured file stays
@@ -1572,6 +1645,23 @@ impl AppConfig {
         if self.sync.backoff_max_secs == 0 {
             return Err(ConfigError::InvalidDuration {
                 field: "sync.backoff_max_secs",
+            });
+        }
+        // The HTTP timeout bounds (issue #1540): zero arms no usable
+        // bound and above the ceiling smells like a unit mistake —
+        // both reject typed through the same `[sync]` duration variant.
+        if self.sync.http_connect_timeout_secs == 0
+            || self.sync.http_connect_timeout_secs > HTTP_TIMEOUT_MAX_SECS
+        {
+            return Err(ConfigError::InvalidDuration {
+                field: "sync.http_connect_timeout_secs",
+            });
+        }
+        if self.sync.http_read_timeout_secs == 0
+            || self.sync.http_read_timeout_secs > HTTP_TIMEOUT_MAX_SECS
+        {
+            return Err(ConfigError::InvalidDuration {
+                field: "sync.http_read_timeout_secs",
             });
         }
         if self.sync.backoff_initial_secs > self.sync.backoff_max_secs {
@@ -2464,6 +2554,71 @@ mod tests {
             c.validate(),
             Err(ConfigError::InvalidDuration { .. })
         ));
+    }
+
+    /// The `[sync]` HTTP timeout keys (issue #1540): absent keys decode to
+    /// the transport consts' defaults; present keys decode to the set
+    /// values (`http_timeouts()` is the read side).
+    #[test]
+    fn http_timeout_keys_decode_defaults_and_file_values() {
+        let config = decode("[app]\n").expect("an absent table decodes");
+        assert_eq!(
+            config.http_timeouts(),
+            (
+                Duration::from_secs(DEFAULT_HTTP_CONNECT_TIMEOUT_SECS),
+                Duration::from_secs(DEFAULT_HTTP_READ_TIMEOUT_SECS)
+            )
+        );
+        let config = decode("[sync]\nhttp_connect_timeout_secs = 7\nhttp_read_timeout_secs = 45\n")
+            .expect("the keys decode");
+        assert_eq!(
+            config.http_timeouts(),
+            (Duration::from_secs(7), Duration::from_secs(45))
+        );
+    }
+
+    /// Zero arms no usable bound; one past the ceiling smells like a unit
+    /// mistake (plan D-2) — both reject typed per key. The ceiling itself
+    /// (3600 s) is accepted: pathological-but-intentional installs stay
+    /// expressible.
+    #[test]
+    fn validate_rejects_zero_and_over_ceiling_http_timeouts_and_accepts_the_ceiling() {
+        let mut c = valid();
+        c.sync.http_connect_timeout_secs = 0;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidDuration {
+                field: "sync.http_connect_timeout_secs"
+            })
+        ));
+        let mut c = valid();
+        c.sync.http_connect_timeout_secs = HTTP_TIMEOUT_MAX_SECS + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidDuration {
+                field: "sync.http_connect_timeout_secs"
+            })
+        ));
+        let mut c = valid();
+        c.sync.http_read_timeout_secs = 0;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidDuration {
+                field: "sync.http_read_timeout_secs"
+            })
+        ));
+        let mut c = valid();
+        c.sync.http_read_timeout_secs = HTTP_TIMEOUT_MAX_SECS + 1;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidDuration {
+                field: "sync.http_read_timeout_secs"
+            })
+        ));
+        let mut c = valid();
+        c.sync.http_connect_timeout_secs = HTTP_TIMEOUT_MAX_SECS;
+        c.sync.http_read_timeout_secs = HTTP_TIMEOUT_MAX_SECS;
+        c.validate().expect("the ceiling itself validates");
     }
 
     #[test]
