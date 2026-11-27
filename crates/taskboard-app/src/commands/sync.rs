@@ -221,8 +221,16 @@ fn fresh_outcome(startup: &SyncStatus, status: &SyncStatus) -> Option<SyncOutcom
         }
         // Some watched board is still in flight — patience.
         SyncPhase::Syncing => None,
-        // Idle (or Offline) after a landed report: the cycle is done.
-        _ => Some(SyncOutcome::Succeeded(SyncStatusView::new(status))),
+        // Offline after a landed report: the cycle ended in a connector
+        // outage — the episode's network verdict, not a success (the
+        // engine holds `Offline` on a lost connector's boards for the
+        // episode's duration, so this is the steady outage row, k7).
+        SyncPhase::Offline => Some(SyncOutcome::Failed(
+            SyncErrorKind::Network,
+            SyncStatusView::new(status),
+        )),
+        // Idle after a landed report: the cycle is done and healthy.
+        SyncPhase::Idle => Some(SyncOutcome::Succeeded(SyncStatusView::new(status))),
     }
 }
 
@@ -343,6 +351,20 @@ mod freshness_tests {
         let startup = status(0, SyncPhase::Idle, None);
         let now = status(1, SyncPhase::Syncing, None);
         assert_eq!(fresh_outcome(&startup, &now), None);
+    }
+
+    /// Fresh + Offline is the outage verdict (k7): the engine holds
+    /// `Offline` on a lost connector's boards for the episode, so a
+    /// cycle that lands there is a failed (network) cycle, never a
+    /// success.
+    #[test]
+    fn fresh_offline_is_a_network_failure() {
+        let startup = status(0, SyncPhase::Idle, None);
+        let now = status(1, SyncPhase::Offline, None);
+        assert!(matches!(
+            fresh_outcome(&startup, &now),
+            Some(SyncOutcome::Failed(SyncErrorKind::Network, _))
+        ));
     }
 
     /// Equal cycles: nothing landed, whatever the wall stamps claim.

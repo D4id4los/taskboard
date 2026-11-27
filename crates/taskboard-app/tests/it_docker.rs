@@ -848,20 +848,18 @@ async fn v0_1_x_additive_upgrade_boot_settles_offline_without_a_server() {
 
     // The singleton's `syncing` phase hydrates onto the bound board's row
     // (migration backfill) and settles via the offline-first failure path:
-    // the first cycle reports `Failed { Network }` (no pushes), and the
-    // engine files it under the bound board.
+    // the refused server loses the connector, and the row **holds**
+    // `Offline` for the episode (k7: `Failed { Network }` verdicts from a
+    // lost connector no longer overwrite the outage phase; the D-W7
+    // projection makes Offline the per-board outage steady state).
     eventually(&app, |state| {
         state.sync.iter().any(|(board, row)| {
-            matches!(
-                row.phase,
-                taskboard_domain::SyncPhase::Failed {
-                    last_error: taskboard_domain::SyncErrorKind::Network,
-                }
-            ) && state
-                .boards
-                .get(board)
-                .and_then(|b| b.remote.as_ref())
-                .is_some_and(|r| r.board.as_deck() == Some(77))
+            matches!(row.phase, taskboard_domain::SyncPhase::Offline)
+                && state
+                    .boards
+                    .get(board)
+                    .and_then(|b| b.remote.as_ref())
+                    .is_some_and(|r| r.board.as_deck() == Some(77))
         })
     })
     .await;

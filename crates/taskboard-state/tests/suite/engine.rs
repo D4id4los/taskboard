@@ -572,6 +572,53 @@ async fn a7c_connector_lost_flips_only_that_connectors_boards() {
     );
 }
 
+/// The offline episode's steady state: while a connector is lost, every
+/// backoff cycle re-reports `Failed { Network }`, and those verdicts
+/// must not overwrite the `ConnectorLost` stamp — the row *holds*
+/// `Offline` for the outage's duration (the D5-18 exit criterion reads
+/// per-connector health off these rows; a Failed-flicker-then-latch
+/// would make a down connector indistinguishable from a transient
+/// error).
+#[tokio::test]
+async fn k7_failed_network_verdicts_hold_offline_while_the_connector_is_lost() {
+    let h = spawn(bound_harness()).await;
+    // Settle the row Idle on evidence, then lose the connector.
+    h.report_tx
+        .send(counter_report(
+            RemoteBoardId::deck(42),
+            std::time::Duration::ZERO,
+        ))
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.sync.aggregate().phase == SyncPhase::Idle
+    })
+    .await;
+    h.system_tx
+        .send(SystemEvent::ConnectorLost(
+            taskboard_domain::test_support::test_connector(),
+        ))
+        .expect("broadcast");
+    eventually(&h.handle, |app| {
+        app.sync.aggregate().phase == SyncPhase::Offline
+    })
+    .await;
+
+    // The actor's episode latch keeps firing `Failed { Network }` per
+    // backoff cycle (its `ConnectorLost` edge fired once, above).
+    h.report_tx
+        .send(failed_report())
+        .await
+        .expect("report channel open");
+    // The verdict landed (its counters applied); the phase held.
+    eventually(&h.handle, |app| app.sync.aggregate().counters.failures == 1).await;
+    assert_eq!(
+        h.handle.shared_state().load_full().sync.aggregate().phase,
+        SyncPhase::Offline,
+        "a network verdict from a lost connector must not overwrite Offline"
+    );
+}
+
 /// A7's empty-target sibling: a `ConnectorLost` for a connector with no
 /// bound boards writes nothing anywhere.
 #[tokio::test]
