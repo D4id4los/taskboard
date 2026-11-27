@@ -18,8 +18,8 @@
   and the operator ruling on #1519 (2026-11-27). The operator's
   chunking decision: dispatchable as staged below (defaults adopted;
   overruled rulings re-open the affected chunks' stage 1 only).
-- **Status**: READY — all five chunks dispatch after the origin plans
-  are accepted (the UX plan's Status field flips to ACCEPTED). Nothing
+- **Status**: DISPATCHING — the origin plans are accepted (the operator
+  ruled on 2026-11-27: all defaults; the UX plan's Status reads ACCEPTED). Nothing
   here is gated on a human merge; chunk order is strict (§1 graph).
   **Deliberately not dispatched**: F-4 time-entry stamps (#1521,
   follow-up design round), F-5 reflection row (#1522), files
