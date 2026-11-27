@@ -117,7 +117,13 @@ impl Palette {
     /// The scrim as the slint `Color` form (ARGB-encoded).
     #[must_use]
     pub fn scrim_color(self) -> slint::Color {
-        slint::Color::from_argb_encoded(self.scrim)
+        // The cell is stored `0xRRGGBBAA` (the slint 8-digit literal's
+        // byte order — the parity test reads theme.slint's literal
+        // verbatim); the `Color` constructor is ARGB-encoded, so the
+        // halves swap here.
+        let rgba = self.scrim;
+        let argb = (rgba & 0xff) << 24 | rgba >> 8;
+        slint::Color::from_argb_encoded(argb)
     }
 }
 
@@ -314,5 +320,21 @@ mod tests {
         for palette in [Palette::DARK, Palette::LIGHT] {
             assert_eq!(palette.scrim & 0xff, 0x80, "the wash alpha stays ~50%");
         }
+    }
+
+    /// The scrim's byte-order pin: the cell is `0xRRGGBBAA` (the slint
+    /// literal's order), the `Color` constructor is ARGB — the push
+    /// must swap the halves, or the wash lands nearly transparent (the
+    /// capture-overlay dark goldens caught exactly that drift).
+    #[test]
+    fn the_scrim_color_swaps_the_rgba_halves_into_argb() {
+        assert_eq!(
+            Palette::DARK.scrim_color(),
+            slint::Color::from_argb_encoded(0x800b_0d12),
+        );
+        assert_eq!(
+            Palette::LIGHT.scrim_color(),
+            slint::Color::from_argb_encoded(0x801a_1c22),
+        );
     }
 }
