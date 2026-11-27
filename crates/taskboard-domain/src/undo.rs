@@ -189,7 +189,7 @@ pub fn plan_journaled_command(
                 // Accepted no-op: the row is already present verbatim.
                 return Ok(plan);
             }
-            let entry = record_entry(app, &wrapper, &plan.actions, journal, ids, now);
+            let entry = record_entry(app, &wrapper, &plan.actions, journal, ids, day, now);
             let mut actions = plan.actions;
             // Appended last (D16), the shared shape.
             actions.push(PersistenceAction::RecordJournal(entry));
@@ -204,7 +204,7 @@ pub fn plan_journaled_command(
                 // Accepted no-op: nothing changed, nothing journaled.
                 return Ok(plan);
             }
-            let entry = record_entry(app, command, &plan.actions, journal, ids, now);
+            let entry = record_entry(app, command, &plan.actions, journal, ids, day, now);
             let mut actions = plan.actions;
             // Appended last (D16): after all effects; order-free at
             // apply, reads naturally in the batch.
@@ -226,6 +226,89 @@ fn journaled_pre_images(app: &AppState, actions: &[PersistenceAction]) -> UndoFa
         images: pre_images(app, actions),
         watermark: watermark_of(actions),
     }
+}
+
+/// The event-grammar capture for the four habit write classes (the
+/// stage-1 plan's D-J1): [`journaled_pre_images`]'s entity capture
+/// **plus** the addressed window's per-event snapshot — the pre-image
+/// is the fold membership at pre-command time (live members, all
+/// `None`-tombstoned), the stamp is the post-write snapshot (the pre
+/// ids updated through the batch's `UpsertHabitEvent` rows, the
+/// batch's minted ids appended). Both sorted ascending by id —
+/// deterministic serialization, elementwise `(id, tombstone-state)`
+/// comparison at undo.
+///
+/// The window resolves from the batch's own mirror row (every habit
+/// write class writes exactly the addressed window's `RecordHabitLog`
+/// row — the D-C mirror). Defensive fallback: an unresolvable window
+/// degrades to the plain entity capture (unreachable for a real
+/// plan; never a panic).
+fn journaled_habit_event_images(
+    app: &AppState,
+    actions: &[PersistenceAction],
+    day: DayCalendar,
+) -> UndoFacts {
+    let mut facts = journaled_pre_images(app, actions);
+    let UndoFacts::PreImages {
+        images: fact_images,
+        watermark: fact_watermark,
+    } = &mut facts
+    else {
+        return facts;
+    };
+    // The addressed (habit, window): the batch's mirror row for the
+    // habit the batch's event writes touch.
+    let Some(habit) = actions.iter().find_map(|action| match action {
+        PersistenceAction::UpsertHabitEvent(event) => Some(event.habit),
+        _ => None,
+    }) else {
+        return facts;
+    };
+    let Some((_, window)) = actions.iter().find_map(|action| match action {
+        PersistenceAction::RecordHabitLog(key, _) if key.habit == habit => {
+            Some((key.habit, key.window))
+        }
+        _ => None,
+    }) else {
+        return facts;
+    };
+    let Some(row) = app.habits.habits.get(&habit) else {
+        return facts;
+    };
+    let mut members: BTreeSet<crate::habit_event::HabitEventId> =
+        crate::habit_event::window_completion_members(row, app.habits.events.values(), day, window)
+            .into_iter()
+            .collect();
+    members.extend(crate::habit_event::window_mark_members(
+        row,
+        app.habits.events.values(),
+        day,
+        window,
+    ));
+    let pre: Vec<_> = members.iter().map(|id| (*id, None)).collect();
+    // Keyed by id: the batch's own row write for a member REPLACES the
+    // member's pre state (a set of tuples would keep both — the duplicate
+    // id would make the undo guard's elementwise compare ambiguous).
+    let mut post: std::collections::BTreeMap<
+        crate::habit_event::HabitEventId,
+        Option<crate::habit_event::HabitEventTombstone>,
+    > = members.iter().map(|id| (*id, None)).collect();
+    for action in actions {
+        if let PersistenceAction::UpsertHabitEvent(event) = action {
+            post.insert(event.id, event.deleted);
+        }
+    }
+    let post: Vec<_> = post.into_iter().collect();
+    fact_images.push(PreImage::HabitEventWindow {
+        habit,
+        window,
+        events: pre,
+    });
+    fact_watermark.0.insert(
+        JournalEntity::HabitEventWindow(habit, window),
+        EntityStamps::HabitEventWindow(post),
+    );
+    facts
 }
 
 /// The zero-input restore's pre-image resolution (D-5): the journal
@@ -287,6 +370,7 @@ fn record_entry(
     actions: &[PersistenceAction],
     journal: &JournalState,
     ids: &dyn IdGenerator,
+    day: DayCalendar,
     now: DateTime<Utc>,
 ) -> JournalEntry {
     let facts = match command {
@@ -412,35 +496,22 @@ fn record_entry(
                 journaled_pre_images(app, actions)
             }
         }
-        StateCommand::UpdateHabit { changes, .. } => {
-            // D25/§7.3: the conversion seam carries no clock slot
-            // (D-H7a), so a seam-addressed edit has nothing to
-            // watermark against — the whole edit refuses, never a
-            // partial restore with the seam left unrestored.
-            if changes.continued_from.is_some() {
-                UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
-            } else {
-                journaled_pre_images(app, actions)
-            }
+        StateCommand::UpdateHabit { .. } => {
+            // The D25/§7.3 conversion-seam fence is deleted (#1519):
+            // windows are derived from the event log, so a
+            // `continued_from` seam edit has no clock slot to
+            // watermark against *anymore* — the ordinary
+            // `PreImage::Habit` row pre-image restores it exactly,
+            // same as any other edit leg.
+            journaled_pre_images(app, actions)
         }
-        StateCommand::AdjustHabitLog { habit, window, .. } => {
-            // D24/§7.2: an adjust onto a window with no pre-existing row
-            // is lossy to invert — the `count: 0` inverse would forge an
-            // explicit count-0 row where the pre-state had none (the
-            // exact stored-fact lossiness; `LogHabit` no longer shares
-            // this fence — journal-invertible since 2026-11-21
-            // (habit-family UX plan R-7) — the audited correction valve
-            // itself keeps it, per R-7's scope). Pre row present (any
-            // count, 0 included) inverts exactly.
-            let key = crate::habit::HabitLogKey {
-                habit: *habit,
-                window: *window,
-            };
-            if app.habits.log.contains_key(&key) {
-                journaled_pre_images(app, actions)
-            } else {
-                UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
-            }
+        StateCommand::AdjustHabitLog { .. } => {
+            // The D24/§7.2 absent-window fence is deleted (#1519): the
+            // inverse no longer forges a count-0 row — the addressed
+            // window's per-event snapshot restores the pre tombstone
+            // state exactly, and an empty pre snapshot restores
+            // emptiness exactly (the fence's successor law).
+            journaled_habit_event_images(app, actions, day)
         }
         // ---- the exclusions stay, reasons restated (§4) ----------------
         StateCommand::StartHabitTracking { .. } | StateCommand::StopHabitTracking { .. } => {
@@ -456,36 +527,33 @@ fn record_entry(
             UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
         }
         StateCommand::LogHabit { .. } => {
-            // Journal-invertible since 2026-11-21 (habit-family UX plan
-            // R-7 — the dated supersession of the former
-            // `NotUndoable(HabitSurface)` classification, #956): the
-            // pre-image is the prior row shape **or none**
-            // (`PreImage::HabitLogRow` over the touched window) and the
-            // inverse restores the prior count through the existing
-            // audited `AdjustHabitLog` — the #986 bump mint re-stamps
-            // the restored row deterministically, so journal replay
-            // re-mints identically (the B1 clock-bump rule is
-            // load-bearing here and unchanged). Per-increment
-            // undoability: one `LogHabit` is one journal entry; a
-            // same-second burst pops one increment per undo (the
-            // bump's monotone clocks distinguish rows). `AdjustHabitLog`
-            // (D24) and the conversion seam (D25) keep their fences.
-            journaled_pre_images(app, actions)
+            // Journal-invertible (since 2026-11-21, habit-family UX plan
+            // R-7; the #1519 event grammar): the pre-image is the
+            // addressed window's exact per-event tombstone-state
+            // snapshot ([`PreImage::HabitEventWindow`]) and the inverse
+            // tombstones exactly the minted event id extracted from the
+            // pre/post snapshots — no count forging, no bump re-stamp.
+            // Per-increment undoability: one `LogHabit` is one journal
+            // entry; a same-second burst pops one event per undo (the
+            // ids are distinct facts, the (at, id) order is stable).
+            journaled_habit_event_images(app, actions, day)
         }
         StateCommand::SkipHabit { .. } | StateCommand::UnskipHabit { .. } => {
-            // Journal-invertible (HF1, 2026-11-21 — the habit-family UX
-            // plan R-7's spirit): the pre-image is the prior row shape
-            // **or none** (`PreImage::HabitLogRow` before: Option); the
-            // inverse flips the typed mark via the mirror verb, never
-            // forging a row shape. The count stays untouched either way.
-            journaled_pre_images(app, actions)
+            // Journal-invertible (HF1, 2026-11-21; the #1519 mark
+            // grammar): the pre-image is the addressed window's
+            // snapshot (`PreImage::HabitEventWindow`); the inverse
+            // tombstones the minted mark id — a fact, never a forged
+            // row shape. The count stays untouched either way.
+            journaled_habit_event_images(app, actions, day)
         }
         StateCommand::PauseHabit { .. } => {
             // The pause lives on the habit row, but `HabitChanges` has
             // no `paused_until` leg (the sparse-edit change mask never
             // grew one), so the standard UpdateHabit inverse cannot
-            // express the restore — refuse-and-name, the D25 posture.
-            UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+            // express the restore — refuse-and-name. The D25 fence this
+            // arm used to share is gone (#1519); what remains is the
+            // policy fence, honestly named (`HabitPolicy`).
+            UndoFacts::NotUndoable(NotUndoableReason::HabitPolicy)
         }
         StateCommand::RecordReflection { .. }
         | StateCommand::UpdateReflection { .. }
@@ -505,8 +573,10 @@ fn record_entry(
             // restore the rule *and* remove the minted habit /
             // un-tombstone the retired one — is unexpressible in the
             // one-inverse-command synthesis. The chain stays readable
-            // from state; the undo line refuses-and-names.
-            UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+            // from state; the undo line refuses-and-names (the policy
+            // fence, honestly named — the D25 exactness fences died
+            // with the event grammar, #1519).
+            UndoFacts::NotUndoable(NotUndoableReason::HabitPolicy)
         }
         // Never journaled (the wrapper routes the undo/redo arms;
         // RequestSync plans an empty batch and never reaches this point
@@ -756,6 +826,16 @@ pub fn pre_images(app: &AppState, actions: &[PersistenceAction]) -> Vec<PreImage
                     before: app.habits.log.get(key).copied(),
                 },
             ),
+            // The event-grammar capture (#1519): the synthesis verbs'
+            // entity pre-image — the row before the batch, verbatim
+            // (the `RecordHabitLog` capture posture at event grain).
+            PersistenceAction::UpsertHabitEvent(event) => (
+                JournalEntity::HabitEvent(event.id),
+                PreImage::HabitEventRow {
+                    id: event.id,
+                    before: app.habits.events.get(&event.id).copied(),
+                },
+            ),
             _ => continue,
         };
         if seen.insert(key) {
@@ -803,6 +883,12 @@ fn watermark_of(actions: &[PersistenceAction]) -> UndoWatermark {
             PersistenceAction::RecordHabitLog(key, post) => {
                 (JournalEntity::HabitLog(*key), EntityStamps::HabitLog(*post))
             }
+            // The event-grammar stamp (#1519): the post-write row,
+            // verbatim — the guard compares the current row as a whole.
+            PersistenceAction::UpsertHabitEvent(event) => (
+                JournalEntity::HabitEvent(event.id),
+                EntityStamps::HabitEvent(*event),
+            ),
             _ => continue,
         };
         if seen.insert(key) {
