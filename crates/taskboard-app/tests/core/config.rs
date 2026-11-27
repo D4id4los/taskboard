@@ -611,6 +611,52 @@ fn the_ipc_section_decodes_and_the_env_lane_overrides() {
     assert_eq!(config.ipc.client_read_timeout_secs, Some(0));
 }
 
+/// The `[sync]` HTTP timeout keys (issue #1540): the file layer sets
+/// them, the env lane overrides (`TASKBOARD_SYNC__HTTP_*_TIMEOUT_SECS`,
+/// figment for free), the override surfaces in `env_overridden_keys`,
+/// and an env-set `0` is a typed validation rejection.
+#[test]
+fn the_sync_http_timeout_keys_decode_and_the_env_lane_overrides() {
+    let _env = taskboard_env_lock();
+    let dir = tempdir();
+    let file = dir.path().join("sync-timeouts.toml");
+    std::fs::write(&file, "[sync]\nhttp_connect_timeout_secs = 7\n").expect("write toml");
+    let config = AppConfig::load(Some(file.clone())).expect("loads");
+    assert_eq!(
+        config.http_timeouts().0,
+        std::time::Duration::from_secs(7),
+        "the file layer's value decodes"
+    );
+
+    remove_env("TASKBOARD_SYNC__HTTP_CONNECT_TIMEOUT_SECS");
+    set_env("TASKBOARD_SYNC__HTTP_CONNECT_TIMEOUT_SECS", "12");
+    let config = AppConfig::load(Some(file.clone())).expect("loads");
+    let keys = AppConfig::env_overridden_keys(Some(&file)).expect("diffs");
+    assert_eq!(
+        config.http_timeouts().0,
+        std::time::Duration::from_secs(12),
+        "env beats file"
+    );
+    assert!(
+        keys.contains("sync.http_connect_timeout_secs"),
+        "the override surfaces per key: {keys:?}"
+    );
+
+    // The env lane can carry a rejection too: `0` fails the load
+    // chain's validation typed against the same dotted key the file
+    // lane names (the load validates; there is no decode-then-check).
+    remove_env("TASKBOARD_SYNC__HTTP_CONNECT_TIMEOUT_SECS");
+    set_env("TASKBOARD_SYNC__HTTP_CONNECT_TIMEOUT_SECS", "0");
+    let outcome = AppConfig::load(Some(file.clone()));
+    remove_env("TASKBOARD_SYNC__HTTP_CONNECT_TIMEOUT_SECS");
+    assert!(matches!(
+        outcome,
+        Err(ConfigError::InvalidDuration {
+            field: "sync.http_connect_timeout_secs"
+        })
+    ));
+}
+
 /// The `[focus]` section (issue #496): a partial file's zero minutes is
 /// a typed `invalid-focus-timing` through the real load chain, and the
 /// env lane overrides the file's minutes (`TASKBOARD_FOCUS__WORK_MINS`,
