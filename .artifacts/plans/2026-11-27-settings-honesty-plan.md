@@ -346,6 +346,10 @@ CI's on the PR — never inside a subagent (discipline, item 1).
   (2026-11-06) predates the UX mandate, so no amendment is made.
   Default: **no amendment**; the law is recorded here. **Proceeded on
   the default.**
+  **OVERRULED by the operator (2026-11-27):** the scale journeys' home
+  plan (`.artifacts/plans/2026-11-01-ui-r4-settings-connections-plan.md`,
+  §1.4) is amended — its §11 records the total revert law and the pins;
+  the law is about the user-visible change, not the plan's age.
 
 ## 8. Prompt 2 (stage 2 — IMPLEMENTATION) — paste-ready, verbatim
 

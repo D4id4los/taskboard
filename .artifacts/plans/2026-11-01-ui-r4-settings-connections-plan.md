@@ -533,3 +533,38 @@ timer-popover chunk's precedent).
 `models.rs` ~+25/−12; `app-window.slint` ~±12;
 `journeys.rs` ~+280/−110. **Net ≈ +600 lines** — M-sized, matching
 the dispatch table.
+
+## 11. Amendment — the scale commit's failure exits (2026-11-27, #1515)
+
+Recorded after the fact: the scale seam's user-visible behaviour
+changed on 2026-11-27 (the settings live-apply honesty chunk,
+`.artifacts/plans/2026-11-27-settings-honesty-plan.md`), and the
+operator ruled that this plan — the home of the scale commit
+journeys (§1.4) — is amended even though it predates the mandatory
+UX-journey law (activated 2026-11-16). The law is about the change,
+not the plan's age.
+
+**The behaviour.** A scale commit live-applies `Theme.base_scale`
+optimistically. Before this amendment only the typed error reply
+reverted it (the "Err-revert echo" of
+`the_scale_echo_renders_the_committed_scale`). The revert law is now
+total — the UI never claims what was not persisted — at every exit
+of the commit's lane:
+
+| Exit | System response | Escape / failure |
+|---|---|---|
+| The request lane rejects the send (full or closed) | Nothing routes, nothing parks | The base-scale reverts synchronously to the previous value (`revert_scale_live`: `request_scale_anchor` + `set_base_scale(previous)`); the outcome reads `Failed`; the typed draft is untouched |
+| The reply is a typed error | The app refused the write | Same revert; the outcome carries the typed failure |
+| The reply lane closes before a reply arrives | No reply will arrive | Same revert; the outcome reads `Failed` |
+
+The success path is unchanged: the echo and the draft change only on
+the `Ok` reply (§1.3).
+
+**The pins.**
+
+- `crates/taskboard-ui-slint/tests/journeys.rs::a_scale_send_rejection_reverts_the_live_scale_and_reports_failed`
+  — the rejected-send exit: `Theme.base_scale` reads the previous
+  value and the outcome reads `Failed`.
+- `a_scale_commit_anchors_the_scroll_on_the_scale_row` (§1.4, stays)
+  and `the_scale_echo_renders_the_committed_scale`'s Err-revert half
+  — the success path and the typed-error exit, unchanged.
