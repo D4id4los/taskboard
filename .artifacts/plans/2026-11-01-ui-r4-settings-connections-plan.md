@@ -568,3 +568,45 @@ the `Ok` reply (§1.3).
 - `a_scale_commit_anchors_the_scroll_on_the_scale_row` (§1.4, stays)
   and `the_scale_echo_renders_the_committed_scale`'s Err-revert half
   — the success path and the typed-error exit, unchanged.
+
+## 12. Amendment — the Scale row's env-locked posture (2026-11-27, #1528)
+
+Recorded after the fact: the scale row's user-visible behaviour
+changed on 2026-11-27 (the coverage-root + scale env-lock chunk,
+`.artifacts/plans/2026-11-27-coverage-root-scale-envlock-plan.md`,
+D3–D5), and the settings-honesty chunk's operator ruling (its R3
+OVERRULING) applies — this plan is the home of the scale journeys
+(§1.4), so it is amended even though it predates the mandatory
+UX-journey law (activated 2026-11-16). The law is about the
+change, not the plan's age.
+
+**The behaviour.** Under a `TASKBOARD_UI__SCALE` environment
+override (the `ui.scale` key riding the hand-over snapshot's
+`env_overridden` set), the Scale row renders its env-locked
+posture — the same grammar the Theme row landed in #1512:
+
+| Surface | Posture |
+|---|---|
+| The slider | The primitive's `enabled` property reads false: every gesture entry (pointer press, key step, AT action) is guarded — no `pressed`/`preview`/`committed` fires — and the chrome renders dimmed |
+| The field | The widget's existing `read-only` property reads true: no GUI write |
+| The annotation | The sibling rows' env-locked caption renders (`Semantic.warning`) |
+
+A commit attempt that still reaches the seam (defence in depth; the
+disabled controls make it GUI-unreachable) is refused typed:
+`SettingsOutcome::Rejected` with `SettingsError::EnvLocked { field:
+Field::Scale }` — never a silent absorb (the T-16 doctrine). The
+success path is unchanged: without the env override the row renders
+enabled and behaves exactly as §1.3/§11 pin it — the slider's
+`enabled` defaults true, so unlocked renders are pixel-identical.
+
+**The pins.**
+
+- `crates/taskboard-ui-slint/tests/journeys.rs::an_env_locked_scale_row_refuses_the_commit_seam_typed`
+  — the locked posture pushes and the seam refuses typed (no
+  `UiRequest::SetScale` drained, outcome `Rejected`, the
+  `EnvLocked` detail class renders structurally).
+- `the_scale_rows_env_lock_push_follows_the_snapshot_truth_table`
+  — the unlocked half: no `ui.scale` key, no lock.
+- `crates/taskboard-ui-slint/tests/probes/slider_grab_probe_tests.rs::p5_a_disabled_slider_emits_no_gesture_events`
+  — the primitive guard: `enabled: false` emits no gesture events;
+  p1–p4 stay the unlocked oracle.

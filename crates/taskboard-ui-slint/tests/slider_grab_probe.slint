@@ -29,6 +29,9 @@ export global GrabProbe {
     in-out property <int> committed: 0;
     in-out property <bool> pan-enabled: true;
     in-out property <bool> preview-writes-theme: true;
+    // The env-lock guard seam (#1528, T8): drives the Slider's
+    // `enabled` primitive property.
+    in-out property <bool> slider-enabled: true;
     in-out property <length> flick-y;
 }
 
@@ -74,6 +77,7 @@ export component GrabProbeWindow inherits Window {
                     maximum: 3.0;
                     step: 0.1;
                     value: Theme.base-scale;
+                    enabled: GrabProbe.slider-enabled;
                     pressed() => {
                         GrabProbe.pressed += 1;
                     }

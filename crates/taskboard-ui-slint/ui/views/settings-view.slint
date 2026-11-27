@@ -226,6 +226,11 @@ export global SettingsModel {
     // `ui.theme` rides the hand-over env set — the control renders
     // disabled with the sibling rows' annotation grammar.
     in-out property <bool> theme-env-locked: false;
+    // The scale row's env-lock posture (#1528, D3): true when
+    // `ui.scale` rides the hand-over env set — the slider and the
+    // field render disabled with the sibling rows' annotation
+    // grammar.
+    in-out property <bool> scale-env-locked: false;
     in-out property <bool> save-enabled: false;
     in-out property <SettingsOutcome> last-outcome: SettingsOutcome.none;
     // The last refusal's typed detail class (T-16, #799): true when
@@ -1392,6 +1397,11 @@ export component SettingsView inherits FocusScope {
                 maximum: 3.0;
                 step: 0.1;
                 value: Theme.base-scale;
+                // The env-lock posture (#1528, D3): under a
+                // `ui.scale` override the slider is a dead commit
+                // surface — the primitive's `enabled` guards every
+                // gesture entry and dims the chrome.
+                enabled: !SettingsModel.scale-env-locked;
                 pressed() => {
                     root.scale-pressed();
                 }
@@ -1411,6 +1421,11 @@ export component SettingsView inherits FocusScope {
                     label: "Scale";
                     commit-affordance: true;
                     validity: SettingsModel.validity-scale;
+                    // The env-lock posture (#1528, D3): under a
+                    // `ui.scale` override the field cannot take a
+                    // GUI write (the widget's existing read-only
+                    // grammar — no widget change).
+                    read-only: SettingsModel.scale-env-locked;
                     // The echo renders text at mount — a focused,
                     // non-empty field would swallow the key chain
                     // (the D18 insert-mask contract). The timers-form
@@ -1435,6 +1450,15 @@ export component SettingsView inherits FocusScope {
                     text: SettingsModel.error-scale;
                     shape: NoticeShape.boxed;
                 }
+            }
+            // The env-locked annotation (#1528, D3): the sibling
+            // rows' verbatim posture sentence (the #1512 grammar —
+            // the focus-enabled-env-locked pattern), never asserted
+            // by text.
+            if SettingsModel.scale-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Overridden by an environment variable; edit the file or the env.";
+                text-color: Semantic.warning;
             }
         }
 

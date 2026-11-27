@@ -902,6 +902,10 @@ impl Adapter {
         // snapshot fact the sibling rows push — never a UI-side env
         // read (config lives in the app crate, AGENTS §2).
         global.set_theme_env_locked(self.settings.snapshot.env_overridden.contains("ui.theme"));
+        // The scale row's env-lock posture (#1528, D3): the same
+        // snapshot fact as the sibling rows — never a UI-side env
+        // read (config lives in the app crate, AGENTS §2).
+        global.set_scale_env_locked(self.settings.snapshot.env_overridden.contains("ui.scale"));
         global.set_status_text(SharedString::from(crate::settings_status::status_text(
             self.settings.outcome,
             self.settings.detail.as_ref(),
@@ -1930,6 +1934,25 @@ impl Adapter {
     /// to `previous`. Both input paths (field Return, slider release)
     /// share it, so both clamp identically by construction.
     fn apply_scale_commit(&mut self, window: &AppWindow, scale: f64, previous: f64) {
+        // T-16 (#1528, plan D3): the defence-in-depth arm renders the
+        // typed refusal instead of absorbing — both GUI commit paths
+        // funnel here, and under a `ui.scale` env override the env
+        // value wins at the next boot, so a GUI write is never
+        // effective (the doctrine: never a silent absorb). The
+        // disabled controls make the arm unreachable through the GUI;
+        // it exists for the seam-level honesty the sibling rows
+        // already carry.
+        if self.settings.snapshot.env_overridden.contains("ui.scale") {
+            tracing::debug!("scale commit on an env-locked row; refused typed");
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::EnvLocked {
+                    field: crate::requests::Field::Scale,
+                }),
+            );
+            return;
+        }
         // The commit consumed the field's staged buffer (round-3
         // D20a): the canonical echo re-renders from the live value.
         self.settings.scale_draft = None;
