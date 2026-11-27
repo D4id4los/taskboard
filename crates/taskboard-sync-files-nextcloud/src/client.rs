@@ -168,7 +168,11 @@ fn map_status(raw: &Raw) -> Result<(), TransportError> {
 /// Bounds the dial of every files-sync request: an unreachable/dead
 /// peer fails the connect phase after 10 s instead of hanging on the
 /// OS TCP stack's minute-scale retransmission ladder (#1485).
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Public as the config default's single definition: `taskboard-app`'s
+/// `DEFAULT_HTTP_CONNECT_TIMEOUT_SECS` is derived from this const (plan
+/// D-1 of the configurable-timeouts chunk), so the two can never drift.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Bounds the *idle-read* gap of every files-sync request: 30 s
 /// without any bytes from the peer aborts the attempt (#1485). This is
@@ -178,7 +182,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// total timeout would cap legitimately slow but flowing transfers. A
 /// stalled or black-holed established connection has no other bound:
 /// without this the retry wrapper only bounds failures, never hangs.
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// Public as the config default's single definition, like
+/// [`CONNECT_TIMEOUT`] (plan D-1 of the configurable-timeouts chunk).
+pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl WebDavFilesTransport {
     /// Builds the transport over `{server}/remote.php/dav/files/{user}/`.
@@ -500,6 +507,15 @@ impl FilesTransport for WebDavFilesTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The consts are the issue's stated defaults; pinned as typed
+    /// values (the config layer derives its defaults from them, so a
+    /// silent edit here would move every install's timeout).
+    #[test]
+    fn transport_timeout_consts_pin_the_issue_defaults() {
+        assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(READ_TIMEOUT, Duration::from_secs(30));
+    }
 
     #[test]
     fn the_retry_budget_is_three_attempts_with_doubling_delays() {
