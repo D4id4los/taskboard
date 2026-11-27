@@ -222,6 +222,10 @@ export global SettingsModel {
     // The theme row's echoed selection (#1437 D3): the reply, never
     // the click, is the source (the preset-index contract).
     in-out property <int> theme-index: 0;
+    // The theme row's env-lock posture (#1512, D2): true when
+    // `ui.theme` rides the hand-over env set — the control renders
+    // disabled with the sibling rows' annotation grammar.
+    in-out property <bool> theme-env-locked: false;
     in-out property <bool> save-enabled: false;
     in-out property <SettingsOutcome> last-outcome: SettingsOutcome.none;
     // The last refusal's typed detail class (T-16, #799): true when
@@ -1438,30 +1442,46 @@ export component SettingsView inherits FocusScope {
         //    on pick (colour properties re-render every view, no
         //    restart), persist over the lane, revert on a typed Err
         //    reply. The keymap preset's grammar: the segmented control
-        //    commits on pick; the echo rides the reply.
+        //    commits on pick; the echo rides the reply. Under a
+        //    `ui.theme` env override the row is env-locked (#1512):
+        //    the control renders disabled and the env-locked
+        //    annotation states the posture (the
+        //    focus-enabled-env-locked pattern).
         RoleText {
             role: Typography.title;
             text: "Theme";
         }
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            RoleText {
-                role: Typography.body;
-                text: "Palette";
-                min-width: Theme.space-8;
-                vertical-alignment: center;
-            }
-            InfoTip {
-                about: "Theme";
-                help: SettingsModel.help-theme;
-            }
-            SegmentedControl {
-                options: ["Dark", "Light"];
-                selected-index: SettingsModel.theme-index;
-                group-label: "Theme";
-                picked(i) => {
-                    root.theme-committed(i);
+        VerticalLayout {
+            spacing: Theme.space-1;
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.body;
+                    text: "Palette";
+                    min-width: Theme.space-8;
+                    vertical-alignment: center;
                 }
+                InfoTip {
+                    about: "Theme";
+                    help: SettingsModel.help-theme;
+                }
+                SegmentedControl {
+                    options: ["Dark", "Light"];
+                    segment-enabled: [
+                        !SettingsModel.theme-env-locked,
+                        !SettingsModel.theme-env-locked,
+                    ];
+                    selected-index: SettingsModel.theme-index;
+                    group-label: "Theme";
+                    picked(i) => {
+                        root.theme-committed(i);
+                    }
+                }
+            }
+            if SettingsModel.theme-env-locked: RoleText {
+                role: Typography.caption;
+                text: "Overridden by an environment variable; edit the file or the env.";
+                text-color: Semantic.warning;
             }
         }
 

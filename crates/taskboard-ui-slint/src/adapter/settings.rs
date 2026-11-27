@@ -898,6 +898,10 @@ impl Adapter {
         window.set_reflection_editor_flags_model(ModelRc::new(slint::VecModel::from(chips)));
         global.set_preset_index(preset_index(self.settings.preset));
         global.set_theme_index(theme_index(self.settings.theme));
+        // The theme row's env-lock posture (#1512, D2): the same
+        // snapshot fact the sibling rows push — never a UI-side env
+        // read (config lives in the app crate, AGENTS §2).
+        global.set_theme_env_locked(self.settings.snapshot.env_overridden.contains("ui.theme"));
         global.set_status_text(SharedString::from(crate::settings_status::status_text(
             self.settings.outcome,
             self.settings.detail.as_ref(),
