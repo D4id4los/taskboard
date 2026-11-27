@@ -442,3 +442,20 @@ Report: verdict, findings (functional + mandate), what you fixed, PR URL, worktr
   the pattern to follow for fresh single observations: open,
   root-cause, fix, close — inside one triage pass when the cause is
   immediate.
+
+---
+
+## Outcome (dispatcher-recorded, 2026-11-27)
+
+Operator rulings: R-1 to R-6 close, R-7 keep watching. The pass ran
+compressed (docs/bookkeeping only, `docs/agent_dispatch.org` §7): the
+dispatcher applied the dispositions directly — no code chunk existed,
+since every root-caused flake's fix was already on `main`.
+
+- **Closed** (`flaky-test` + `watchlist` removed): #926, #968, #1336,
+  #336, #287, #1486 (#1486 on the green Test Execution suites of PRs
+  #1526 and #1527, both after the 2026-11-27 00:00 UTC boundary).
+- **Still watched**, now labelled `under-watch` (the operator-ruled
+  accepted end state for a monitored watchlist item): #697, #1020,
+  #883, #384, #650 — each carries a dated keep-watching comment naming
+  the evidence the next recurrence must capture.
