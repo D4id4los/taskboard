@@ -3399,7 +3399,11 @@ pub fn plan_command(
             // previous window, where the derivation's running counts
             // differ from the pre-batch stored counts), so "log clears
             // skip" is not expressible as a fact. R-5 (the UX plan)
-            // already names `UnskipHabit` the recovery verb.
+            // already names `UnskipHabit` the recovery verb — the
+            // operator ruling on #1550 (2026-11-27) ACCEPTED this
+            // behavior change: logging into a skipped window KEEPS the
+            // skip; the explicit unskip is the recovery verb (chunk 5
+            // owns the UX bookkeeping).
             // The mirror rows (the stage-1 plan's D-C derived mirror):
             // the legacy increment IS the derived post-count under the
             // keystone mirror law (`log` ≡ `derive_window_counts`), so
@@ -3551,11 +3555,14 @@ pub fn plan_command(
                 // the planner's today (the design's own reconcile
                 // invariant: the mint continues until the window's
                 // DERIVED count equals the audited target). Recorded
-                // grammar limit: an over-quota Day target with an
-                // unmet predecessor still repairs into the predecessor
-                // (the attribution rule's own US-8 repair semantics —
-                // the derived truth wins; the receipt reports the
-                // facts it minted).
+                // grammar limit (the operator ruling on #1549,
+                // 2026-11-27: option 3, ACCEPTED — documented here;
+                // the migration consequence is chunk 3's, the
+                // user-facing statement chunk 5's): an over-quota Day
+                // target with an unmet predecessor still repairs into
+                // the predecessor (the attribution rule's own US-8
+                // repair semantics — the derived truth wins; the
+                // receipt reports the facts it minted).
                 let natural = WindowStart::of_period(habit.target.kind(), day.today(now));
                 let stamp_at = if *window == natural {
                     now
@@ -13075,6 +13082,53 @@ mod tests {
             )],
             2
         );
+    }
+
+    #[test]
+    fn log_into_a_skipped_window_keeps_the_skip_mark() {
+        // The operator ruling on #1550 (2026-11-27): logging into a
+        // skipped window KEEPS the skip — the skip is an intent fact
+        // in the mark grammar, and the explicit `UnskipHabit` is the
+        // recovery verb. Pinned at the engine layer: the log mints
+        // exactly one Completion (NO `Unskip` mark minted for it) and
+        // the derived posture stays skipped beside the derived count.
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let mut live = app.clone();
+        let ids = crate::test_support::CountingIds::default();
+        let skip = run_seq(
+            &live,
+            &outbox,
+            &StateCommand::SkipHabit { habit: habit_id() },
+            &ids,
+            ts(T0),
+        )
+        .unwrap();
+        apply_actions_to_habits(&mut live.habits, &skip.actions);
+        let plan = run_seq(
+            &live,
+            &outbox,
+            &StateCommand::LogHabit { habit: habit_id() },
+            &ids,
+            ts(T0 + 1),
+        )
+        .unwrap();
+        let events = completion_events(&plan);
+        assert_eq!(events.len(), 1, "the log mints exactly one fact");
+        assert!(
+            matches!(events[0].kind, HabitEventKind::Completion),
+            "no Unskip mark rides the log"
+        );
+        let mut post = live.clone();
+        apply_actions_to_habits(&mut post.habits, &plan.actions);
+        let today =
+            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, ymd(1970, 1, 1));
+        assert!(
+            derived_posture(&post)[&today],
+            "the window still derives skipped (the explicit unskip is the recovery verb)"
+        );
+        assert_eq!(derived_counts(&post)[&today], 1, "the completion counted");
     }
 
     #[test]
