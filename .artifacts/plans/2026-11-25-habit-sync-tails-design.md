@@ -188,3 +188,16 @@ section until the gate clears.
   window `habit-log` has none either by posture ("history outlives"), but the
   overlay is display data with no such justification). Filed as a `backlog:`
   issue at stage-1; number reported in the stage report.
+
+---
+
+## SUPERSEDED (operator ruling 2026-11-27)
+
+This design round is **superseded in full** by the HabitLog storage
+refactor (the per-completion timestamped event log — see the tracking
+issue opened from the operator's ruling). The operator found the
+window-log + day-overlay twin to be a two-sources-of-truth defect at
+the data-model level and ruled that refactoring the store's granularity
+is the prerequisite: decisions (a)/(b)/(c) above are moot until the
+event-log refactor is planned and implemented, after which the E3
+issues are re-triaged for residue.
