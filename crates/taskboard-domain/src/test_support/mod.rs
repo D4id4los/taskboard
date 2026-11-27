@@ -146,6 +146,10 @@ impl IdGenerator for CountingIds {
         crate::ids::HabitTimeEntryId::from(Uuid::from_u128(self.next()))
     }
 
+    fn new_habit_event_id(&self) -> crate::habit_event::HabitEventId {
+        crate::habit_event::HabitEventId::from(Uuid::from_u128(self.next()))
+    }
+
     fn new_reflection_id(&self) -> crate::ids::ReflectionId {
         crate::ids::ReflectionId::from(Uuid::from_u128(self.next()))
     }
