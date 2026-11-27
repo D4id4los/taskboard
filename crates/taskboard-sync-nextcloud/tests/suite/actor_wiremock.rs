@@ -286,7 +286,7 @@ fn spawn_with_settings(
     // bounds via `new` (the consts are its only value source); timeout
     // behaviour is pinned with real sub-second bounds over the real
     // clock in `timeout_wiremock`.
-    let client = DeckClient::with_timeouts(&server.uri(), "u", "t", None, None).unwrap();
+    let client = DeckClient::with_test_timeouts(&server.uri(), "u", "t", None, None).unwrap();
     let (commands, command_rx) = mpsc::channel(16);
     let (report_tx, report_rx) = mpsc::channel(16);
     let (system_tx, system_rx) = broadcast::channel(16);

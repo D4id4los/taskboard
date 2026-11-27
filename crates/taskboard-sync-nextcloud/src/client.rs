@@ -422,13 +422,38 @@ impl DeckClient {
     /// http(s) URL; [`DeckError::Transport`] when the HTTP client itself
     /// cannot be built.
     pub fn new(base_url: &str, user: &str, token: &str) -> Result<Self, DeckError> {
-        Self::with_timeouts(
-            base_url,
-            user,
-            token,
-            Some(CONNECT_TIMEOUT),
-            Some(READ_TIMEOUT),
-        )
+        Self::with_timeouts(base_url, user, token, CONNECT_TIMEOUT, READ_TIMEOUT)
+    }
+
+    /// [`DeckClient::new`] with explicit transport timeouts — the
+    /// production constructor the config threading uses (plan D-4/D-6
+    /// of the configurable-timeouts chunk). Plain `Duration`s: the type
+    /// system makes "arm no timer" unrepresentable on the production
+    /// path; `new` delegates with [`CONNECT_TIMEOUT`] and
+    /// [`READ_TIMEOUT`].
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckClient::new`].
+    pub fn with_timeouts(
+        base_url: &str,
+        user: &str,
+        token: &str,
+        connect_timeout: Duration,
+        read_timeout: Duration,
+    ) -> Result<Self, DeckError> {
+        let url = Self::validated_base_url(base_url)?;
+        let http = Client::builder()
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .build()?;
+        Ok(Self {
+            http,
+            base_url: url,
+            credentials: format!("{user}:{token}"),
+            backoff: BackoffPolicy::new(),
+            sleeper: std::sync::Arc::new(TokioSleep),
+        })
     }
 
     /// [`DeckClient::new`] with explicit transport timeouts.
@@ -445,20 +470,42 @@ impl DeckClient {
     /// its value (a 1 h bound was observed firing within ~10 ms).
     ///
     /// Constraint: `None` is for paused-clock test harnesses only —
-    /// never a production call site. `new` is the only sanctioned
-    /// production constructor.
+    /// never a production call site. `with_timeouts` is the only
+    /// sanctioned production constructor.
     ///
     /// # Errors
     ///
     /// See [`DeckClient::new`].
     #[doc(hidden)]
-    pub fn with_timeouts(
+    pub fn with_test_timeouts(
         base_url: &str,
         user: &str,
         token: &str,
         connect_timeout: Option<Duration>,
         read_timeout: Option<Duration>,
     ) -> Result<Self, DeckError> {
+        let url = Self::validated_base_url(base_url)?;
+        let mut builder = Client::builder();
+        if let Some(bound) = connect_timeout {
+            builder = builder.connect_timeout(bound);
+        }
+        if let Some(bound) = read_timeout {
+            builder = builder.read_timeout(bound);
+        }
+        Ok(Self {
+            http: builder.build()?,
+            base_url: url,
+            credentials: format!("{user}:{token}"),
+            backoff: BackoffPolicy::new(),
+            sleeper: std::sync::Arc::new(TokioSleep),
+        })
+    }
+
+    /// The constructors' shared prologue: base-URL validation and
+    /// normalization (scheme/host/userinfo rejection, query/fragment
+    /// stripping, the trailing-slash-trimmed Deck root) — the two
+    /// constructors differ only in how they arm the timers.
+    fn validated_base_url(base_url: &str) -> Result<Url, DeckError> {
         let mut url = Url::parse(base_url).map_err(|_| DeckError::InvalidBaseUrl)?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(DeckError::InvalidBaseUrl);
@@ -482,21 +529,7 @@ impl DeckClient {
         } else {
             url.set_path(&path);
         }
-
-        let mut builder = Client::builder();
-        if let Some(bound) = connect_timeout {
-            builder = builder.connect_timeout(bound);
-        }
-        if let Some(bound) = read_timeout {
-            builder = builder.read_timeout(bound);
-        }
-        Ok(Self {
-            http: builder.build()?,
-            base_url: url,
-            credentials: format!("{user}:{token}"),
-            backoff: BackoffPolicy::new(),
-            sleeper: std::sync::Arc::new(TokioSleep),
-        })
+        Ok(url)
     }
 
     /// Overrides the retry-backoff sleeper (test seam).

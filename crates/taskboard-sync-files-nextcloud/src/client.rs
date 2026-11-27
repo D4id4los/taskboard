@@ -196,13 +196,38 @@ impl WebDavFilesTransport {
     /// usable http(s) URL; [`TransportError::Transport`] when the HTTP
     /// client itself cannot be built.
     pub fn new(base_url: &str, user: &str, token: &str) -> Result<Self, TransportError> {
-        Self::with_timeouts(
-            base_url,
-            user,
-            token,
-            Some(CONNECT_TIMEOUT),
-            Some(READ_TIMEOUT),
-        )
+        Self::with_timeouts(base_url, user, token, CONNECT_TIMEOUT, READ_TIMEOUT)
+    }
+
+    /// [`WebDavFilesTransport::new`] with explicit transport timeouts —
+    /// the production constructor the config threading uses (plan
+    /// D-4/D-6 of the configurable-timeouts chunk). Plain `Duration`s:
+    /// the type system makes "arm no timer" unrepresentable on the
+    /// production path; `new` delegates with [`CONNECT_TIMEOUT`] and
+    /// [`READ_TIMEOUT`].
+    ///
+    /// # Errors
+    ///
+    /// See [`WebDavFilesTransport::new`].
+    pub fn with_timeouts(
+        base_url: &str,
+        user: &str,
+        token: &str,
+        connect_timeout: Duration,
+        read_timeout: Duration,
+    ) -> Result<Self, TransportError> {
+        let url = Self::validated_base_url(base_url, user)?;
+        let http = Client::builder()
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .build()?;
+        Ok(Self {
+            http,
+            base_url: url,
+            credentials: format!("{user}:{token}"),
+            backoff: BackoffPolicy::new(),
+            sleeper: Arc::new(TokioSleep),
+        })
     }
 
     /// [`WebDavFilesTransport::new`] with explicit transport timeouts.
@@ -219,20 +244,42 @@ impl WebDavFilesTransport {
     /// its value (a 1 h bound was observed firing within ~10 ms).
     ///
     /// Constraint: `None` is for paused-clock test harnesses only —
-    /// never a production call site. `new` is the only sanctioned
-    /// production constructor.
+    /// never a production call site. `with_timeouts` is the only
+    /// sanctioned production constructor.
     ///
     /// # Errors
     ///
     /// See [`WebDavFilesTransport::new`].
     #[doc(hidden)]
-    pub fn with_timeouts(
+    pub fn with_test_timeouts(
         base_url: &str,
         user: &str,
         token: &str,
         connect_timeout: Option<Duration>,
         read_timeout: Option<Duration>,
     ) -> Result<Self, TransportError> {
+        let url = Self::validated_base_url(base_url, user)?;
+        let mut builder = Client::builder();
+        if let Some(bound) = connect_timeout {
+            builder = builder.connect_timeout(bound);
+        }
+        if let Some(bound) = read_timeout {
+            builder = builder.read_timeout(bound);
+        }
+        Ok(Self {
+            http: builder.build()?,
+            base_url: url,
+            credentials: format!("{user}:{token}"),
+            backoff: BackoffPolicy::new(),
+            sleeper: Arc::new(TokioSleep),
+        })
+    }
+
+    /// The constructors' shared prologue: base-URL validation and
+    /// normalization (scheme/host/userinfo rejection, query/fragment
+    /// stripping, the DAV home path with its percent-encoded username)
+    /// — the two constructors differ only in how they arm the timers.
+    fn validated_base_url(base_url: &str, user: &str) -> Result<Url, TransportError> {
         let mut url = Url::parse(base_url).map_err(|_| TransportError::InvalidBaseUrl)?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(TransportError::InvalidBaseUrl);
@@ -250,20 +297,7 @@ impl WebDavFilesTransport {
         // (`taskboard/`) is *not* part of the base: paths handed to the
         // verbs are root-inclusive substrate paths.
         url.set_path(&format!("/{DAV_FILES_PATH}/{user}/"));
-        let mut builder = Client::builder();
-        if let Some(bound) = connect_timeout {
-            builder = builder.connect_timeout(bound);
-        }
-        if let Some(bound) = read_timeout {
-            builder = builder.read_timeout(bound);
-        }
-        Ok(Self {
-            http: builder.build()?,
-            base_url: url,
-            credentials: format!("{user}:{token}"),
-            backoff: BackoffPolicy::new(),
-            sleeper: Arc::new(TokioSleep),
-        })
+        Ok(url)
     }
 
     /// Overrides the retry-backoff sleeper (test seam).

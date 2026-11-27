@@ -4,7 +4,7 @@
 //! stalled conditional-PUT response or an unroutable dial — surfaces as
 //! the existing `TransportError::Transport` carrying a reqwest timeout,
 //! after the bounded retry budget, never as a hang. The builder
-//! receives sub-second bounds through the `with_timeouts` seam so the
+//! receives sub-second bounds through the `with_test_timeouts` seam so the
 //! typed-timeout oracle runs in wall-clock-fraction time; the
 //! production consts (10 s connect / 30 s idle-read) stay the only
 //! values `new` feeds. Wiremock delay is real-clock time — the tokio
@@ -50,7 +50,7 @@ async fn stalled_conditional_put_surfaces_as_typed_transport_timeout() {
         .respond_with(ResponseTemplate::new(201).set_delay(Duration::from_secs(30)))
         .mount(&server)
         .await;
-    let err = WebDavFilesTransport::with_timeouts(
+    let err = WebDavFilesTransport::with_test_timeouts(
         &server.uri(),
         USER,
         "s3cret-token",
@@ -73,7 +73,7 @@ async fn unroutable_dial_surfaces_as_typed_connect_timeout() {
     // A non-routable address: no server answers, the dial hangs on the
     // OS stack until the injected connect bound fires (the address is
     // in an unrouted range, so nothing local can accept it).
-    let err = WebDavFilesTransport::with_timeouts(
+    let err = WebDavFilesTransport::with_test_timeouts(
         "http://10.255.255.1:9",
         USER,
         "s3cret-token",

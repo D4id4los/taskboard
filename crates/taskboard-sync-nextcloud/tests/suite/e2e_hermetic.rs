@@ -145,7 +145,7 @@ fn spawn_actor_with_cfg(
     // armed client transport bound mid-response regardless of its value,
     // so this harness arms none (`None`). Production keeps the real
     // bounds via `new`; timeout behaviour is pinned in `timeout_wiremock`.
-    let client = DeckClient::with_timeouts(&stack.server.uri(), "u", "t", None, None).unwrap();
+    let client = DeckClient::with_test_timeouts(&stack.server.uri(), "u", "t", None, None).unwrap();
     let state_reader: Arc<dyn taskboard_domain::SyncStateReader> = Arc::new(stack.engine.clone());
     let (commands, command_rx) = mpsc::channel(16);
     let join = spawn_sync_actor(
