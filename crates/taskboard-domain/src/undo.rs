@@ -447,7 +447,10 @@ fn current_window_snapshot(
 /// the ids present in the recorded post snapshot and absent from the
 /// recorded pre snapshot — exactly the facts the entry's command
 /// minted, ascending id (deterministic batch order).
-fn minted_event_ids(pre: &EventSnapshot, post: &EventSnapshot) -> Vec<crate::habit_event::HabitEventId> {
+fn minted_event_ids(
+    pre: &EventSnapshot,
+    post: &EventSnapshot,
+) -> Vec<crate::habit_event::HabitEventId> {
     post.iter()
         .filter(|(id, _)| !pre.iter().any(|(pid, _)| pid == id))
         .map(|(id, _)| *id)
@@ -2753,7 +2756,9 @@ fn synthesize_undo(
             // (`RestoreHabitEvent`). The absent-window case restores
             // emptiness exactly (empty pre snapshot, all created ids
             // tombstoned) — D24's successor.
-            if let Some((snapshot_window, pre, post)) = habit_event_snapshots(images, watermark, habit) {
+            if let Some((snapshot_window, pre, post)) =
+                habit_event_snapshots(images, watermark, habit)
+            {
                 let Some(row) = app.habits.habits.get(&habit) else {
                     return Err(CommandError::NothingToUndo);
                 };

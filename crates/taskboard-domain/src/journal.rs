@@ -211,7 +211,10 @@ pub enum PreImage {
         /// Ascending-`HabitEventId` order (deterministic
         /// serialization; the undo guard compares elementwise on
         /// `(id, tombstone-state)` — set semantics).
-        events: Vec<(crate::habit_event::HabitEventId, Option<crate::habit_event::HabitEventTombstone>)>,
+        events: Vec<(
+            crate::habit_event::HabitEventId,
+            Option<crate::habit_event::HabitEventTombstone>,
+        )>,
     },
     /// One habit event row's pre-image (the entity-upsert capture for
     /// the undo-facing synthesis commands `TombstoneHabitEvent` /
@@ -311,7 +314,10 @@ pub enum EntityStamps {
     /// on `(id, deleted-state)`. The same ascending-id Vec shape as
     /// [`PreImage::HabitEventWindow`].
     HabitEventWindow(
-        Vec<(crate::habit_event::HabitEventId, Option<crate::habit_event::HabitEventTombstone>)>,
+        Vec<(
+            crate::habit_event::HabitEventId,
+            Option<crate::habit_event::HabitEventTombstone>,
+        )>,
     ),
     /// The post-write event row, verbatim (the entity-upsert stamp for
     /// the synthesis commands — the guard compares the current row as
