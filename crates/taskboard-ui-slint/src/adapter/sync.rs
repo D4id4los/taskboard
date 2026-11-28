@@ -999,6 +999,28 @@ impl Adapter {
         {
             self.series_target = Some(task);
         }
+        // The plan box family's cursor fallback (#1394; #1574's
+        // proposed mint): the keyboard path mints the one-shot box
+        // target from the planner cursor exactly as the cursor
+        // activation seam does (click ≡ key). The mint refuses a
+        // pool-pane landing — the box verbs address placed boxes
+        // only — and a cursorless dispatch takes the router's typed
+        // `NoTarget`. The guard keeps a pre-minted seam target (the
+        // pointer/AT twin) authoritative.
+        if matches!(
+            id,
+            ActionId::PlanBoxEarlier | ActionId::PlanBoxLater | ActionId::PlanRemoveBox
+        ) && self.plan_target.is_none()
+            && let Some(task) = self.view_state.plan_cursor()
+            && self
+                .tables
+                .plan_rows
+                .iter()
+                .take(self.tables.plan_box_count)
+                .any(|row| *row == task)
+        {
+            self.plan_target = Some(task);
+        }
         let wants = crate::router::route_consumes(id);
         let mut ctx = self.shell.dispatch_ctx();
         if wants.wants(crate::router::OneShotSet::CREATE_TARGET) {
