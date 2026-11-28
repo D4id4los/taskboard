@@ -22,6 +22,7 @@ use taskboard_domain::{AppState, HabitLogEntry, HabitLogKey, StateCommand};
 use taskboard_ui_slint::KeyboardState;
 use taskboard_ui_slint::UiSettings;
 use taskboard_ui_slint::actions::ActionId;
+use taskboard_ui_slint::keymap::stroke::parse;
 
 fn keyboard(harness: &Harness) -> KeyboardState<'_> {
     harness.handle.window().global::<KeyboardState>()
@@ -518,6 +519,146 @@ fn us4_s1_quota_key_routes_over_the_focused_row() {
         assert!(
             harness.handle.window().get_habits_quota_open(),
             "the key routes the same opener (click ≡ key)"
+        );
+    });
+}
+
+/// The create form's target picker radio stop (US-1/S3): the label
+/// addresses the container's shared string too, so the radio is
+/// picked by role — the element carrying the checked bit and the
+/// pick's default action (the AT ≡ pick seam).
+fn segment_radio(harness: &Harness, label: &str) -> support::driver::Element {
+    harness
+        .driver
+        .find_all_by_label(label)
+        .into_iter()
+        .find(support::driver::Element::is_radio_button)
+        .expect("the segmented stop is addressable")
+}
+
+/// The stop's checked bit — the typed selected fact (the element
+/// read, not the r2 model fallback; backend-testing 1.18 exposes the
+/// read).
+fn segment_checked(harness: &Harness, label: &str) -> bool {
+    segment_radio(harness, label).is_checked()
+}
+
+/// US-1/S2 (W-1, the r7 create plan's retro bound-test): the title
+/// draft echoes in the field's text model — a form-local edit that
+/// dispatches nothing — and Return commits the draft as the exact
+/// `CreateHabit` (the title field's commit seam, the create-row
+/// precedent).
+#[test]
+fn us1_s2_create_title_draft_echoes_and_commits_on_return() {
+    let (_fixture, state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.set_window_size(1000, 900);
+        harness.driver.advance_time(0);
+        harness.handle.window().invoke_habits_create_asked();
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_habits_create_open(),
+            "the form armed"
+        );
+        harness.assert_commands(&[]);
+
+        // The title field: the a11y label is the address; the value
+        // (never the label) is the echo oracle.
+        let field = harness
+            .driver
+            .find_by_label("Habit title")
+            .filter(support::driver::Element::is_text_input)
+            .expect("the armed form's title field is addressable");
+        let (x, y) = support::driver::centre(&field);
+        harness.driver.click_at(x, y);
+        harness.driver.advance_time(0);
+        harness.type_text("Chamomile");
+        harness.driver.advance_time(0);
+        assert_eq!(
+            field.value().as_deref(),
+            Some("Chamomile"),
+            "the draft echoes in the field's text model"
+        );
+        harness.assert_commands(&[]);
+
+        // Return commits: the exact command over the section's board,
+        // the default quota and target arming (the untouched fields).
+        harness.stroke(parse("Return").expect("Return parses"));
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::CreateHabit {
+                    board: created_board,
+                    title,
+                    target,
+                },
+            ] => {
+                assert_eq!(created_board, &board, "the section's board");
+                assert_eq!(title, "Chamomile");
+                assert_eq!(
+                    target,
+                    &taskboard_domain::HabitTarget::PerDay(
+                        taskboard_domain::NonZeroCount::new(1).unwrap(),
+                    ),
+                    "the untouched quota and target arm their defaults"
+                );
+            }
+            other => panic!("Return commits the draft, got {other:?}"),
+        }
+        assert!(
+            !harness.handle.window().get_habits_create_open(),
+            "the commit disarms the form"
+        );
+    });
+}
+
+/// US-1/S3 (W-1, the r7 create plan's retro bound-test): picking a
+/// target variant moves the control's typed selected fact (exactly
+/// one checked stop) and dispatches nothing; bare Escape disarms and
+/// discards the draft (the alternative-flow leg).
+#[test]
+fn us1_s3_create_target_pick_shows_via_selected_index() {
+    let (_fixture, state) = fixture::journey_state();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.set_window_size(1000, 900);
+        harness.driver.advance_time(0);
+        harness.handle.window().invoke_habits_create_asked();
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_habits_create_open(),
+            "the form armed"
+        );
+
+        assert!(segment_checked(harness, "Per day"), "the default selects");
+        assert!(
+            !segment_checked(harness, "Per week") && !segment_checked(harness, "Per month"),
+            "exactly one stop is selected"
+        );
+
+        segment_radio(harness, "Per week").invoke_default_action();
+        harness.driver.advance_time(0);
+        assert!(
+            segment_checked(harness, "Per week"),
+            "the pick shows via the checked stop"
+        );
+        assert!(
+            !segment_checked(harness, "Per day") && !segment_checked(harness, "Per month"),
+            "the selection moved off the default"
+        );
+        harness.assert_commands(&[]);
+
+        // The alternative-flow leg: Escape disarms, the draft is
+        // discarded, the boundary stays silent.
+        harness.stroke(parse("Escape").expect("Escape parses"));
+        harness.driver.advance_time(0);
+        assert!(
+            !harness.handle.window().get_habits_create_open(),
+            "Escape disarmed the form"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the pick and the disarm dispatched nothing"
         );
     });
 }
