@@ -28,30 +28,6 @@ fn run_probe(job: impl FnOnce(&QuickBarGateProbe, &mut SlintDriver) + Send + 'st
     );
 }
 
-/// A real pointer click at the logical window position (the
-/// menu-shell probe's dispatch shape): move, press, release — one
-/// clock tick between the phases.
-fn click_at(window: &QuickBarGateProbe, x: f32, y: f32) {
-    use slint::platform::{PointerEventButton, WindowEvent};
-    let p = slint::LogicalPosition::new(x, y);
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position: p });
-    support::driver::advance_probe_clock(1);
-    window.window().dispatch_event(WindowEvent::PointerPressed {
-        position: p,
-        button: PointerEventButton::Left,
-    });
-    support::driver::advance_probe_clock(1);
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerReleased {
-            position: p,
-            button: PointerEventButton::Left,
-        });
-    support::driver::advance_probe_clock(1);
-}
-
 /// The shown half renders, the withheld entry mounts nothing: two
 /// buttons resolve, and they sit adjacent — the gap between them is
 /// one spacing gap, strictly smaller than a button (a reserved slot
@@ -104,8 +80,10 @@ fn the_shown_click_routes_by_model_index() {
         let second_shown = buttons.last().expect("the second shown button mounts");
         let position = second_shown.absolute_position();
         let size = second_shown.size();
-        click_at(
-            window,
+        // The shared pointer-click seam (`support::driver`): move,
+        // press, release — one clock tick per phase.
+        support::driver::pointer_click_at(
+            window.window(),
             position.x + size.width / 2.0,
             position.y + size.height / 2.0,
         );

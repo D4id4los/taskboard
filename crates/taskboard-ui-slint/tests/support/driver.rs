@@ -486,6 +486,22 @@ pub fn advance_probe_clock(ms: u64) {
     mock_elapsed_time(ms);
 }
 
+/// A real pointer click at the logical window position (the probes'
+/// dispatch shape): move, press, release — one clock tick between the
+/// phases so each event lands on its own handler pass.
+pub fn pointer_click_at(window: &slint::Window, x: f32, y: f32) {
+    let position = slint::LogicalPosition::new(x, y);
+    let button = i_slint_core::items::PointerEventButton::Left;
+    for event in [
+        WindowEvent::PointerMoved { position },
+        WindowEvent::PointerPressed { position, button },
+        WindowEvent::PointerReleased { position, button },
+    ] {
+        window.dispatch_event(event);
+        advance_probe_clock(1);
+    }
+}
+
 /// The card/element centre helper the drag journeys address by.
 pub fn centre(element: &Element) -> (f32, f32) {
     let pos = element.absolute_position();
