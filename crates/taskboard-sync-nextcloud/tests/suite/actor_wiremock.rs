@@ -3492,21 +3492,17 @@ mod flush_seed {
         let habit_id = habit.id;
         state.habits.habits.insert(habit.id, habit);
         // The device-local "today" under the hermetic UTC-midnight
-        // calendar is T's UTC date; that window's row is in retention.
-        let today = chrono::DateTime::from_timestamp(T, 0).unwrap().date_naive();
-        state.habits.log.insert(
-            taskboard_domain::HabitLogKey {
-                habit: habit_id,
-                window: taskboard_domain::WindowStart::from_stored(today),
-            },
-            taskboard_domain::HabitLogEntry {
-                count: 1,
-                clock: ts(T + 20),
-                by: None,
-
-                skip: false,
-            },
-        );
+        // calendar is T's UTC date; that completion is in retention
+        // (the D-7 cut-over: the seed carries the events lane).
+        let event = taskboard_domain::habit_event::HabitEvent {
+            id: taskboard_domain::habit_event::HabitEventId::from(uuid(61)),
+            habit: habit_id,
+            kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+            at: chrono::DateTime::from_timestamp(T, 0).unwrap(),
+            by: None,
+            deleted: None,
+        };
+        state.habits.events.insert(event.id, event);
         state.outbox.push(PendingOp {
             op_id: OpId(uuid(999)),
             op: LocalOp::FlushBoardAppData(taskboard_domain::BoardId::from(uuid(1))),
@@ -4354,7 +4350,37 @@ async fn f21_habit_and_log_roam_through_the_sidecar_alone() {
     )
     .await;
     sidecar::mount_detail(&server, sidecar::CARD, false).await;
-    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+    // The base document carries card-55 content AND a legacy
+    // `habit-log` section: an in-window row for the seeded habit and
+    // an aged one — the D-7 keep-`lane_gc_old_habit_log` pin's input
+    // (a new peer never re-emits the legacy lane, but the GC still
+    // bounds what old peers sent).
+    let base_today = chrono::DateTime::from_timestamp(T, 0).unwrap().date_naive();
+    let base_habit = uuid(60).to_string();
+    let aged_day = (base_today
+        .checked_sub_days(chrono::Days::new(
+            u64::try_from(taskboard_domain::HABIT_EVENT_SYNC_RETENTION_DAYS).unwrap() + 1,
+        ))
+        .unwrap())
+    .to_string();
+    let base_document = serde_json::json!({
+        "format": 1,
+        "board": BOARD,
+        "sections": {
+            "tasks": { "55": { "fields": {
+                "effort": { "v": 900, "clock": "2026-01-01T00:00:00Z" }
+            } } },
+            "habit-log": {
+                format!("{base_habit}|{base_today}"): {
+                    "count": 4, "clock": "2026-01-01T00:00:00Z", "skip": false
+                },
+                format!("{base_habit}|{aged_day}"): {
+                    "count": 9, "clock": "2026-01-01T00:00:00Z", "skip": false
+                }
+            }
+        }
+    });
+    sidecar::mount_download(&server, base_document.to_string(), 200).await;
     flush_seed::mount_content_put(&server, 200).await;
 
     let mut actor = spawn(&server, flush_seed::repo_with_habit_flush_work());
@@ -4391,12 +4417,33 @@ async fn f21_habit_and_log_roam_through_the_sidecar_alone() {
         "the five embedded clocks ride the row: {row}"
     );
     let today = chrono::DateTime::from_timestamp(T, 0).unwrap().date_naive();
+    // The events cut-over (D-7): the uploaded document carries
+    // `habit-events` — rows keyed by the event uuid, the habit riding
+    // the row — and NO locally-emitted legacy lane.
+    let events = body["sections"]["habit-events"]
+        .as_object()
+        .expect("the habit-events section rode the flush");
+    let event_id = uuid(61).to_string();
+    let row = &events[&event_id];
+    assert_eq!(row["habit"], habit_uuid, "the habit rides the row");
+    assert_eq!(row["kind"], "completion");
+    assert!(row["at"].is_string());
+    // The legacy lane: the base's in-window row relays through the
+    // union (this build folds but never re-emits it); the aged row is
+    // stripped — `lane_gc_old_habit_log` still bounds the lane (D-7).
     let log = body["sections"]["habit-log"]
         .as_object()
-        .expect("the habit-log section rode the flush");
-    let key = format!("{habit_uuid}|{today}");
-    assert_eq!(log[&key]["count"], 1, "the in-window row roams: {log:?}");
-    assert!(log[&key]["clock"].is_string());
+        .expect("the base legacy section relays through the union");
+    let live_key = format!("{habit_uuid}|{today}");
+    assert_eq!(log.len(), 1, "the aged base row is GC'd: {log:?}");
+    assert_eq!(
+        log[&live_key]["count"], 4,
+        "the base's in-window legacy row relays untouched"
+    );
+    assert!(
+        !events.contains_key(&live_key),
+        "the legacy key space never leaks into the events section"
+    );
     // The D-C9 fence: no card body *for habits* anywhere. The base
     // document's unrelated card-55 content relays untouched (the union's
     // additivity), and the habit UUID is confined to its board-level

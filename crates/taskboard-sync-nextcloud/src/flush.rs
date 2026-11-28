@@ -25,10 +25,10 @@ use taskboard_domain::{
     EntityTables, HabitState, LocalOp, PendingOp, PushGroup, PushOutcome, PushResult, ReminderRule,
     ReminderRuleId, RemoteBoardId, Stack, SyncErrorKind, Task, TaskId, TimeEntry, TimeEntryId,
     break_dismissals_entry_for, break_rules_for, derive_break_rule_tombstones,
-    derive_rule_tombstones, derive_time_entry_tombstones, dismissals_entry_for, habit_log_for,
-    habit_time_entries_for, habits_for, lane_gc_old_habit_log, lane_gc_old_habit_time_entries,
-    lane_gc_old_time_entries, lane_gc_scheduled, prune_absent_cards, rules_entry_for,
-    task_entry_for, time_entries_for, union,
+    derive_rule_tombstones, derive_time_entry_tombstones, dismissals_entry_for, habit_events_for,
+    habit_time_entries_for, habits_for, lane_gc_old_habit_events, lane_gc_old_habit_log,
+    lane_gc_old_habit_time_entries, lane_gc_old_time_entries, lane_gc_scheduled,
+    prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
 };
 
 use crate::anchor::{self, ANCHOR_ATTACHMENT_FILENAME, ANCHOR_ATTACHMENT_MIME, AnchorAction};
@@ -167,10 +167,10 @@ pub(crate) fn board_has_local_app_data(
         .any(|entry| board_tasks.contains(&entry.task) && entry.start >= window_start)
     // The habit clauses (D-H9): a board whose users touch only habits
     // must still grow the anchor. The retention window applies here too
-    // — a long-empty board's aged log does not hold the anchor up on
-    // its own; definitions count while any live one exists.
+    // — a long-empty board's aged events do not hold the anchor up on
+    // their own; definitions count while any live one exists.
     || habits.habits.values().any(|habit| habit.is_live() && habit.board == board)
-    || habit_log_for(&habits.habits, &habits.log, board, today, None)
+    || habit_events_for(&habits.events, &habits.habits, board, today, None)
         .keys()
         .next()
         .is_some()
@@ -436,9 +436,14 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         ctx.author,
     );
     let overlay_habits = habits_for(&ctx.habits.habits, ctx.board, ctx.author);
-    let overlay_log = habit_log_for(
+    // The events cut-over (D-7 / Ruling D1's writer half): this build
+    // never emits the legacy `habit-log` section — the overlay's
+    // `habit_log` slot stays `None` (the field itself survives until
+    // chunk 5 deletes it) and the event rows emit under
+    // `habit-events`.
+    let overlay_events = habit_events_for(
+        &ctx.habits.events,
         &ctx.habits.habits,
-        &ctx.habits.log,
         ctx.board,
         ctx.today,
         ctx.author,
@@ -482,10 +487,10 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             dismissals: (!overlay_dismissals.is_empty()).then_some(overlay_dismissals),
             time_entries: (!overlay_time.is_empty()).then_some(overlay_time),
             habits: (!overlay_habits.is_empty()).then_some(overlay_habits),
-            habit_log: (!overlay_log.is_empty()).then_some(overlay_log),
-            // The emission cut-over (D-7) lands in the connector
-            // commit; until then the new section never emits.
-            habit_events: None,
+            // The legacy slot stays None — never emitted since the
+            // D-7 cut-over; the field survives until chunk 5 (#1542).
+            habit_log: None,
+            habit_events: (!overlay_events.is_empty()).then_some(overlay_events),
             break_rules: (!overlay_break_rules.is_empty()).then_some(overlay_break_rules),
             habit_time_entries: (!overlay_habit_time.is_empty()).then_some(overlay_habit_time),
             unknown: BTreeMap::new(),
@@ -498,9 +503,14 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     let merged = union(&base, &overlay);
     let merged = lane_gc_scheduled(&merged, ctx.features.card_startdate);
     let merged = lane_gc_old_time_entries(&merged, ctx.read_at);
-    // The habit-log wire GC beside the time-entries one (D-H14):
-    // document-side compaction only — the local database never drops.
+    // The habit-log wire GC beside the time-entries one (D-H14) —
+    // kept after the D-7 cut-over: base documents from old peers
+    // still carry legacy sections that must age out. Document-side
+    // compaction only — the local database never drops.
     let merged = lane_gc_old_habit_log(&merged, ctx.today);
+    // The habit-events wire GC beside it (D-8): the same daily step,
+    // document-side compaction only.
+    let merged = lane_gc_old_habit_events(&merged, ctx.today);
     // The habit-time-entries wire GC beside the others (#1305 D-6):
     // document-side compaction only — the local database never drops.
     let merged = lane_gc_old_habit_time_entries(&merged, ctx.read_at);
@@ -1328,7 +1338,8 @@ mod tests {
         assert!(
             evicted.time_entries.is_none()
                 && evicted.habits.is_none()
-                && evicted.habit_log.is_none(),
+                && evicted.habit_log.is_none()
+                && evicted.habit_events.is_none(),
             "board-level sections are never card-pruned and never reported"
         );
         // A document whose cards are all present feeds nothing.
@@ -1528,9 +1539,7 @@ mod tests {
 mod habit_gate_tests {
     use super::*;
     use chrono::TimeZone;
-    use taskboard_domain::{
-        Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitTarget, NonZeroCount, WindowStart,
-    };
+    use taskboard_domain::{Habit, HabitClocks, HabitTarget, NonZeroCount};
 
     fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
         chrono::Utc.timestamp_opt(secs, 0).unwrap()
@@ -1605,7 +1614,8 @@ mod habit_gate_tests {
             board,
             false
         ));
-        // An aged log row alone does not hold the anchor up.
+        // An aged event alone does not hold the anchor up (the D-7
+        // cut-over: the gate reads the events lane now).
         let aged_date = today
             .checked_sub_days(chrono::Days::new(
                 taskboard_domain::HABIT_EVENT_SYNC_RETENTION_DAYS as u64 + 1,
@@ -1615,17 +1625,15 @@ mod habit_gate_tests {
         let dead = habit(board, true);
         let dead_id = dead.id;
         aged_only.habits.insert(dead.id, dead);
-        aged_only.log.insert(
-            HabitLogKey {
+        aged_only.events.insert(
+            taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0xE1)),
+            taskboard_domain::habit_event::HabitEvent {
+                id: taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0xE1)),
                 habit: dead_id,
-                window: WindowStart::from_stored(aged_date),
-            },
-            HabitLogEntry {
-                count: 1,
-                clock: now,
+                kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+                at: aged_date.and_time(chrono::NaiveTime::MIN).and_utc(),
                 by: None,
-
-                skip: false,
+                deleted: None,
             },
         );
         assert!(!has_flush_work(
@@ -1642,19 +1650,17 @@ mod habit_gate_tests {
             board,
             false
         ));
-        // An in-window log row does.
+        // An in-window event does.
         let mut fresh_log = aged_only.clone();
-        fresh_log.log.insert(
-            HabitLogKey {
+        fresh_log.events.insert(
+            taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0xE2)),
+            taskboard_domain::habit_event::HabitEvent {
+                id: taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0xE2)),
                 habit: dead_id,
-                window: WindowStart::from_stored(today),
-            },
-            HabitLogEntry {
-                count: 1,
-                clock: now,
+                kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+                at: today.and_time(chrono::NaiveTime::MIN).and_utc(),
                 by: None,
-
-                skip: false,
+                deleted: None,
             },
         );
         assert!(has_flush_work(
