@@ -289,13 +289,29 @@ tok_match() { # tok_match <token> <file>...
 adapter_match() { # adapter_match <callback> <adapter-file>...
   local cb=$1 f out
   shift
+  # (#1282/#1577) the same snake/kebab separator tolerance tok_match
+  # applies to the .slint universe widens the adapter lookups too: a
+  # kebab-authored plan cell (`habits-undo-log-clicked`, the template
+  # §6 spelling) must resolve the snake adapter seam
+  # (`on_habits_undo_log_clicked`) and the snake-keyed seam_inventory
+  # manifest entry — in BOTH directions (the #1282 cell was snake vs
+  # kebab; #1577's W-8 is kebab vs snake), so every `_`/`-` separator
+  # widens to the `[-_]` class. Letters stay load-bearing — only
+  # separator drift normalizes, boundary-anchored and first-hit, so a
+  # seam whose normalised name genuinely differs never matches
+  # (self-test 30).
+  # (two passes through a sentinel: replacing `-` after `_` would
+  # otherwise corrupt the `[-_]` class the first pass inserted)
+  local re=${cb//_/§}
+  re=${re//-/[-_]}
+  re=${re//§/[-_]}
   for f in "$@"; do
     [[ -f $f ]] || continue
-    if out=$(grep -nE -- "on_${cb}([^A-Za-z0-9_]|$)" "$f" 2>/dev/null | head -n 1); then
+    if out=$(grep -nE -- "on_${re}([^A-Za-z0-9_]|$)" "$f" 2>/dev/null | head -n 1); then
       FOUND_EV="${f}:${out%%:*}"
       return 0
     fi
-    if out=$(grep -nF "install_seam!" "$f" 2>/dev/null | grep -E -- "(^|[^A-Za-z0-9_])${cb}([^A-Za-z0-9_]|$)" | head -n 1); then
+    if out=$(grep -nF "install_seam!" "$f" 2>/dev/null | grep -E -- "(^|[^A-Za-z0-9_])${re}([^A-Za-z0-9_]|$)" | head -n 1); then
       FOUND_EV="${f}:${out%%:*}"
       return 0
     fi
@@ -952,6 +968,41 @@ self_test() {
     rc=1
   fi
 
+  # 29. #1577 kebab cell vs snake adapter seam: the #1282 twin of
+  #     self-test 21 — the W-K Callback cell is authored kebab
+  #     (`habit-edit-asked`, the template §6 spelling) while the
+  #     adapter seam is snake (`on_habit_edit_asked`, the
+  #     seam_inventory key). The .slint side resolved already (kebab
+  #     ↔ kebab); the adapter lookup and the #760 inventory
+  #     cross-check must resolve through the same separator widening,
+  #     exit 0, exactly 1 FOUND.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-kebabcb.md" --gate --root "$fx/tree" \
+    >"$tmp/kebabcb.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'W-K callback habit-edit-asked → FOUND' "$tmp/kebabcb.out" || true)
+  if [[ $code -eq 0 && $c -eq 1 ]]; then
+    echo "self-test 29 (#1577 kebab callback cell resolves the snake adapter seam, exit 0): PASS"
+  else
+    echo "self-test 29 (#1577 kebab callback cell resolves the snake adapter seam, exit 0): FAIL (exit $code, $c FOUND rows)"
+    sed 's/^/    /' "$tmp/kebabcb.out"
+    rc=1
+  fi
+
+  # 30. #1577 MISSING unchanged: a kebab cell whose kebab slint
+  #     callback exists (`habit-edit-probe`) but whose adapter seam
+  #     differs by letters, not just separators (only
+  #     `on_habit_edit_asked` is installed) stays MISSING — the
+  #     adapter-side widening never fabricates a match.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-kebabcb-miss.md" --gate --root "$fx/tree" \
+    >"$tmp/kebabcbmiss.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'W-K callback habit-edit-probe → MISSING$' "$tmp/kebabcbmiss.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 ]]; then
+    echo "self-test 30 (#1577 kebab cell with no normalising adapter seam stays MISSING): PASS"
+  else
+    echo "self-test 30 (#1577 kebab cell with no normalising adapter seam stays MISSING): FAIL (exit $code, $c MISSING rows)"
+    sed 's/^/    /' "$tmp/kebabcbmiss.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -1349,11 +1400,16 @@ main() {
         if adapter_match "$w_cb" "${adapter_files[@]}"; then
           adapter_ev=$FOUND_EV
           # #760 cross-check: a resolved callback must be listed in the
-          # adapter's structural manifest. Callbacks that already MISS
-          # keep MISSING — this is an additional honesty pass on
-          # resolved wiring, not a substitute.
+          # adapter's structural manifest (the #1577 widening applies —
+          # the manifest is snake-keyed, the cell may be kebab).
+          # Callbacks that already MISS keep MISSING — this is an
+          # additional honesty pass on resolved wiring, not a
+          # substitute.
+          local inv_re=${w_cb//_/§}
+          inv_re=${inv_re//-/[-_]}
+          inv_re=${inv_re//§/[-_]}
           if [[ -n $inv_file ]] \
-             && ! grep -qF -- "\"${w_cb}\"" "$inv_file"; then
+             && ! grep -qE -- "\"${inv_re}\"" "$inv_file"; then
             emit_inventory_miss "${w_id} callback ${w_cb}" "$slint_ev" "$adapter_ev"
           else
             FOUND_EV=$slint_ev
