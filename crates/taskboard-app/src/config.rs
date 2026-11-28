@@ -2178,12 +2178,15 @@ fn default_db_path() -> Option<PathBuf> {
 /// The real-home guard's pure core (#1554): when `sandboxed` (the
 /// [`SANDBOX_SENTINEL_ENV`] sentinel is armed) and any consulted path
 /// sits under `home`, the typed refusal names the first offender.
-/// Match is `Path::starts_with` — component-wise, so `<home>/x` is
-/// under `<home>` but `<home>-evil/x` is not; canonicalization is
-/// deliberately not attempted (documented leniency: a symlinked or
-/// `..`-laden path that escapes the prefix match is outside the
-/// guard's contract). Unarmed, or no home on the platform, the guard
-/// is inert — production semantics are unchanged.
+/// Match is `Path::starts_with` over the lexically normalized forms —
+/// component-wise, so `<home>/x` is under `<home>` but
+/// `<home>-evil/x` is not, and a `..` segment resolves lexically
+/// instead of laundering a home path past the prefix (`/var/tmp/../`
+/// `<home>/x` is refused; `<home>/../elsewhere` is not). Symlinks are
+/// the consumer's job ([`sandbox_guard_refusal`] adds the canonical
+/// form of an existing path) — the pure core stays filesystem-free.
+/// Unarmed, or no home on the platform, the guard is inert —
+/// production semantics are unchanged.
 fn sandbox_real_home_refusal(
     sandboxed: bool,
     home: Option<&Path>,
@@ -2195,20 +2198,88 @@ fn sandbox_real_home_refusal(
     let home = home?;
     consulted
         .into_iter()
+        .map(|path| lexically_normalized(&path))
         .find(|path| path.starts_with(home))
         .map(|path| ConfigError::SandboxedRealHomePath { path })
+}
+
+/// The lexical normalization the guard matches over: `.` components
+/// dropped, each `..` popped one component (an empty stack absorbs a
+/// leading `..`, mirroring [`std::path::Component`]'s own pass-through).
+/// No filesystem access — a purely textual reading of the path.
+fn lexically_normalized(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Every form the consulted path can take on disk: itself
+/// (normalized), its CWD-resolved spelling when relative (a relative
+/// `db_path` is consulted against the process's working directory),
+/// and its canonical form when it exists (a symlink planted in the
+/// sandbox must not launder a real-home destination past the lexical
+/// prefix). Order is irrelevant — the caller only needs "any form
+/// under home".
+fn sandbox_path_check_forms(path: &Path) -> Vec<PathBuf> {
+    let mut forms = vec![lexically_normalized(path)];
+    if path.is_relative()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        forms.push(lexically_normalized(&cwd.join(path)));
+    }
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        forms.push(canonical);
+    }
+    forms
 }
 
 /// The guard's boot-time consumer (#1554), called from
 /// [`AppConfig::extract_raw`] after the db default is filled: reads
 /// the sentinel and the platform home dir and hands the pure core the
-/// two consulted paths — the config file actually used (the probe
-/// path, explicit or resolved) and the resolved db path.
+/// check forms of the two consulted paths — the config file actually
+/// used (the probe path, explicit or resolved) and the resolved db
+/// path. The refusal's payload names the *configured* path, not a
+/// resolved form.
 fn sandbox_guard_refusal(config_file: &Path, db_path: Option<&Path>) -> Option<ConfigError> {
     let sandboxed = std::env::var_os(SANDBOX_SENTINEL_ENV).is_some();
+    if !sandboxed {
+        return None;
+    }
+    let home = dirs::home_dir()?;
     let consulted =
         std::iter::once(config_file.to_path_buf()).chain(db_path.map(Path::to_path_buf));
-    sandbox_real_home_refusal(sandboxed, dirs::home_dir().as_deref(), consulted)
+    for path in consulted {
+        let refused = sandbox_path_check_forms(&path)
+            .into_iter()
+            .any(|form| sandbox_real_home_refusal(true, Some(&home), [form]).is_some());
+        if refused {
+            return Some(ConfigError::SandboxedRealHomePath { path });
+        }
+    }
+    None
+}
+
+/// The guard at the non-config seams that also resolve a taskboard
+/// home path from platform dirs (the REPL history, `repl.rs`): true
+/// when the sentinel is armed and `path` sits under the real home —
+/// the caller degrades to its in-sandbox or in-memory behavior
+/// instead of touching the operator's home.
+pub(crate) fn sandbox_path_refused(path: &Path) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    std::env::var_os(SANDBOX_SENTINEL_ENV).is_some()
+        && sandbox_path_check_forms(path)
+            .into_iter()
+            .any(|form| sandbox_real_home_refusal(true, Some(&home), [form]).is_some())
 }
 
 /// The dotted-key leaf diff of two decoded config trees (the
@@ -4761,5 +4832,36 @@ mod tests {
             [PathBuf::from("/home/operator-evil/taskboard.db")],
         );
         assert!(err.is_none(), "a name-prefix sibling is not under home");
+    }
+
+    /// A `..` segment cannot launder a home path past the prefix
+    /// match: `/var/tmp/../home/operator/x` normalizes to
+    /// `/home/operator/x` and is refused.
+    #[test]
+    fn sandbox_guard_resolves_dot_dot_segments_lexically() {
+        let home = Path::new("/home/operator");
+        let err = sandbox_real_home_refusal(
+            true,
+            Some(home),
+            [PathBuf::from("/srv/../home/operator/taskboard.db")],
+        );
+        assert!(matches!(
+            err,
+            Some(ConfigError::SandboxedRealHomePath { .. })
+        ));
+    }
+
+    /// Symmetrically, a `..` escape out of home is NOT refused (the
+    /// normalization also corrects the over-refusal a raw prefix
+    /// match would produce).
+    #[test]
+    fn sandbox_guard_does_not_refuse_a_dot_dot_escape_out_of_home() {
+        let home = Path::new("/home/operator");
+        let err = sandbox_real_home_refusal(
+            true,
+            Some(home),
+            [PathBuf::from("/home/operator/../var/tmp/taskboard.db")],
+        );
+        assert!(err.is_none());
     }
 }

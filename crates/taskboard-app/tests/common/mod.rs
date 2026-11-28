@@ -687,6 +687,14 @@ pub fn spawn_daemon(config: &Path, password: Option<&str>) -> Child {
         .arg("daemon")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        // The boot mints `device.json` at the platform data seam
+        // (`dirs::data_dir()`), so that seam lands in the config's
+        // tempdir — never the operator's home (the pty sessions'
+        // XDG_DATA_HOME rule, applied to every piped daemon).
+        .env(
+            "XDG_DATA_HOME",
+            config.parent().expect("config path has a parent"),
+        )
         .env_remove("TASKBOARD_APP_PASSWORD");
     if let Some(password) = password {
         command.env("TASKBOARD_APP_PASSWORD", password);
