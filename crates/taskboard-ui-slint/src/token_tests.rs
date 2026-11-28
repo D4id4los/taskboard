@@ -131,63 +131,80 @@ const SURFACE: TokenName = ("Theme", "surface");
 const SURFACE_RAISED: TokenName = ("Theme", "surface-raised");
 const SURFACE_HOVER: TokenName = ("Theme", "surface-hover");
 
-/// `(foreground token, surface token, class)` — every text-bearing
-/// foreground × every surface it renders on, plus the non-text pairs.
-/// Text-bearing state colours render at caption/body size, so they take
-/// the Body class; the display/title roles ride `text-primary` at the
-/// Large class via the explicit Large entry.
-const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
-    (("Theme", "text-primary"), BACKGROUND, MinRatio::Body),
-    (("Theme", "text-primary"), SURFACE, MinRatio::Body),
-    (("Theme", "text-primary"), SURFACE_RAISED, MinRatio::Body),
-    (("Theme", "text-primary"), SURFACE_HOVER, MinRatio::Body),
+/// The surface ladders the pair table expands over — one row per
+/// (foreground × surface) at the ladder's class.
+const EVERY_SURFACE: &[TokenName] = &[BACKGROUND, SURFACE, SURFACE_RAISED, SURFACE_HOVER];
+/// The base surfaces: backgrounds a foreground can sit on without an
+/// interaction lift onto the raised/hover steps.
+const BASE_SURFACES: &[TokenName] = &[BACKGROUND, SURFACE];
+
+/// `(foreground token, the surfaces it renders on, the floor class)` —
+/// the pair table's source rows, expanded by [`pairs`]. Text-bearing
+/// state colours render at caption/body size, so they take the Body
+/// class; the display/title roles ride `text-primary` at the Large
+/// class via the explicit Large entry.
+const PAIR_LADDERS: &[(TokenName, &[TokenName], MinRatio)] = &[
+    (("Theme", "text-primary"), EVERY_SURFACE, MinRatio::Body),
     // Large: display/title ride text-primary over the window background.
-    (("Theme", "text-primary"), BACKGROUND, MinRatio::Large),
-    (("Theme", "text-secondary"), BACKGROUND, MinRatio::Body),
-    (("Theme", "text-secondary"), SURFACE, MinRatio::Body),
-    (("Theme", "text-secondary"), SURFACE_RAISED, MinRatio::Body),
+    (("Theme", "text-primary"), &[BACKGROUND], MinRatio::Large),
     // Hover is a surface: the interactive icon/text colours that lift
     // onto it must stay readable while the hover cue shows.
-    (("Theme", "text-secondary"), SURFACE_HOVER, MinRatio::Body),
-    (("Semantic", "success"), BACKGROUND, MinRatio::Body),
-    (("Semantic", "success"), SURFACE, MinRatio::Body),
+    (("Theme", "text-secondary"), EVERY_SURFACE, MinRatio::Body),
     // The raised/hover legs (#1414): state colours lift onto cards and
     // hovered rows, so every surface they can render on is paired.
-    (("Semantic", "success"), SURFACE_RAISED, MinRatio::Body),
-    (("Semantic", "success"), SURFACE_HOVER, MinRatio::Body),
-    (("Semantic", "warning"), BACKGROUND, MinRatio::Body),
-    (("Semantic", "warning"), SURFACE, MinRatio::Body),
-    (("Semantic", "warning"), SURFACE_RAISED, MinRatio::Body),
-    (("Semantic", "warning"), SURFACE_HOVER, MinRatio::Body),
-    (("Semantic", "danger"), BACKGROUND, MinRatio::Body),
-    (("Semantic", "danger"), SURFACE, MinRatio::Body),
-    (("Semantic", "danger"), SURFACE_RAISED, MinRatio::Body),
-    // The hover leg (#1450's remediation: the dark danger token raised
+    (("Semantic", "success"), EVERY_SURFACE, MinRatio::Body),
+    (("Semantic", "warning"), EVERY_SURFACE, MinRatio::Body),
+    // Danger's hover leg is #1450's remediation (the dark token raised
     // to 0xeb8680) — the real Body floor, no waiver.
-    (("Semantic", "danger"), SURFACE_HOVER, MinRatio::Body),
-    (("Semantic", "overdue"), BACKGROUND, MinRatio::Body),
-    (("Semantic", "overdue"), SURFACE, MinRatio::Body),
-    (("Semantic", "overdue"), SURFACE_RAISED, MinRatio::Body),
-    (("Semantic", "overdue"), SURFACE_HOVER, MinRatio::Body),
+    (("Semantic", "danger"), EVERY_SURFACE, MinRatio::Body),
+    (("Semantic", "overdue"), EVERY_SURFACE, MinRatio::Body),
     // Offline status text maps to text-secondary; it is text-bearing.
-    (("Semantic", "offline"), BACKGROUND, MinRatio::Body),
-    (("Semantic", "offline"), SURFACE, MinRatio::Body),
+    (("Semantic", "offline"), BASE_SURFACES, MinRatio::Body),
     // Non-text: focus ring, borders, sync indicator.
-    (("Theme", "focus-ring"), BACKGROUND, MinRatio::NonText),
-    (("Theme", "focus-ring"), SURFACE, MinRatio::NonText),
-    (("Semantic", "focus-ring"), BACKGROUND, MinRatio::NonText),
-    (("Semantic", "focus-ring"), SURFACE, MinRatio::NonText),
-    (("Theme", "border"), BACKGROUND, MinRatio::NonText),
-    (("Theme", "border"), SURFACE, MinRatio::NonText),
-    // The raised/hover legs (#1414; #1450's remediation raised the
-    // dark border token to 0x7b8297): the border renders around cards
-    // and lifted controls, so every surface it can render on is
+    (("Theme", "focus-ring"), BASE_SURFACES, MinRatio::NonText),
+    (("Semantic", "focus-ring"), BASE_SURFACES, MinRatio::NonText),
+    // The border's raised/hover legs (#1414; #1450's remediation raised
+    // the dark border token to 0x7b8297): the border renders around
+    // cards and lifted controls, so every surface it can render on is
     // paired at the real non-text floor — no waiver.
-    (("Theme", "border"), SURFACE_RAISED, MinRatio::NonText),
-    (("Theme", "border"), SURFACE_HOVER, MinRatio::NonText),
-    (("Semantic", "sync-active"), BACKGROUND, MinRatio::NonText),
-    (("Semantic", "sync-active"), SURFACE, MinRatio::NonText),
+    (("Theme", "border"), EVERY_SURFACE, MinRatio::NonText),
+    (
+        ("Semantic", "sync-active"),
+        BASE_SURFACES,
+        MinRatio::NonText,
+    ),
 ];
+
+/// The pair table: every text-bearing foreground × every surface it
+/// renders on, plus the non-text pairs — 37 rows, expanded from
+/// [`PAIR_LADDERS`].
+fn pairs() -> Vec<(TokenName<'static>, TokenName<'static>, MinRatio)> {
+    let expanded: Vec<_> = PAIR_LADDERS
+        .iter()
+        .flat_map(|(foreground, surfaces, class)| {
+            surfaces
+                .iter()
+                .map(move |surface| (*foreground, *surface, *class))
+        })
+        .collect();
+    // The expansion is injective: a duplicated surface in a ladder
+    // would silently double-count a pair in the class report.
+    let keys: std::collections::HashSet<_> = expanded
+        .iter()
+        .map(|(fg, surface, class)| format!("{fg:?}/{surface:?}/{}", class.label()))
+        .collect();
+    assert_eq!(
+        keys.len(),
+        expanded.len(),
+        "pair table has no duplicate rows"
+    );
+    assert_eq!(
+        expanded.len(),
+        37,
+        "pair table size (ladder change → recount)"
+    );
+    expanded
+}
 
 /// The chip ink (plan 2026-11-28 D3, #1458): chip text is the theme's
 /// primary text colour over every tone-fill — the one ink that clears
@@ -196,38 +213,26 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
 const CHIP_INK: TokenName = ("Theme", "text-primary");
 
 /// The chip fill pairs (plan 2026-11-28 D4, #1458): `(declared Tone
-/// name, the tone's colour token, the surface under the fill)` —
-/// every declared tone × every surface the 0.2-alpha `tone-fill`
-/// composite can sit on, explicit per tone so a future fill or tone
-/// change cannot silently shrink the class. `neutral`/`info` map to
-/// `text-secondary`/`text-primary` in `Semantic.tone-color` (the
-/// ladder, not dedicated tokens).
-const CHIP_FILL_PAIRS: &[(&str, TokenName, TokenName)] = &[
-    ("neutral", ("Theme", "text-secondary"), SURFACE),
-    ("neutral", ("Theme", "text-secondary"), SURFACE_RAISED),
-    ("neutral", ("Theme", "text-secondary"), SURFACE_HOVER),
-    ("info", ("Theme", "text-primary"), SURFACE),
-    ("info", ("Theme", "text-primary"), SURFACE_RAISED),
-    ("info", ("Theme", "text-primary"), SURFACE_HOVER),
-    ("success", ("Semantic", "success"), SURFACE),
-    ("success", ("Semantic", "success"), SURFACE_RAISED),
-    ("success", ("Semantic", "success"), SURFACE_HOVER),
-    ("warning", ("Semantic", "warning"), SURFACE),
-    ("warning", ("Semantic", "warning"), SURFACE_RAISED),
-    ("warning", ("Semantic", "warning"), SURFACE_HOVER),
-    ("danger", ("Semantic", "danger"), SURFACE),
-    ("danger", ("Semantic", "danger"), SURFACE_RAISED),
-    ("danger", ("Semantic", "danger"), SURFACE_HOVER),
-    ("overdue", ("Semantic", "overdue"), SURFACE),
-    ("overdue", ("Semantic", "overdue"), SURFACE_RAISED),
-    ("overdue", ("Semantic", "overdue"), SURFACE_HOVER),
-    ("sync-active", ("Semantic", "sync-active"), SURFACE),
-    ("sync-active", ("Semantic", "sync-active"), SURFACE_RAISED),
-    ("sync-active", ("Semantic", "sync-active"), SURFACE_HOVER),
-    ("offline", ("Semantic", "offline"), SURFACE),
-    ("offline", ("Semantic", "offline"), SURFACE_RAISED),
-    ("offline", ("Semantic", "offline"), SURFACE_HOVER),
+/// name, the tone's colour token)` — one row per declared tone, the
+/// exact ladder `Semantic.tone-color` maps (`neutral`→
+/// `text-secondary`, `info`→`text-primary`, the semantic tones
+/// verbatim, `offline`→`text-secondary`; the ladder, not dedicated
+/// tokens). The test expands this over [`CHIP_SURFACES`] and pins it
+/// to the declared `Tone` enum both directions, so a future fill or
+/// tone change cannot silently shrink the class.
+const CHIP_TONES: &[(&str, TokenName)] = &[
+    ("neutral", ("Theme", "text-secondary")),
+    ("info", ("Theme", "text-primary")),
+    ("success", ("Semantic", "success")),
+    ("warning", ("Semantic", "warning")),
+    ("danger", ("Semantic", "danger")),
+    ("overdue", ("Semantic", "overdue")),
+    ("sync-active", ("Semantic", "sync-active")),
+    ("offline", ("Semantic", "offline")),
 ];
+
+/// Every surface the 0.2-alpha `tone-fill` composite can sit on.
+const CHIP_SURFACES: &[TokenName] = &[SURFACE, SURFACE_RAISED, SURFACE_HOVER];
 
 /// The `Tone` variant names as declared in the theme file's `Tone`
 /// enum — the same vocabulary the chip markup dispatches on.
@@ -481,10 +486,10 @@ fn wcag_math_is_sanity_anchored() {
 #[test]
 fn every_pair_meets_its_role_class_minimum() {
     for tag in [PaletteTag::SlintDefaults, PaletteTag::Light] {
-        for (foreground, surface, class) in PAIRS {
+        for (foreground, surface, class) in pairs() {
             let lookup = |name: TokenName| palette_lookup(tag, name);
-            let fg = lookup(*foreground);
-            let bg = lookup(*surface);
+            let fg = lookup(foreground);
+            let bg = lookup(surface);
             assert!(
                 !fg.is_empty() && !bg.is_empty(),
                 "{tag:?}: pair references an undeclared token: {foreground:?} × {surface:?} (completeness rule 3)"
@@ -519,27 +524,37 @@ fn every_chip_fill_pair_meets_body_minimum() {
         };
         format!("{}{}{}", channel(0, 0), channel(2, 2), channel(4, 4))
     };
-    // Completeness: every `Tone` the markup vocabulary declares appears
-    // in the table (and the table names no undeclared tone) — a new
-    // tone fails here until it is paired.
+    // Completeness, both directions: the chip tone ladder names
+    // exactly the `Tone` variants the markup vocabulary declares —
+    // a new tone fails here until it is paired, and a renamed or
+    // removed variant fails the same way.
     let declared = declared_tones();
     assert!(!declared.is_empty(), "tone extraction found the Tone enum");
-    for tone in &declared {
-        assert!(
-            CHIP_FILL_PAIRS.iter().any(|(name, _, _)| name == tone),
-            "declared Tone `{tone}` has no chip-fill pair (plan D4 completeness)"
-        );
-    }
-    for (tone, tone_token, surface_token) in CHIP_FILL_PAIRS {
-        assert!(
-            declared.iter().any(|name| name == tone),
-            "chip-fill pair names undeclared Tone `{tone}`"
-        );
+    assert_eq!(
+        CHIP_TONES.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        declared.iter().map(String::as_str).collect::<Vec<_>>(),
+        "chip tone ladder ↔ declared Tone enum (plan D4 completeness)"
+    );
+    // 8 declared tones × 3 chip surfaces, evaluated over both palettes.
+    let chip_pairs = CHIP_TONES
+        .iter()
+        .flat_map(|(name, tone_token)| {
+            CHIP_SURFACES
+                .iter()
+                .map(move |surface_token| (*name, *tone_token, *surface_token))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chip_pairs.len(),
+        24,
+        "chip pair count (tone/surface change → recount)"
+    );
+    for (tone, tone_token, surface_token) in chip_pairs {
         for tag in [PaletteTag::SlintDefaults, PaletteTag::Light] {
             let ink = palette_lookup(tag, CHIP_INK);
             let fill = blend(
-                &palette_lookup(tag, *tone_token),
-                &palette_lookup(tag, *surface_token),
+                &palette_lookup(tag, tone_token),
+                &palette_lookup(tag, surface_token),
             );
             let ratio = contrast_ratio(&ink, &fill);
             assert!(
@@ -640,7 +655,7 @@ fn the_light_palette_covers_every_declared_token() {
 fn every_declared_token_appears_in_a_pair_or_an_exemption() {
     let tokens = extract_colors(THEME_SOURCE);
     for (global, name, _) in &tokens {
-        let paired = PAIRS.iter().any(|(fg, surface, _)| {
+        let paired = pairs().iter().any(|(fg, surface, _)| {
             (fg.0 == global && fg.1 == name) || (surface.0 == global && surface.1 == name)
         }) || NO_TEXT_DUTY_EXEMPT
             .iter()
