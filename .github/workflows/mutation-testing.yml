@@ -1,16 +1,62 @@
 name: Mutation Testing
 
-# Weekly sweep of cargo-mutants over the pure & core crates, plus manual
-# dispatch on feature branches prior to major releases. Mutants are slow:
-# this deliberately runs out-of-band, never in the PR pipeline. The
-# ui-pure-modules job sweeps the three pure presentation modules (#427);
-# component-journey tests stay out of scope by mutant-surface selection,
-# not test filtering.
+# cargo-mutants over the lane's crates (#1480/#1452 redesign, the
+# operator's 2026-11-28 ruling):
+#
+#   - Every shard is scoped to ONE crate (and, where the name says so,
+#     to a file window inside it) and tests only that package
+#     (--test-workspace=false): a shard mutates and tests only what
+#     its name says.
+#   - The weekly Monday cron runs the --in-diff DELTA of the previous
+#     complete sweep; the COMPLETE sweep runs on the 1st of the month
+#     and on demand (workflow_dispatch, scope: complete). The cap is
+#     NOT raised (240 min per shard).
+#   - Surviving mutants are checked against the accepted baseline
+#     (scripts/mutation-accepted.txt via
+#     scripts/mutation-accepted-check.sh): a listed survivor is an
+#     accepted report outcome; a NEW survivor fails the shard loudly.
+#     Real gaps are never accepted — they get a backlog: issue and
+#     keep the lane red until fixed.
+#
+# Root-cause record (#1480, run 46117678610): the old matrix lane
+# referenced ${{ matrix.shard.args }}; matrix.shard is the shard NAME
+# string, walking into it silently expanded the empty string, and all
+# three "domain" shards swept the whole workspace (13,563 mutants
+# each, testing only taskboard-app mutants at the cap). This lane
+# passes shard arguments as env values with a hard empty-guard: a
+# silent empty expansion can never sweep the workspace again.
+#
+# Sizing: measured counts and per-mutant costs with the arithmetic
+# per shard live in
+# .artifacts/plans/2026-11-28-mutation-lane-redesign-plan.md §4. Jobs
+# are sized with headroom against the cap, never as a guarantee —
+# the dead-man's switch (lane-watch.yml, matched by workflow FILE
+# name, unchanged) reports a shard that drifts past it. The first
+# post-merge complete dispatch is the true measurement: adjust slice
+# counts by editing ONLY the SPECS table in matrix-setup.
+#
+# Delta baseline: the complete sweep's finalize job pushes the swept
+# commit to refs/mutation-baseline/main (a lightweight ref, not a
+# branch — branch protection does not apply). Delta jobs diff that
+# base against HEAD and pass the file to cargo-mutants --in-diff
+# ("Include only mutants in code touched by this diff"; non-Rust
+# changes are ignored). First-run behaviour: no ref yet ⇒ every job
+# falls back to COMPLETE — the first run is a full sweep, never a
+# silent no-op.
 
 on:
   schedule:
-    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC — weekly delta
+    - cron: "0 4 1 * *" # 1st of the month 04:00 UTC — complete sweep
   workflow_dispatch:
+    inputs:
+      scope:
+        description: "Sweep scope (delta needs a baseline ref; the first run falls back to complete)"
+        type: choice
+        default: delta
+        options:
+          - delta
+          - complete
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,84 +66,131 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  mutants:
-    name: cargo-mutants (${{ matrix.shard }})
+  matrix-setup:
+    name: resolve scope + build shard matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 240
-    # #1401: the domain+state sweep outgrew a single 240-min job (six
-    # consecutive scheduled runs cancelled exactly at the cap; the
-    # executable surface grew ~32x over the window). Sharded by module
-    # glob; each shard is sized with headroom against the cap, never as
-    # a guarantee — the dead-man's switch (lane-watch.yml) reports a
-    # shard that drifts past it. The first post-merge CI run is the
-    # true measurement: move files between shards / add shards by
-    # editing ONLY this matrix list (the behavioural --file list is the
-    # single source of truth; the data shard's --exclude list mirrors it
-    # and must be kept in lockstep). Sizing data: the 2026-10-12
-    # complete sweep (149 min at the pre-growth surface) plus the 32x
-    # growth ratio from the 2026-11-24 coverage report.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: domain-scheduling
-            # The behavioural/reminder cluster (the scheduling and
-            # habit surface — the busiest mutant producers).
-            args: >-
-              -p taskboard-domain
-              --file 'crates/taskboard-domain/src/reminders.rs'
-              --file 'crates/taskboard-domain/src/recur.rs'
-              --file 'crates/taskboard-domain/src/habit.rs'
-              --file 'crates/taskboard-domain/src/habit_time.rs'
-              --file 'crates/taskboard-domain/src/days.rs'
-              --file 'crates/taskboard-domain/src/time.rs'
-              --file 'crates/taskboard-domain/src/tracking.rs'
-              --file 'crates/taskboard-domain/src/tracking_stats.rs'
-              --file 'crates/taskboard-domain/src/reflection.rs'
-              --file 'crates/taskboard-domain/src/reflection_stats.rs'
-              --file 'crates/taskboard-domain/src/focus.rs'
-              --file 'crates/taskboard-domain/src/roster.rs'
-              --file 'crates/taskboard-domain/src/settings.rs'
-              --file 'crates/taskboard-domain/src/calibration.rs'
-              --file 'crates/taskboard-domain/src/find.rs'
-              --file 'crates/taskboard-domain/src/order.rs'
-              --file 'crates/taskboard-domain/src/clock.rs'
-          - shard: domain-data
-            # The pure-data cluster — expressed as the COMPLEMENT of the
-            # behavioural list above (exclude-globs mirroring it exactly,
-            # so the split is disjoint AND complete by construction): a
-            # source file added under taskboard-domain without touching
-            # either shard's list lands HERE, never in no shard (an
-            # explicit --file list on both sides would silently drop it
-            # — including files in src subdirectories).
-            args: >-
-              -p taskboard-domain
-              --exclude 'crates/taskboard-domain/src/reminders.rs'
-              --exclude 'crates/taskboard-domain/src/recur.rs'
-              --exclude 'crates/taskboard-domain/src/habit.rs'
-              --exclude 'crates/taskboard-domain/src/habit_time.rs'
-              --exclude 'crates/taskboard-domain/src/days.rs'
-              --exclude 'crates/taskboard-domain/src/time.rs'
-              --exclude 'crates/taskboard-domain/src/tracking.rs'
-              --exclude 'crates/taskboard-domain/src/tracking_stats.rs'
-              --exclude 'crates/taskboard-domain/src/reflection.rs'
-              --exclude 'crates/taskboard-domain/src/reflection_stats.rs'
-              --exclude 'crates/taskboard-domain/src/focus.rs'
-              --exclude 'crates/taskboard-domain/src/roster.rs'
-              --exclude 'crates/taskboard-domain/src/settings.rs'
-              --exclude 'crates/taskboard-domain/src/calibration.rs'
-              --exclude 'crates/taskboard-domain/src/find.rs'
-              --exclude 'crates/taskboard-domain/src/order.rs'
-              --exclude 'crates/taskboard-domain/src/clock.rs'
-          - shard: state
-            args: -p taskboard-state
+    timeout-minutes: 10
+    outputs:
+      scope: ${{ steps.setup.outputs.scope }}
+      matrix: ${{ steps.setup.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install system deps (mirrors the ci.yml lane-1 set — the baseline
-          builds the full workspace test closure, which reaches
-          taskboard-app's cpal/alsa + slint/GL chain)
-        if: runner.os == 'Linux'
+      - name: Resolve scope, diff, and shard matrix
+        id: setup
+        run: |
+          set -euo pipefail
+          # Scope resolution: explicit dispatch input wins; the weekly
+          # cron is the delta, the monthly cron the complete sweep.
+          scope="${{ inputs.scope }}"
+          if [ -z "$scope" ]; then
+            if [ "${{ github.event.schedule }}" = "0 4 1 * *" ]; then
+              scope=complete
+            else
+              scope=delta
+            fi
+          fi
+          case "$scope" in delta|complete) ;; *) echo "::error::bad scope: $scope"; exit 1 ;; esac
+
+          if [ "$scope" = delta ]; then
+            git fetch origin \
+              +refs/mutation-baseline/main:refs/remotes/mutation-baseline/main \
+              2>/dev/null || true
+            base="$(git rev-parse refs/remotes/mutation-baseline/main 2>/dev/null || true)"
+            if [ -z "$base" ]; then
+              echo "::notice::no mutation-baseline ref yet — first run falls back to COMPLETE"
+              scope=complete
+            else
+              # Two-dot: the base is an ancestor of HEAD by
+              # construction (pushed from a completed complete sweep).
+              git diff "$base" HEAD > delta.diff
+              echo "delta base: $base ($(grep -c '^+++' delta.diff || true) changed files)"
+            fi
+          fi
+
+          # The shard table — the single source of truth. Columns:
+          #   spec-name | slices | apt set | cargo-mutants selection args
+          # Slice counts come from the plan's §4 arithmetic
+          # (mutants × s/mutant + 25 min overhead vs the 240-min cap):
+          #   domain-behavioural 1408 × 90 s / 12 = ~201 min/job
+          #   domain-data        2052 × 90 s / 16 = ~217 min/job
+          #   state               189 × 45 s /  1 = ~167 min/job
+          #   ui-pure            1725 × 190 s / 28 = ~210 min/job
+          #   app-pdf             124 × 80 s /  1 = ~190 min (measured)
+          # Slices use the tool's --shard k/n (--sharding slice, the
+          # default: consecutive source-order ranges, disjoint and
+          # complete by construction). The tool's k is ZERO-based
+          # ("shard k must be less than n" — verified against the
+          # pinned tool); the matrix emits human 1..n and the run
+          # steps pass k-1.
+          # The behavioural/data domain split stays disjoint AND
+          # complete by construction: the data slice is the COMPLEMENT
+          # of the behavioural --file list (an exclude list mirroring
+          # it exactly), so a source file added under taskboard-domain
+          # without touching either list lands in domain-data.
+          declare -a SPECS=(
+            "domain-behavioural|12|minimal|-p taskboard-domain --file crates/taskboard-domain/src/reminders.rs --file crates/taskboard-domain/src/recur.rs --file crates/taskboard-domain/src/habit.rs --file crates/taskboard-domain/src/habit_time.rs --file crates/taskboard-domain/src/days.rs --file crates/taskboard-domain/src/time.rs --file crates/taskboard-domain/src/tracking.rs --file crates/taskboard-domain/src/tracking_stats.rs --file crates/taskboard-domain/src/reflection.rs --file crates/taskboard-domain/src/reflection_stats.rs --file crates/taskboard-domain/src/focus.rs --file crates/taskboard-domain/src/roster.rs --file crates/taskboard-domain/src/settings.rs --file crates/taskboard-domain/src/calibration.rs --file crates/taskboard-domain/src/find.rs --file crates/taskboard-domain/src/order.rs --file crates/taskboard-domain/src/clock.rs"
+            "domain-data|16|minimal|-p taskboard-domain --exclude crates/taskboard-domain/src/reminders.rs --exclude crates/taskboard-domain/src/recur.rs --exclude crates/taskboard-domain/src/habit.rs --exclude crates/taskboard-domain/src/habit_time.rs --exclude crates/taskboard-domain/src/days.rs --exclude crates/taskboard-domain/src/time.rs --exclude crates/taskboard-domain/src/tracking.rs --exclude crates/taskboard-domain/src/tracking_stats.rs --exclude crates/taskboard-domain/src/reflection.rs --exclude crates/taskboard-domain/src/reflection_stats.rs --exclude crates/taskboard-domain/src/focus.rs --exclude crates/taskboard-domain/src/roster.rs --exclude crates/taskboard-domain/src/settings.rs --exclude crates/taskboard-domain/src/calibration.rs --exclude crates/taskboard-domain/src/find.rs --exclude crates/taskboard-domain/src/order.rs --exclude crates/taskboard-domain/src/clock.rs"
+            "state|1|minimal|-p taskboard-state"
+            "ui-pure|28|full|-p taskboard-ui-slint --file crates/taskboard-ui-slint/src/resolver.rs --file crates/taskboard-ui-slint/src/view_state.rs --file crates/taskboard-ui-slint/src/presentation.rs"
+            "app-pdf|1|full|-p taskboard-app --file crates/taskboard-app/src/commands/mod.rs --file crates/taskboard-app/src/commands/output.rs --features pdf-export"
+          )
+
+          matrix='[]'
+          for spec in "${SPECS[@]}"; do
+            IFS='|' read -r name slices apt args <<< "$spec"
+            for ((k = 1; k <= slices; k++)); do
+              matrix="$(jq -cn \
+                --argjson arr "$matrix" --arg name "$name" \
+                --argjson k "$k" --argjson n "$slices" \
+                --arg apt "$apt" --arg args "$args" \
+                '$arr + [{spec: $name, k: $k, n: $n, apt: $apt, args: $args}]')"
+            done
+          done
+
+          {
+            echo "scope=$scope"
+            echo "matrix<<MATRIX_JSON"
+            jq -cn --argjson include "$matrix" '{include: $include}'
+            echo "MATRIX_JSON"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload the delta diff
+        if: steps.setup.outputs.scope == 'delta'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-delta-${{ github.run_id }}
+          path: delta.diff
+          if-no-files-found: error
+          retention-days: 7
+
+  mutants:
+    name: cargo-mutants (${{ matrix.spec }} ${{ matrix.k }}/${{ matrix.n }})
+    needs: matrix-setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      SCOPE: ${{ needs.matrix-setup.outputs.scope }}
+      # The shard's selection args, as an env value — never interpolated
+      # into the shell text. The empty-guard in each step is the fix for
+      # the #1480 root cause (matrix.shard.args silently expanded empty
+      # and three shards swept the whole workspace).
+      SHARD_ARGS: ${{ matrix.args }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.matrix-setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system deps (minimal — the package-scoped baseline
+          builds only the mutated pure crate's test closure, no GL chain)
+        if: matrix.apt == 'minimal'
+        run: |
+          sudo apt-get update && sudo apt-get install -y lld pkg-config
+
+      - name: Install system deps (full — the ci.yml lane-1 set; the
+          baseline reaches taskboard-app's cpal/alsa + slint GL chain)
+        if: matrix.apt == 'full'
         run: |
           sudo apt-get update && sudo apt-get install -y \
             lld libdbus-1-dev libasound2-dev pkg-config \
@@ -113,51 +206,108 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           # Pinned: the mutants version is the output-dir/report-name
-          # contract this workflow's Collect/Upload steps depend on.
+          # contract this workflow's Collect/Upload steps depend on
+          # (missed.txt lines are mutant.name(true), matched
+          # byte-for-byte by the accepted-baseline checker).
           # nextest stays floating — no artifact contract here.
           tool: cargo-mutants@27.1.0,nextest
 
-      - name: Run Mutation Testing (${{ matrix.shard }})
-        # Two distinct nonzero outcomes must not be conflated (#1401):
-        # surviving mutants are an expected *report* outcome (the
-        # survivors -> report -> triage loop is a standing
-        # testing-strategy input), so a survivor-shaped exit is
-        # absorbed here and the upload below still fires. A shard that
-        # runs into the job cap is killed BY THE RUNNER: the step
-        # never returns, the job goes `failure` — loud, reported by
-        # the dead-man's switch — instead of the old
-        # `continue-on-error: true` that read a cap-kill as routine.
-        # A nonzero exit with no survivors file is a real infra
-        # failure and propagates.
-        # cargo-mutants always writes `mutants.out/` in the workspace
-        # root — the output dir name is fixed; do not pass -d/-o here.
+      - name: Download the delta diff
+        if: env.SCOPE == 'delta'
+        uses: actions/download-artifact@v7
+        with:
+          name: mutation-delta-${{ github.run_id }}
+          path: .
+
+      - name: Pre-count this shard's mutants (cheap, no build)
+        id: count
         run: |
-          set +e
-          # --test-tool nextest: the baseline builds and runs the whole
-          # workspace test closure, which reaches taskboard-ui-slint's
-          # journey binaries; those share one process-global test driver
-          # and cannot run under plain `cargo test` (one process, many
-          # threads: the first job's panic/worker loss cascades into
-          # SendError/RecvError for its siblings — #1016's class).
-          # nextest runs the identical test set one process per test and
-          # is the workspace's CI runner; the ui-pure-modules shard
-          # already uses it for the same reason. Found in the fourth
-          # scheduled-lanes triage (run 46097761647: every matrix shard's
-          # baseline died in an unmutated tree on display-row renders).
-          cargo mutants ${{ matrix.shard.args }} \
-            --in-place --timeout-multiplier 2.0 --test-tool nextest
-          code=$?
-          set -e
-          if (( code != 0 )); then
-            if [ -s mutants.out/missed.txt ]; then
-              echo "survivor-shaped exit ${code} — report outcome, job stays green"
-              exit 0
-            fi
-            exit "$code"
+          set -euo pipefail
+          if [ -z "$SHARD_ARGS" ]; then
+            echo "::error::SHARD_ARGS expanded empty — refusing to sweep the workspace (#1480 root-cause guard)"
+            exit 1
+          fi
+          # --list honours --in-diff and --shard (verified in the
+          # 27.1.0 source: in-diff filter, then shard, then list), and
+          # never builds — a delta shard with zero mutants exits here
+          # without paying the baseline. The filter-empty conditions
+          # ("Diff file is empty", "No mutants to filter", "No source
+          # files") exit SUCCESS with NO list printed, so jq reads
+          # nothing and the count defaults to 0 — a skip, not an error.
+          count_args=(--list --json $SHARD_ARGS
+            --shard $(( ${{ matrix.k }} - 1 ))/${{ matrix.n }})
+          if [ "$SCOPE" = delta ]; then
+            count_args+=(--in-diff delta.diff)
+          fi
+          count="$(cargo mutants "${count_args[@]}" | jq 'length' || true)"
+          count="${count:-0}"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "shard mutants: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::notice::0 mutants in this shard for scope=$SCOPE — the run and upload steps are skipped"
           fi
 
+      - name: Run Mutation Testing (${{ matrix.spec }} ${{ matrix.k }}/${{ matrix.n }})
+        # Exit contract (#1401, kept; refined by the accepted baseline,
+        # ruling 3 of #1480): surviving mutants are an expected *report*
+        # outcome — but only those on the accepted baseline. The
+        # checker decides: exit 0 (all survivors accepted) leaves the
+        # job green; a NEW survivor exits 1 and fails the shard loudly.
+        # A nonzero cargo-mutants exit with NO survivors file is an
+        # infra failure and propagates. A shard that runs into the job
+        # cap is killed BY THE RUNNER: the step never returns, the job
+        # goes failure — loud, reported by the dead-man's switch.
+        # cargo-mutants always writes mutants.out/ in the workspace
+        # root — the output dir name is fixed; do not pass -d/-o here.
+        if: fromJSON(steps.count.outputs.count) > 0
+        env:
+          # The toolchain action disables incremental compilation
+          # job-wide; mutation testing is the one workload where it
+          # pays: each mutant rebuilds the same crate after a small
+          # source change. Measured locally on the ui test binaries
+          # (touch presentation.rs, cargo nextest run --no-run):
+          # 79 s with CARGO_INCREMENTAL=1 vs 282 s without — the 290 s
+          # per-mutant builds in run 46117678610 are the non-
+          # incremental figure. Sequential mutants (jobs default 1)
+          # share one target/ in --in-place mode, so the incremental
+          # cache is reused mutant after mutant.
+          CARGO_INCREMENTAL: "1"
+        run: |
+          set -euo pipefail
+          if [ -z "$SHARD_ARGS" ]; then
+            echo "::error::SHARD_ARGS expanded empty — refusing to sweep the workspace (#1480 root-cause guard)"
+            exit 1
+          fi
+          # --test-tool nextest (kept per #1570): with
+          # --test-workspace=false the per-mutant tests run only the
+          # mutated package's tests (cargo-mutants default
+          # TestPackages::Mutated, pinned here so the intent survives
+          # upstream default changes), so the ui journey binaries'
+          # shared-driver problem never arises on the pure crates —
+          # nextest stays for its fail-fast (a kill stops at the first
+          # failing test) and one-process-per-test isolation.
+          # --in-place + sequential jobs share one target/ tree:
+          # incremental rebuilds stay warm across the slice's mutants.
+          set +e
+          run_args=($SHARD_ARGS
+            --shard $(( ${{ matrix.k }} - 1 ))/${{ matrix.n }})
+          if [ "$SCOPE" = delta ]; then
+            run_args+=(--in-diff delta.diff)
+          fi
+          cargo mutants "${run_args[@]}" \
+            --in-place --timeout-multiplier 2.0 \
+            --test-tool nextest --test-workspace=false
+          code=$?
+          set -e
+          if (( code != 0 )) && [ ! -s mutants.out/missed.txt ]; then
+            echo "::error::cargo mutants exited ${code} with no survivors file — infrastructure failure"
+            exit "$code"
+          fi
+          # The accepted-baseline check is the green/red decision.
+          scripts/mutation-accepted-check.sh mutants.out/missed.txt
+
       - name: Collect Surviving Mutants
-        if: always()
+        if: always() && fromJSON(steps.count.outputs.count) > 0
         run: |
           if [ -d mutants.out ]; then
             # The log filename varies across versions: glob, don't pin.
@@ -167,12 +317,12 @@ jobs:
             fi
           fi
 
-      - name: Upload Mutation Report (${{ matrix.shard }})
+      - name: Upload Mutation Report (${{ matrix.spec }} ${{ matrix.k }}/${{ matrix.n }})
         # fail on empty: a silent no-artifact run must never read green.
-        if: always()
+        if: always() && fromJSON(steps.count.outputs.count) > 0
         uses: actions/upload-artifact@v7
         with:
-          name: mutation-testing-report-${{ matrix.shard }}-${{ github.run_id }}
+          name: mutation-testing-report-${{ matrix.spec }}-${{ matrix.k }}of${{ matrix.n }}-${{ github.run_id }}
           path: mutants.out/
           if-no-files-found: error
           retention-days: 30
@@ -180,155 +330,28 @@ jobs:
       # Record surviving mutants into
       # .artifacts/reports/YYYY-MM-DD-mutation-testing-report.md
       # (template in AGENTS.md §7) and triage them into fixes or the
-      # improvements backlog.
+      # improvements backlog. Accepted entries live in
+      # scripts/mutation-accepted.txt with their reason; real gaps get
+      # a backlog: issue and stay off the list.
 
-  ui-pure-modules:
-    name: cargo-mutants (ui pure modules)
+  finalize:
+    name: record the mutation-baseline ref (complete sweeps only)
+    needs: [matrix-setup, mutants]
+    # Only a fully green complete sweep moves the baseline: the delta
+    # of the NEXT week is then "changed since this sweep". A red or
+    # cancelled complete sweep must not reset the baseline (the next
+    # delta would silently skip the un-swept changes).
+    if: needs.matrix-setup.outputs.scope == 'complete' && !failure() && !cancelled()
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install system deps (slint goldens/journeys link GL/EGL/wayland)
-        if: runner.os == 'Linux'
+      - name: Push refs/mutation-baseline/main
         run: |
-          sudo apt-get update && sudo apt-get install -y \
-            lld libdbus-1-dev pkg-config \
-            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev
-
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: taiki-e/install-action@v2
-        with:
-          # Same pin as the core lane: the output-dir/report-name contract.
-          tool: cargo-mutants@27.1.0,nextest
-
-      - name: Run Mutation Testing (ui pure modules)
-        # Surviving mutants are an expected *report* outcome, not an infra
-        # failure: collect & upload them instead of failing the job.
-        # --test-tool nextest: the golden_visuals journey binary cannot
-        # run under plain `cargo test` (its tests disagree on
-        # DriverOptions in one process); nextest is the workspace's CI
-        # runner and runs the identical test set, one process per test.
-        # v-pinned: --file slash-globs match the whole workspace-relative
-        # path in cargo-mutants 27.1.0; re-verify --list-files on bump.
-        run: |
-          set +e
-          cargo mutants \
-            -p taskboard-ui-slint \
-            --file 'crates/taskboard-ui-slint/src/resolver.rs' \
-            --file 'crates/taskboard-ui-slint/src/view_state.rs' \
-            --file 'crates/taskboard-ui-slint/src/presentation.rs' \
-            --in-place --timeout-multiplier 2.0 --test-tool nextest
-          code=$?
-          set -e
-          if (( code != 0 )); then
-            if [ -s mutants.out/missed.txt ]; then
-              echo "survivor-shaped exit ${code} — report outcome, job stays green"
-              exit 0
-            fi
-            exit "$code"
-          fi
-
-      - name: Collect Surviving Mutants
-        if: always()
-        run: |
-          if [ -d mutants.out ]; then
-            cat mutants.out/*.log || true
-            if [ -s mutants.out/missed.txt ]; then
-              echo "Surviving mutants found — see artifacts."
-            fi
-          fi
-
-      - name: Upload Mutation Report (ui pure modules)
-        # fail on empty: a silent no-artifact run must never read green.
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: mutation-testing-report-ui-pure-${{ github.run_id }}
-          path: mutants.out/
-          if-no-files-found: error
-          retention-days: 30
-
-  app-pdf-commands:
-    name: cargo-mutants (app commands, pdf-export)
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install system deps (mirrors the ci.yml lane-1 set — the baseline
-          builds the full workspace test closure, which reaches
-          taskboard-app's cpal/alsa + slint/GL chain)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update && sudo apt-get install -y \
-            lld libdbus-1-dev libasound2-dev pkg-config \
-            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev
-
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: taiki-e/install-action@v2
-        with:
-          # Same pin as the core lane: the output-dir/report-name contract.
-          tool: cargo-mutants@27.1.0,nextest
-
-      - name: Run Mutation Testing (app commands, pdf-export window)
-        # #1268: the default-feature lanes compile taskboard-app without
-        # `pdf-export`, so the `dispatch_line` pdf predicate
-        # (commands/mod.rs) and the pdf-open/OpenFailure mapping
-        # (commands/output.rs) — the #1176 kill-pin sites — are outside
-        # every mutant surface. This job compiles exactly those two
-        # files under the feature (a scoped window, not a full
-        # taskboard-app lane) so the #1176 survivors can flip.
-        # Surviving mutants stay a report outcome (see the matrix
-        # lane's step for the survivor-shaped vs cap-kill contract);
-        # the output-dir contract is per-job and the artifact name is
-        # suffixed so the lanes never collide.
-        run: |
-          set +e
-          cargo mutants \
-            -p taskboard-app \
-            --file 'crates/taskboard-app/src/commands/mod.rs' \
-            --file 'crates/taskboard-app/src/commands/output.rs' \
-            --features pdf-export \
-            --in-place --timeout-multiplier 2.0 --test-tool nextest
-          code=$?
-          set -e
-          if (( code != 0 )); then
-            if [ -s mutants.out/missed.txt ]; then
-              echo "survivor-shaped exit ${code} — report outcome, job stays green"
-              exit 0
-            fi
-            exit "$code"
-          fi
-
-      - name: Collect Surviving Mutants
-        if: always()
-        run: |
-          if [ -d mutants.out ]; then
-            cat mutants.out/*.log || true
-            if [ -s mutants.out/missed.txt ]; then
-              echo "Surviving mutants found — see artifacts."
-            fi
-          fi
-
-      - name: Upload Mutation Report (app commands, pdf-export)
-        # fail on empty: a silent no-artifact run must never read green.
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: mutation-testing-report-app-pdf-${{ github.run_id }}
-          path: mutants.out/
-          if-no-files-found: error
-          retention-days: 30
+          set -euo pipefail
+          git push --force origin \
+            "${{ github.sha }}:refs/mutation-baseline/main"
+          echo "mutation-baseline ref now at ${{ github.sha }}"
