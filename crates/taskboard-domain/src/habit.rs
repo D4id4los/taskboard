@@ -786,33 +786,6 @@ pub fn pause_covers_window(kind: PeriodKind, start: NaiveDate, until: NaiveDate)
     last_day <= until
 }
 
-/// Mint a habit-log row clock under the #986 monotone rule:
-/// `max(now, stored_clock + 1s)` where `stored_clock` is the
-/// currently stored row's clock for the same [`HabitLogKey`]
-/// (`None` → `now`). Pure in (pre-state, command, `now`), so
-/// journal replay re-mints identical clocks deterministically;
-/// every apply/fold/SQL site stays strictly-newer LWW, and a
-/// same-instant double log stamps strictly past the first row so
-/// both increments land. `AdjustHabitLog` shares the bump (it is
-/// load-bearing, not symmetric polish): without it a same-second
-/// adjust could stamp *older* than a bumped log row and lose its
-/// newest-write intent. The minted clock may exceed `now` by whole
-/// seconds after a burst — the documented leniency at
-/// [`HabitLogEntry::clock`].
-pub(crate) fn mint_log_clock(
-    now: DateTime<Utc>,
-    stored_clock: Option<DateTime<Utc>>,
-) -> DateTime<Utc> {
-    match stored_clock {
-        None => now,
-        Some(stored) => now.max(stored + one_second()),
-    }
-}
-
-fn one_second() -> chrono::TimeDelta {
-    chrono::TimeDelta::try_seconds(1).expect("1s is representable")
-}
-
 /// The habit sub-state, nested in [`crate::state::AppState`] like
 /// `TrackingState`. `BTreeMap` keeps serialization deterministic (the
 /// state.rs determinism contract).
@@ -1619,14 +1592,11 @@ pub fn per_period_totals(counts: &BTreeMap<WindowStart, u32>) -> BTreeMap<Window
     counts.clone()
 }
 
-/// The chunk-5 C1 test bridge: the fixtures still seed the
-/// (still-alive, keystone-pinned) mirror map, but the re-keyed
-/// projections consume the derived views — so tests convert
-/// mechanically. Canonical windows of the habit's current kind only;
-/// count-0 rows dropped (the event grammar has no 0 rows); skip marks
-/// carried into the posture view. The keystone proptest
-/// (`legacy_mirror_equals_event_derivations`) is the law that makes
-/// this conversion derivation-exact while the mirror lives.
+/// The chunk-5 C1 test bridge: fixtures that still seed the (retired,
+/// C7-pending) mirror map convert mechanically onto the views the
+/// re-keyed projections consume. Canonical windows of the habit's
+/// current kind only; count-0 rows dropped (the event grammar has no
+/// 0 rows); skip marks carried into the posture view.
 #[cfg(test)]
 pub(crate) fn derived_views_from_log(
     habit: &Habit,
@@ -2102,24 +2072,25 @@ mod tests {
                     // (With interleaved corrections the Σ invariant is
                     // pinned separately, over log-only sequences — an
                     // audited adjust may legitimately lower a window.)
-                    // The #1519 event rides actions[0]; the mirror row
-                    // follows it.
-                    let (key, entry) = match plan
-                        .actions
-                        .iter()
-                        .find(|action| {
-                            matches!(action, crate::persistence::PersistenceAction::RecordHabitLog(_, _))
-                        }) {
-                        Some(crate::persistence::PersistenceAction::RecordHabitLog(k, e)) => (*k, *e),
-                        other => panic!("unexpected action: {other:?}"),
+                    // The chunk-5 C6 re-key: the receipt's derived
+                    // count/window is the batch's truth (the mirror row
+                    // is gone).
+                    let CommandOutcome::HabitLogged {
+                        habit,
+                        window: key_window,
+                        count,
+                        ..
+                    } = plan.outcome
+                    else {
+                        panic!("wrong receipt");
                     };
-                    let pre = stored_count(&fixture, key.window);
-                    prop_assert_eq!(entry.count, pre + 1, "exactly one increment");
+                    let pre = stored_count(&fixture, key_window);
+                    prop_assert_eq!(count, pre + 1, "exactly one increment");
                     prop_assert!(
-                        key.window == natural || key.window == prev,
+                        key_window == natural || key_window == prev,
                         "the choice is natural or prev"
                     );
-                    if key.window == prev {
+                    if key_window == prev {
                         // The constructive pin of the surplus-repairs rule.
                         let grace_end = period_end(
                             fixture.habit.target.kind(),
@@ -2133,28 +2104,40 @@ mod tests {
                             "repair only a met natural"
                         );
                     }
-                    let CommandOutcome::HabitLogged {
-                        habit,
-                        window,
-                        count: receipt,
-                        ..
-                    } = plan.outcome
-                    else {
-                        panic!("wrong receipt");
-                    };
                     prop_assert_eq!(habit, fixture.habit.id);
-                    prop_assert_eq!(window, key.window);
-                    prop_assert_eq!(receipt, entry.count);
                 }
-                // Advance the fixture's log by the plan's actions (the
-                // executable contract).
+                // Advance the fixture's state by the plan's actions
+                // (the executable contract); the log re-derives from
+                // the accumulated events (the chunk-5 C6 truth).
                 let mut persisted = PersistedState {
                     habits: fixture.state(),
                     ..PersistedState::default()
                 };
                 apply_actions(&mut persisted, &plan.actions);
-                fixture.log = persisted.habits.log;
                 fixture.events = persisted.habits.events;
+                let derived = crate::habit_event::derive_window_counts(
+                    &fixture.habit,
+                    fixture.events.values(),
+                    fixture.day,
+                );
+                fixture.log = derived
+                    .into_iter()
+                    .map(|(window, count)| {
+                        (
+                            HabitLogKey {
+                                habit: fixture.habit.id,
+                                window,
+                            },
+                            HabitLogEntry {
+                                count,
+                                clock: now,
+                                by: None,
+
+                                skip: false,
+                            },
+                        )
+                    })
+                    .collect();
             }
             // When no correction ran, each +1 lands in exactly one
             // window: the partition invariant (pinned constructively
@@ -2569,163 +2552,18 @@ mod tests {
         };
         crate::persistence::apply_actions(&mut persisted, &plan1.actions);
         crate::persistence::apply_actions(&mut persisted, &plan2.actions);
-        let total: u64 = persisted
-            .habits
-            .log
-            .values()
-            .map(|entry| u64::from(entry.count))
-            .sum();
+        let total: u64 = crate::habit_event::derive_window_counts(
+            &fixture.habit,
+            persisted.habits.events.values(),
+            fixture.day,
+        )
+        .values()
+        .map(|count| u64::from(*count))
+        .sum();
         assert_eq!(
             total, 2,
-            "both same-instant increments land: the mint bump separates the row clocks"
+            "both same-instant increments land (distinct event ids, one window)"
         );
-    }
-
-    /// Deterministic table for the #986 mint rule (lowest layer): a
-    /// fresh key mints `now`; stored at `now` / ahead of `now` mints
-    /// `stored + 1s`; stored behind `now` mints `now`.
-    #[test]
-    fn mint_log_clock_follows_the_monotone_rule() {
-        let now = ts(1_000);
-        assert_eq!(mint_log_clock(now, None), now, "fresh key mints now");
-        assert_eq!(
-            mint_log_clock(now, Some(ts(1_000))),
-            ts(1_001),
-            "stored at now mints stored + 1s"
-        );
-        assert_eq!(
-            mint_log_clock(now, Some(ts(1_001))),
-            ts(1_002),
-            "stored ahead of now mints stored + 1s"
-        );
-        assert_eq!(
-            mint_log_clock(now, Some(ts(995))),
-            now,
-            "stored behind now mints now"
-        );
-    }
-
-    /// Command-arm pin (#986): two same-instant `LogHabit`s mint
-    /// strictly increasing row clocks — the first at `T`, the second
-    /// (planned against the post-first state) at `T + 1s`.
-    #[test]
-    fn same_instant_double_log_mints_strictly_increasing_clocks() {
-        let mut fixture = habit_fixture(ts(1_000));
-        let ids = CountingIds::new();
-        let plan1 = log_plan(
-            &fixture,
-            &StateCommand::LogHabit {
-                habit: fixture.habit.id,
-            },
-            &ids,
-            fixture.now,
-        )
-        .expect("commandable");
-        advance_fixture(&mut fixture, &plan1);
-        let plan2 = log_plan(
-            &fixture,
-            &StateCommand::LogHabit {
-                habit: fixture.habit.id,
-            },
-            &ids,
-            fixture.now,
-        )
-        .expect("commandable");
-        let clock1 = minted_clock(&plan1);
-        let clock2 = minted_clock(&plan2);
-        assert_eq!(clock1, fixture.now, "the first log stamps now");
-        assert_eq!(
-            clock2,
-            fixture.now + one_second(),
-            "the second same-instant log stamps strictly past the first row"
-        );
-    }
-
-    /// The adjust-survives pin (#986): after a 3-burst of same-instant
-    /// logs at `T` (row clock `T + 2s`), an `AdjustHabitLog` at `T + 1s`
-    /// still lands — the shared bump stamps it `T + 3s`, strictly past
-    /// the burst row, preserving the adjust's newest-write intent.
-    #[test]
-    fn adjust_after_a_same_instant_burst_stamps_past_the_burst_row() {
-        let mut fixture = habit_fixture(ts(1_000));
-        let ids = CountingIds::new();
-        let mut burst_clock = None;
-        for _ in 0..3 {
-            let plan = log_plan(
-                &fixture,
-                &StateCommand::LogHabit {
-                    habit: fixture.habit.id,
-                },
-                &ids,
-                fixture.now,
-            )
-            .expect("commandable");
-            advance_fixture(&mut fixture, &plan);
-            burst_clock = Some(minted_clock(&plan));
-        }
-        let burst_clock = burst_clock.expect("the burst ran");
-        let plan = log_plan(
-            &fixture,
-            &StateCommand::AdjustHabitLog {
-                habit: fixture.habit.id,
-                window: log_window(
-                    &fixture.habit,
-                    &derived_views_from_log(&fixture.habit, &fixture.log).0,
-                    fixture.now,
-                    fixture.day,
-                ),
-                count: 7,
-            },
-            &ids,
-            fixture.now + one_second(),
-        )
-        .expect("commandable");
-        let adjust_clock = minted_clock(&plan);
-        assert_eq!(
-            burst_clock,
-            ts(1_002),
-            "the 3-burst advances the row clock two seconds past now"
-        );
-        assert!(
-            adjust_clock > burst_clock,
-            "the adjust stamps strictly past the burst row"
-        );
-        let mut final_state = crate::persistence::PersistedState {
-            habits: fixture.state(),
-            ..PersistedState::default()
-        };
-        apply_actions(&mut final_state, &plan.actions);
-        let window = log_window(
-            &fixture.habit,
-            &derived_views_from_log(&fixture.habit, &fixture.log).0,
-            fixture.now,
-            fixture.day,
-        );
-        assert_eq!(
-            final_state
-                .habits
-                .log
-                .get(&HabitLogKey {
-                    habit: fixture.habit.id,
-                    window
-                })
-                .map(|entry| entry.count),
-            Some(7),
-            "the adjust lands over the burst"
-        );
-    }
-
-    fn habit_fixture(now: DateTime<Utc>) -> HabitFixture {
-        HabitFixture {
-            habit: habit(1, HabitTarget::PerWeek(NonZeroCount::new(1).expect("1"))),
-            log: std::collections::BTreeMap::new(),
-            events: std::collections::BTreeMap::new(),
-            now,
-            day: DayCalendar {
-                day_start_time: chrono::NaiveTime::MIN,
-                offset: chrono::FixedOffset::east_opt(0).expect("utc"),
-            },
-        }
     }
 
     /// Apply a plan's actions to the fixture's log in place — the
@@ -2737,22 +2575,32 @@ mod tests {
             ..PersistedState::default()
         };
         apply_actions(&mut persisted, &plan.actions);
-        fixture.log = persisted.habits.log;
         fixture.events = persisted.habits.events;
-    }
+        // The chunk-5 C6 truth: the fixture's log re-derives from the
+        // accumulated events (the mirror writes no rows anymore).
+        let derived = crate::habit_event::derive_window_counts(
+            &fixture.habit,
+            fixture.events.values(),
+            fixture.day,
+        );
+        fixture.log = derived
+            .into_iter()
+            .map(|(window, count)| {
+                (
+                    HabitLogKey {
+                        habit: fixture.habit.id,
+                        window,
+                    },
+                    HabitLogEntry {
+                        count,
+                        clock: fixture.now,
+                        by: None,
 
-    fn minted_clock(plan: &crate::command::CommandPlan) -> DateTime<Utc> {
-        // The #1519 event grammar rides the minted event first in the
-        // batch; the mirror row's clock is the test's subject.
-        plan.actions
-            .iter()
-            .find_map(|action| match action {
-                crate::persistence::PersistenceAction::RecordHabitLog(_, entry) => {
-                    Some(entry.clock)
-                }
-                _ => None,
+                        skip: false,
+                    },
+                )
             })
-            .expect("the plan carries a mirror row")
+            .collect();
     }
 
     // ---- Deterministic streak cases (§5.3) -------------------------------

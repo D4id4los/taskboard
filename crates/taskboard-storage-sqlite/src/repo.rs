@@ -2549,15 +2549,8 @@ async fn execute_batch(
             PersistenceAction::UpsertHabitEvent(event) => {
                 habit_event_rows.push(*event);
             }
-            // Retired with the #1519 chunk-5 C5 (plan D-9): the
-            // legacy mirror's storage arms flush nothing — and the
-            // batch's AdoptMovedBoard no-op rides the same arm (ran
-            // first, above: the batch's upserts address the new ids).
-            // The variants die with the mirror writers in the next
-            // commit (D-11's order).
-            PersistenceAction::AdoptMovedBoard(_)
-            | PersistenceAction::RecordHabitLog(_, _)
-            | PersistenceAction::RecordHabitDayLog(_, _) => {}
+            // Ran first, above: the batch's upserts address the new ids.
+            PersistenceAction::AdoptMovedBoard(_) => {}
             PersistenceAction::UpsertHabitTimeEntry(entry) => {
                 habit_time_upserts.push(entry);
             }

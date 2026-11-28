@@ -33,9 +33,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::capabilities::DeckFeatures;
 use crate::days::DayCalendar;
 use crate::entities::{Label, MembershipState, Stack, Task, TaskClocks};
-use crate::habit::{
-    Habit, HabitClocks, HabitLogEntry, HabitLogKey, WindowStart, append_order_after, log_window,
-};
+use crate::habit::{Habit, HabitClocks, WindowStart, append_order_after, log_window};
 use crate::idgen::IdGenerator;
 use crate::ids::{
     BoardId, HabitId, LabelId, ReminderRuleId, RemoteBoardId, SeriesId, StackId, TaskId,
@@ -809,14 +807,13 @@ fn events_after_writes(
 
 /// One typed mark event mint (Ruling B — the shared shape of the
 /// `Skip`/`Unskip` arms): the `Skip { window }`/`Unskip { window }`
-/// fact, the derived mirror refresh, the board flush. Returns the
-/// batch and the minted id (the receipt's undo target).
+/// fact and the board flush (the #1519 chunk-5 C6: the derived mirror
+/// refresh is gone — the mark's posture derives at read time). Returns
+/// the batch and the minted id (the receipt's undo target).
 fn plan_mark_event(
-    app: &AppState,
     habit: &Habit,
     kind: crate::habit_event::HabitEventKind,
     ids: &dyn IdGenerator,
-    day: DayCalendar,
     now: DateTime<Utc>,
     author: Option<crate::ids::AuthorId>,
 ) -> (Vec<PersistenceAction>, crate::habit_event::HabitEventId) {
@@ -829,116 +826,11 @@ fn plan_mark_event(
         deleted: None,
     };
     let event_id = event.id;
-    // The mirror (D-C): the affected rows recomputed from the
-    // post-mint derivation — the mark's posture bit derives, the
-    // counts stay.
-    let after = events_after_writes(app, &[event]);
-    let mut actions = vec![PersistenceAction::UpsertHabitEvent(event)];
-    actions.extend(habit_mirror_refresh(
-        app,
-        habit,
-        &app.habits.events.values().copied().collect::<Vec<_>>(),
-        &after,
-        day,
-        now,
-        author,
-    ));
-    actions.push(board_flush(habit.board, ids, now));
+    let actions = vec![
+        PersistenceAction::UpsertHabitEvent(event),
+        board_flush(habit.board, ids, now),
+    ];
     (actions, event_id)
-}
-
-/// The derived mirror refresh (the stage-1 plan's D-C coexistence
-/// rule): diff the habit's legacy projections between the pre-event
-/// set and the post-event set and emit absolute legacy-row writes for
-/// every projection the two sets disagree on. The counts, skip bits,
-/// and clocks are **recomputed from the event derivations** — never
-/// read-and-incremented from the old map; the legacy map is a
-/// mechanical projection of the event log, kept writable solely so
-/// the untouched UI/CLI readers stay truthful until the final chunk
-/// deletes the mirror.
-///
-/// Windows enter the diff when their derived count or skip posture
-/// moves (a tombstone can re-attribute later events to a different
-/// window — the fold re-derives the whole history, the diff catches
-/// every displaced row); days enter when their derived overlay count
-/// moves. An equal projection emits nothing (no clock churn).
-#[allow(clippy::too_many_arguments)] // the seams ARE the mirror law's inputs
-fn habit_mirror_refresh(
-    app: &AppState,
-    habit: &Habit,
-    before: &[crate::habit_event::HabitEvent],
-    after: &[crate::habit_event::HabitEvent],
-    day: DayCalendar,
-    now: DateTime<Utc>,
-    author: Option<crate::ids::AuthorId>,
-) -> Vec<PersistenceAction> {
-    let before_counts = crate::habit_event::derive_window_counts(habit, before.iter(), day);
-    let after_counts = crate::habit_event::derive_window_counts(habit, after.iter(), day);
-    let before_posture = crate::habit_event::derive_skip_posture(habit, before.iter(), day);
-    let after_posture = crate::habit_event::derive_skip_posture(habit, after.iter(), day);
-    let before_days = crate::habit_event::derive_day_counts(habit, before.iter(), day);
-    let after_days = crate::habit_event::derive_day_counts(habit, after.iter(), day);
-    let windows: std::collections::BTreeSet<WindowStart> = before_counts
-        .keys()
-        .chain(after_counts.keys())
-        .chain(before_posture.keys())
-        .chain(after_posture.keys())
-        .copied()
-        .collect();
-    let mut actions = Vec::new();
-    for window in windows {
-        let count_after = after_counts.get(&window).copied().unwrap_or(0);
-        let posture_after = after_posture.get(&window).copied().unwrap_or(false);
-        let count_before = before_counts.get(&window).copied().unwrap_or(0);
-        let posture_before = before_posture.get(&window).copied().unwrap_or(false);
-        if count_before == count_after && posture_before == posture_after {
-            continue;
-        }
-        let key = HabitLogKey {
-            habit: habit.id,
-            window,
-        };
-        let clock =
-            crate::habit::mint_log_clock(now, app.habits.log.get(&key).map(|entry| entry.clock));
-        actions.push(PersistenceAction::RecordHabitLog(
-            key,
-            HabitLogEntry {
-                count: count_after,
-                clock,
-                by: author,
-
-                skip: posture_after,
-            },
-        ));
-    }
-    let days: std::collections::BTreeSet<NaiveDate> = before_days
-        .keys()
-        .chain(after_days.keys())
-        .copied()
-        .collect();
-    for calendar_day in days {
-        let count_after = after_days.get(&calendar_day).copied().unwrap_or(0);
-        let count_before = before_days.get(&calendar_day).copied().unwrap_or(0);
-        if count_before == count_after {
-            continue;
-        }
-        let key = crate::habit::HabitDayKey {
-            habit: habit.id,
-            day: calendar_day,
-        };
-        let clock = crate::habit::mint_log_clock(
-            now,
-            app.habits.day_log.get(&key).map(|entry| entry.clock),
-        );
-        actions.push(PersistenceAction::RecordHabitDayLog(
-            key,
-            crate::habit::HabitDayLogEntry {
-                count: count_after,
-                clock,
-            },
-        ));
-    }
-    actions
 }
 
 /// How many completions attribute to `series`: every row carrying the
@@ -3433,85 +3325,25 @@ pub fn plan_command(
                 by: author,
                 deleted: None,
             };
-            // The mirror's skip bit derives from the mark events (the
-            // D-C keystone law) — the row is written with the
-            // post-mint derived posture, never the legacy bit reset.
-            // DELIBERATE DELTA (2026-11-27, #1519): the legacy row-bit
-            // grammar cleared the skip when a log landed on a skipped
-            // window; the mark grammar keeps the skip an intent fact —
-            // an `Unskip` mark minted for the window would re-derive
-            // its own attribution (the repair rule can route it to the
-            // previous window, where the derivation's running counts
-            // differ from the pre-batch stored counts), so "log clears
-            // skip" is not expressible as a fact. R-5 (the UX plan)
-            // already names `UnskipHabit` the recovery verb — the
-            // operator ruling on #1550 (2026-11-27) ACCEPTED this
-            // behavior change: logging into a skipped window KEEPS the
-            // skip; the explicit unskip is the recovery verb (chunk 5
-            // owns the UX bookkeeping).
-            // The mirror rows (the stage-1 plan's D-C derived mirror):
-            // the legacy increment IS the derived post-count under the
-            // keystone mirror law (`log` ≡ `derive_window_counts`), so
-            // writing it as the existing increment keeps the untouched
-            // UI/CLI readers truthful. The row clock stays the #986
-            // monotone mint — mirror-row LWW machinery only (the #986
-            // *undo* role dies with the event inverse; `mint_log_clock`'s
-            // deletion is the final chunk, with the mirror).
-            let key = HabitLogKey { habit: *id, window };
-            let clock = crate::habit::mint_log_clock(
-                now,
-                app.habits.log.get(&key).map(|entry| entry.clock),
-            );
+            // DELIBERATE DELTA (2026-11-27, #1519, kept by the C6
+            // mirror deletion): the legacy row-bit grammar cleared the
+            // skip when a log landed on a skipped window; the mark
+            // grammar keeps the skip an intent fact. R-5 (the UX plan)
+            // names `UnskipHabit` the recovery verb — the operator
+            // ruling on #1550 (2026-11-27) ACCEPTED this behavior
+            // change: logging into a skipped window KEEPS the skip.
             let after = events_after_writes(app, &[event]);
             // The count is the post-mint derived value (the chunk-5
-            // re-key: the increment reads the derivation, never the
-            // stored map — identical under the keystone mirror law).
+            // re-key: the increment reads the derivation).
             let count = crate::habit_event::derive_window_counts(habit, after.iter(), day)
                 .get(&window)
                 .copied()
                 .unwrap_or(0);
-            let skip_after = crate::habit_event::derive_skip_posture(habit, after.iter(), day)
-                .get(&window)
-                .copied()
-                .unwrap_or(false);
-            // The per-day overlay twin (US-8, #1144), same
-            // transactional-twin law in the one batch.
-            let day_key = crate::habit::HabitDayKey {
-                habit: *id,
-                day: day.today(now),
-            };
-            let day_count = app
-                .habits
-                .day_log
-                .get(&day_key)
-                .map_or(0, |entry| entry.count)
-                + 1;
-            let day_clock = crate::habit::mint_log_clock(
-                now,
-                app.habits.day_log.get(&day_key).map(|entry| entry.clock),
-            );
             let event_id = event.id;
-            let mut actions = vec![
+            let actions = vec![
                 PersistenceAction::UpsertHabitEvent(event),
-                PersistenceAction::RecordHabitLog(
-                    key,
-                    HabitLogEntry {
-                        count,
-                        clock,
-                        by: author,
-
-                        skip: skip_after,
-                    },
-                ),
-                PersistenceAction::RecordHabitDayLog(
-                    day_key,
-                    crate::habit::HabitDayLogEntry {
-                        count: day_count,
-                        clock: day_clock,
-                    },
-                ),
+                board_flush(habit.board, ids, now),
             ];
-            actions.push(board_flush(habit.board, ids, now));
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::HabitLogged {
@@ -3554,25 +3386,11 @@ pub fn plan_command(
                 *window,
             );
             let derived = u32::try_from(members.len()).expect("window count fits u32");
-            // The identical-count early return compares the STORED row
-            // (the legacy gate verbatim): a row already showing the
-            // audited count is the no-churn no-op. A derived count
-            // equal to the target with a disagreeing (or absent) row is
-            // NOT a no-op — the audited valve still owns the mirror
-            // row's absolute write (an empty-window backfill seeds the
-            // count-0 row; the transitional restart drift — events not
-            // yet persisted, the recorded R2 risk — gets the row
-            // rewritten from the derivation).
-            let key = HabitLogKey {
-                habit: *id,
-                window: *window,
-            };
-            if app
-                .habits
-                .log
-                .get(&key)
-                .is_some_and(|entry| entry.count == *count)
-            {
+            // The identical-count early return compares the DERIVED
+            // count (the chunk-5 C6 re-key: the mirror row the legacy
+            // gate consulted is gone; a derivation already showing the
+            // audited count is the no-churn no-op).
+            if derived == *count {
                 return Ok(no_op());
             }
             let mut event_writes: Vec<crate::habit_event::HabitEvent> = Vec::new();
@@ -3643,53 +3461,10 @@ pub fn plan_command(
                     event_writes.push(minted);
                 }
             }
-            // The mirror (D-C): recompute every projection the diff
-            // moved from the post-state derivations — the window row's
-            // absolute audited count, plus every day row the
-            // tombstones/mints displaced (a Week/Month correction's
-            // day attribution re-derives too; the #1341 phantom-cell
-            // class stays dead at the mirror layer as well). The row
-            // clocks keep the #986 monotone mint (mirror LWW only).
-            let post_events = events_after_writes(app, &event_writes);
             let mut actions: Vec<PersistenceAction> = event_writes
                 .into_iter()
                 .map(PersistenceAction::UpsertHabitEvent)
                 .collect();
-            if derived == *count {
-                // The event diff is empty (the derivation already
-                // reaches the target): the audited write is
-                // mirror-only — the legacy absolute row write stands
-                // (the audited count, the #986 monotone mint, the
-                // derived skip posture — never the legacy bit reset).
-                let skip_after =
-                    crate::habit_event::derive_skip_posture(habit, post_events.iter(), day)
-                        .get(window)
-                        .copied()
-                        .unwrap_or(false);
-                let clock = crate::habit::mint_log_clock(
-                    now,
-                    app.habits.log.get(&key).map(|entry| entry.clock),
-                );
-                actions.push(PersistenceAction::RecordHabitLog(
-                    key,
-                    HabitLogEntry {
-                        count: *count,
-                        clock,
-                        by: author,
-
-                        skip: skip_after,
-                    },
-                ));
-            }
-            actions.extend(habit_mirror_refresh(
-                app,
-                habit,
-                &app.habits.events.values().copied().collect::<Vec<_>>(),
-                &post_events,
-                day,
-                now,
-                author,
-            ));
             actions.push(board_flush(habit.board, ids, now));
             Ok(CommandPlan {
                 actions,
@@ -3720,11 +3495,9 @@ pub fn plan_command(
                 return Ok(no_op());
             }
             let (actions, event_id) = plan_mark_event(
-                app,
                 habit,
                 crate::habit_event::HabitEventKind::Skip { window },
                 ids,
-                day,
                 now,
                 author,
             );
@@ -3755,11 +3528,9 @@ pub fn plan_command(
                 return Ok(no_op());
             }
             let (actions, event_id) = plan_mark_event(
-                app,
                 habit,
                 crate::habit_event::HabitEventKind::Unskip { window },
                 ids,
-                day,
                 now,
                 author,
             );
@@ -3787,22 +3558,10 @@ pub fn plan_command(
                 at: now,
                 by: author,
             });
-            let after = events_after_writes(app, &[post]);
-            let mut actions = vec![PersistenceAction::UpsertHabitEvent(post)];
-            // The mirror refresh (D-C): the affected window/day rows
-            // recomputed from the post-tombstone derivations — the
-            // phantom-cell class (#1341) stays dead on the synthesis
-            // path too.
-            actions.extend(habit_mirror_refresh(
-                app,
-                habit,
-                &app.habits.events.values().copied().collect::<Vec<_>>(),
-                &after,
-                day,
-                now,
-                author,
-            ));
-            actions.push(board_flush(habit.board, ids, now));
+            let actions = vec![
+                PersistenceAction::UpsertHabitEvent(post),
+                board_flush(habit.board, ids, now),
+            ];
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::Applied,
@@ -3819,18 +3578,10 @@ pub fn plan_command(
                 return Ok(no_op());
             }
             let habit = live_habit(app, event.habit)?;
-            let after = events_after_writes(app, std::slice::from_ref(event));
-            let mut actions = vec![PersistenceAction::UpsertHabitEvent(*event)];
-            actions.extend(habit_mirror_refresh(
-                app,
-                habit,
-                &app.habits.events.values().copied().collect::<Vec<_>>(),
-                &after,
-                day,
-                now,
-                author,
-            ));
-            actions.push(board_flush(habit.board, ids, now));
+            let actions = vec![
+                PersistenceAction::UpsertHabitEvent(*event),
+                board_flush(habit.board, ids, now),
+            ];
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::Applied,
@@ -11658,16 +11409,6 @@ mod tests {
         (app, outbox)
     }
 
-    fn day_log(count: u32) -> HabitLogEntry {
-        HabitLogEntry {
-            count,
-            clock: ts(T0 - 1_800),
-            by: None,
-
-            skip: false,
-        }
-    }
-
     fn ymd(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
         chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
     }
@@ -12327,172 +12068,13 @@ mod tests {
             assert_eq!(window.as_date(), expected);
             assert_eq!(count, 1, "post-increment");
             // actions[0] is the minted completion event (the
-            // authoritative write); the mirror row follows it.
-            let PersistenceAction::RecordHabitLog(key, entry) = &plan.actions[1] else {
-                panic!("wrong action");
-            };
+            // authoritative write; the C6 mirror rows are gone — the
+            // batch is event + flush).
             assert!(matches!(
                 &plan.actions[0],
                 PersistenceAction::UpsertHabitEvent(_)
             ));
-            assert_eq!(key.window.as_date(), expected);
-            assert_eq!(entry.count, 1);
-            assert_eq!(entry.clock, now());
         }
-    }
-
-    #[test]
-    fn log_habit_writes_the_day_overlay_twin_in_the_same_batch() {
-        // US-8 (#1144): every LogHabit carries its per-day attribution
-        // twin in the SAME batch (the transactional-twin law) — here a
-        // Week-kind habit, so the twin is the only overlay write.
-        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerWeek(
-            crate::habit::NonZeroCount::new(3).unwrap(),
-        ));
-        let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
-        let twins: Vec<_> = plan
-            .actions
-            .iter()
-            .filter_map(|action| match action {
-                PersistenceAction::RecordHabitDayLog(key, entry) => Some((*key, *entry)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(twins.len(), 1, "exactly one overlay twin per log");
-        let (key, entry) = twins[0];
-        assert_eq!(key.habit, habit_id());
-        assert_eq!(key.day, ymd(1970, 1, 1), "the attribution day is today");
-        assert_eq!(entry.count, 1);
-        assert_eq!(entry.clock, now());
-        // The window row rides the same batch (twin ordering: the log
-        // row first, the overlay beside it, before the flush).
-        let log_idx = plan
-            .actions
-            .iter()
-            .position(|action| matches!(action, PersistenceAction::RecordHabitLog(_, _)))
-            .expect("the window row is in the batch");
-        let twin_idx = plan
-            .actions
-            .iter()
-            .position(|action| matches!(action, PersistenceAction::RecordHabitDayLog(_, _)))
-            .expect("the twin is in the batch");
-        assert!(log_idx < twin_idx);
-    }
-
-    #[test]
-    fn log_habit_overlay_twin_increments_the_days_stored_row() {
-        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
-            crate::habit::NonZeroCount::new(3).unwrap(),
-        ));
-        let day_key = crate::habit::HabitDayKey {
-            habit: habit_id(),
-            day: ymd(1970, 1, 1),
-        };
-        app.habits.day_log.insert(
-            day_key,
-            crate::habit::HabitDayLogEntry {
-                count: 2,
-                clock: ts(T0 - 3_600),
-            },
-        );
-        let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
-        let twin = plan
-            .actions
-            .iter()
-            .find_map(|action| match action {
-                PersistenceAction::RecordHabitDayLog(key, entry) if key.day == day_key.day => {
-                    Some(*entry)
-                }
-                _ => None,
-            })
-            .expect("the twin is in the batch");
-        assert_eq!(twin.count, 3, "the day attribution increments too");
-        // The #986 monotone mint keeps the twin strictly past the
-        // stored same-key row.
-        assert!(twin.clock > ts(T0 - 3_600));
-    }
-
-    #[test]
-    fn adjust_day_kind_replaces_the_days_overlay_row() {
-        // The Day-kind window IS the day: the audited correction
-        // replaces the overlay row exactly (the undo inverse rides
-        // this arm).
-        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
-            crate::habit::NonZeroCount::new(3).unwrap(),
-        ));
-        let day_key = crate::habit::HabitDayKey {
-            habit: habit_id(),
-            day: ymd(1970, 1, 1),
-        };
-        app.habits.day_log.insert(
-            day_key,
-            crate::habit::HabitDayLogEntry {
-                count: 4,
-                clock: ts(T0 - 3_600),
-            },
-        );
-        let window =
-            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, ymd(1970, 1, 1));
-        let plan = run(
-            &app,
-            &outbox,
-            &StateCommand::AdjustHabitLog {
-                habit: habit_id(),
-                window,
-                count: 1,
-            },
-        )
-        .unwrap();
-        let twin = plan
-            .actions
-            .iter()
-            .find_map(|action| match action {
-                PersistenceAction::RecordHabitDayLog(_, entry) => Some(*entry),
-                _ => None,
-            })
-            .expect("the day-kind adjust twins the overlay");
-        assert_eq!(twin.count, 1, "the correction replaces, not increments");
-    }
-
-    #[test]
-    fn adjust_week_kind_writes_no_overlay() {
-        // The Week-window overlay: the correction mints synthesized
-        // completions (`at = now`), so the days the events themselves
-        // attribute re-derive — the mirror overlay recomputes from
-        // the derivations, never invents (the stage-1 plan's D-C
-        // mirror law; the #1341 phantom-cell class stays dead at the
-        // mirror layer: tombstoned events leave their day rows too).
-        // Deliberate delta (2026-11-27, the #1519 event grammar): the
-        // pre-event arm wrote no overlay for a Week adjust; the
-        // derived overlay is now recomputed for every displaced day.
-        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerWeek(
-            crate::habit::NonZeroCount::new(3).unwrap(),
-        ));
-        let window =
-            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Week, ymd(1970, 1, 1));
-        let plan = run(
-            &app,
-            &outbox,
-            &StateCommand::AdjustHabitLog {
-                habit: habit_id(),
-                window,
-                count: 1,
-            },
-        )
-        .unwrap();
-        // One synthesized completion at `now` (1970-01-01, UTC-midnight
-        // calendar): the day overlay for that day re-derives to 1.
-        let day_rows: Vec<_> = plan
-            .actions
-            .iter()
-            .filter_map(|action| match action {
-                PersistenceAction::RecordHabitDayLog(key, entry) => Some((*key, *entry)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(day_rows.len(), 1, "exactly the minted events' day");
-        assert_eq!(day_rows[0].0.day, ymd(1970, 1, 1));
-        assert_eq!(day_rows[0].1.count, 1);
     }
 
     #[test]
@@ -12574,47 +12156,6 @@ mod tests {
         assert_eq!(window.as_date(), ymd(1970, 1, 1));
     }
 
-    #[test]
-    fn log_habit_is_monotone_under_an_advancing_clock() {
-        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
-            crate::habit::NonZeroCount::new(5).unwrap(),
-        ));
-        // One shared id seam across the sequence: production mints
-        // through a stateful generator, so consecutive logs mint
-        // DISTINCT event ids (the event grammar's identity law) — a
-        // fresh counter per plan would collide them.
-        let ids = crate::test_support::CountingIds::default();
-        for n in 1..=3_u32 {
-            let at = ts(T0 + i64::from(n) * 60);
-            let plan = run_seq(
-                &app,
-                &outbox,
-                &StateCommand::LogHabit { habit: habit_id() },
-                &ids,
-                at,
-            )
-            .unwrap();
-            let PersistenceAction::RecordHabitLog(_key, entry) = &plan.actions[1] else {
-                panic!("wrong action");
-            };
-            assert!(matches!(
-                &plan.actions[0],
-                PersistenceAction::UpsertHabitEvent(_)
-            ));
-            assert_eq!(entry.count, n);
-            assert_eq!(entry.clock, at, "fresh stamp each invocation");
-            apply_actions_to_habits(&mut app.habits, &plan.actions);
-        }
-        let key = HabitLogKey {
-            habit: super::tests::habit_id(),
-            window: crate::habit::WindowStart::of_period(
-                crate::habit::PeriodKind::Day,
-                ymd(1970, 1, 1),
-            ),
-        };
-        assert_eq!(app.habits.log[&key].count, 3);
-    }
-
     /// Applies a plan's actions to just the habit section (the planner
     /// tests' in-memory advance; [`apply_actions`] is contract-tested on
     /// the full shape in persistence.rs).
@@ -12630,18 +12171,6 @@ mod tests {
                 PersistenceAction::UpsertHabitEvent(event) => {
                     habits.events.insert(event.id, *event);
                 }
-                PersistenceAction::RecordHabitLog(key, entry) => match habits.log.get(key) {
-                    Some(stored) if stored.clock >= entry.clock => {}
-                    _ => {
-                        habits.log.insert(*key, *entry);
-                    }
-                },
-                PersistenceAction::RecordHabitDayLog(key, entry) => match habits.day_log.get(key) {
-                    Some(stored) if stored.clock >= entry.clock => {}
-                    _ => {
-                        habits.day_log.insert(*key, *entry);
-                    }
-                },
                 _ => {}
             }
         }
@@ -12715,116 +12244,6 @@ mod tests {
         );
     }
 
-    fn adjust_cmd(window: crate::habit::WindowStart, count: u32) -> StateCommand {
-        StateCommand::AdjustHabitLog {
-            habit: super::tests::habit_id(),
-            window,
-            count,
-        }
-    }
-
-    #[test]
-    fn adjust_habit_log_sets_overwrites_backdates_and_noops() {
-        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
-            crate::habit::NonZeroCount::new(3).unwrap(),
-        ));
-        let today =
-            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, ymd(1970, 1, 1));
-        let yesterday =
-            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, ymd(1969, 12, 31));
-        let ids = crate::test_support::CountingIds::default();
-        // Set (absent row): the audited fresh stamp. The reconcile
-        // synthesizes two completions (the D24 refusal's successor —
-        // an absent window derives empty and the upward adjust mints).
-        let plan = run_seq(&app, &outbox, &adjust_cmd(today, 2), &ids, ts(T0 + 60)).unwrap();
-        let CommandOutcome::HabitLogAdjusted {
-            habit: receipt_habit,
-            window: receipt_window,
-            count: receipt_count,
-            created: receipt_created,
-            tombstoned: receipt_tombstoned,
-        } = plan.outcome
-        else {
-            panic!("wrong receipt");
-        };
-        assert_eq!(receipt_habit, habit_id());
-        assert_eq!(receipt_window, today);
-        assert_eq!(receipt_count, 2);
-        assert_eq!(receipt_created.len(), 2, "two synthesized completions");
-        assert_eq!(receipt_tombstoned.len(), 0);
-        apply_actions_to_habits(&mut app.habits, &plan.actions);
-        // Overwrite: 2 -> 3 (the quota). DELIBERATE DELTA (2026-11-27,
-        // the #1519 event grammar): the legacy arm wrote any absolute
-        // count (over-quota audited rows included); the reconcile
-        // grammar mints synthesized completions, which the attribution
-        // rule repairs into an unmet predecessor once the window's
-        // own quota is met — an over-quota audited target is not
-        // expressible as derived facts (recorded grammar limit; the
-        // derived truth wins, the mirror follows the derivation). The
-        // audited in-quota correction stays exact.
-        let plan = run_seq(&app, &outbox, &adjust_cmd(today, 3), &ids, ts(T0 + 120)).unwrap();
-        apply_actions_to_habits(&mut app.habits, &plan.actions);
-        // Backdate: a canonical previous window is legal (the explicit
-        // valve the automatic path never uses). The synthesized stamp
-        // lands just inside the audited window's own end, so it
-        // attributes to that window, not the planner's today.
-        let plan = run_seq(&app, &outbox, &adjust_cmd(yesterday, 1), &ids, ts(T0 + 180)).unwrap();
-        apply_actions_to_habits(&mut app.habits, &plan.actions);
-        assert_eq!(app.habits.log.len(), 2);
-        let key = HabitLogKey {
-            habit: super::tests::habit_id(),
-            window: today,
-        };
-        assert_eq!(app.habits.log[&key].count, 3);
-        assert_eq!(
-            app.habits.log[&key].clock,
-            ts(T0 + 120),
-            "the overwrite's stamp"
-        );
-        // Count 0 is a legal correction; the row stays, honestly
-        // clocked. The reconcile diff emits the event tombstones first
-        // (one per removed completion — the batch's authoritative
-        // writes), then the derived mirror rows.
-        let plan = run_seq(&app, &outbox, &adjust_cmd(yesterday, 0), &ids, ts(T0 + 240)).unwrap();
-        assert_eq!(
-            plan.actions
-                .iter()
-                .filter(|action| matches!(action, PersistenceAction::UpsertHabitEvent(event) if event.deleted.is_some()))
-                .count(),
-            1,
-            "the emptied window's one completion tombstones"
-        );
-        assert!(
-            matches!(&plan.actions[1], PersistenceAction::RecordHabitLog(_, entry) if entry.count == 0),
-            "an emptied window keeps its row"
-        );
-        // US-8 (#1144): the Day-kind correction twins the day overlay
-        // row beside the window row (the transactional-twin law); the
-        // flush still roams the batch.
-        assert!(
-            matches!(
-                &plan.actions[2],
-                PersistenceAction::RecordHabitDayLog(_, entry) if entry.count == 0
-            ),
-            "the emptied day overlays to zero beside its window row"
-        );
-        assert!(
-            matches!(
-                &plan.actions[3],
-                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
-                    op: LocalOp::FlushBoardAppData(_),
-                    ..
-                })
-            ),
-            "the correction roams through the board flush"
-        );
-        // Same count: the accepted no-op (no clock churn) — the derived
-        // count equals the audited target, so the reconcile mints and
-        // tombstones nothing.
-        let repeat = run_seq(&app, &outbox, &adjust_cmd(today, 3), &ids, ts(T0 + 300)).unwrap();
-        assert_eq!(repeat, no_op());
-    }
-
     // ---- The #1519 event-grammar engine halves (the stage-1 plan's
     // ---- D-Tests table; journey-step tokens are normative paths). ----
 
@@ -12878,183 +12297,6 @@ mod tests {
         crate::habit_event::derive_skip_posture(&row, app.habits.events.values(), test_day())
     }
 
-    // ---- The keystone mirror proptest (the stage-1 plan's D-C): ----
-    // ---- the legacy maps are a mechanical projection of the event ----
-    // ---- log after EVERY step, undos included.                    ----
-
-    /// The keystone's step vocabulary: forward writes plus undo (the
-    /// mirror law must hold through the inverse path too — the
-    /// load-bearing law for every untouched reader, the plan's R3).
-    #[derive(Debug, Clone)]
-    enum MirrorStep {
-        Log,
-        Skip,
-        Unskip,
-        Adjust(u32),
-        Undo,
-    }
-
-    fn mirror_step_strategy() -> impl proptest::strategy::Strategy<Value = MirrorStep> {
-        proptest::prop_oneof![
-            3 => proptest::prelude::Just(MirrorStep::Log),
-            2 => proptest::prelude::Just(MirrorStep::Skip),
-            1 => proptest::prelude::Just(MirrorStep::Unskip),
-            2 => (0u32..4).prop_map(MirrorStep::Adjust),
-            2 => proptest::prelude::Just(MirrorStep::Undo),
-        ]
-    }
-
-    /// The mirror-law assertion for one habit: per window, the stored
-    /// row (absent -> 0 / false) equals the derivation; per day, the
-    /// overlay equals `derive_day_counts`.
-    fn assert_mirror_law(app: &AppState, habit: &Habit) {
-        let day = test_day();
-        let counts =
-            crate::habit_event::derive_window_counts(habit, app.habits.events.values(), day);
-        let posture =
-            crate::habit_event::derive_skip_posture(habit, app.habits.events.values(), day);
-        let days = crate::habit_event::derive_day_counts(habit, app.habits.events.values(), day);
-        let mut windows: std::collections::BTreeSet<crate::habit::WindowStart> =
-            counts.keys().chain(posture.keys()).copied().collect();
-        for key in app.habits.log.keys() {
-            if key.habit == habit.id {
-                windows.insert(key.window);
-            }
-        }
-        for window in windows {
-            let stored = app.habits.log.get(&HabitLogKey {
-                habit: habit.id,
-                window,
-            });
-            let stored_count = stored.map_or(0, |entry| entry.count);
-            let stored_skip = stored.is_some_and(|entry| entry.skip);
-            let derived_count = counts.get(&window).copied().unwrap_or(0);
-            let derived_skip = posture.get(&window).copied().unwrap_or(false);
-            assert_eq!(
-                stored_count, derived_count,
-                "mirror count drifted for {window:?}"
-            );
-            assert_eq!(
-                stored_skip, derived_skip,
-                "mirror skip bit drifted for {window:?}"
-            );
-        }
-        let mut day_keys: std::collections::BTreeSet<chrono::NaiveDate> =
-            days.keys().copied().collect();
-        for key in app.habits.day_log.keys() {
-            if key.habit == habit.id {
-                day_keys.insert(key.day);
-            }
-        }
-        for calendar_day in day_keys {
-            let key = crate::habit::HabitDayKey {
-                habit: habit.id,
-                day: calendar_day,
-            };
-            let stored = app.habits.day_log.get(&key).map_or(0, |entry| entry.count);
-            let derived = days.get(&calendar_day).copied().unwrap_or(0);
-            assert_eq!(
-                stored, derived,
-                "mirror day overlay drifted for {calendar_day:?}"
-            );
-        }
-    }
-
-    proptest! {
-        #![proptest_config(crate::test_support::proptest_config(64))]
-
-        #[test]
-        fn legacy_mirror_equals_event_derivations(
-            steps in proptest::collection::vec(mirror_step_strategy(), 0..24),
-        ) {
-            // Two habits cover both window shapes: a Day (window ==
-            // day) and a Week (attribution crosses days). The state is
-            // the REAL persisted shape; every step plans through the
-            // journal wrapper and applies through the shared
-            // `apply_actions` — the engine's own batch contract, not a
-            // test twin.
-            let mut persisted = crate::persistence::PersistedState::default();
-            let day = test_day();
-            let base = chrono::Utc.timestamp_opt(36_000, 0).unwrap();
-            for (raw, kind) in [(601u64, crate::habit::PeriodKind::Day), (602, crate::habit::PeriodKind::Week)] {
-                let habit = Habit {
-                    id: HabitId::from(uuid::Uuid::from_u128(u128::from(raw))),
-                    board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
-                    title: format!("h{raw}"),
-                    description: String::new(),
-                    target: match kind {
-                        crate::habit::PeriodKind::Day => crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(2).unwrap()),
-                        _ => crate::habit::HabitTarget::PerWeek(crate::habit::NonZeroCount::new(3).unwrap()),
-                    },
-                    order: 0,
-                    anchor_time: None,
-                    anchor_day: None,
-                    scheduled_days: None,
-                    reminder: None,
-                    clocks: crate::habit::HabitClocks::all(base - chrono::TimeDelta::try_hours(1).unwrap()),
-                    continued_from: None,
-                    deleted: false,
-                    by: None,
-
-                    paused_until: None,
-                };
-                persisted.habits.habits.insert(habit.id, habit);
-            }
-            let ids = crate::test_support::CountingIds::default();
-            for (index, step) in steps.iter().enumerate() {
-                let now_i = base + chrono::TimeDelta::try_seconds(60 * (i64::try_from(index).expect("index fits") + 1)).unwrap();
-                let app = crate::state::AppState::from(persisted.clone());
-                let command = match step {
-                    MirrorStep::Log => {
-                        let habit = if index % 2 == 0 { 601u64 } else { 602u64 };
-                        StateCommand::LogHabit { habit: HabitId::from(uuid::Uuid::from_u128(u128::from(habit))) }
-                    }
-                    MirrorStep::Skip => {
-                        let habit = if index % 2 == 0 { 601u64 } else { 602u64 };
-                        StateCommand::SkipHabit { habit: HabitId::from(uuid::Uuid::from_u128(u128::from(habit))) }
-                    }
-                    MirrorStep::Unskip => {
-                        let habit = if index % 2 == 0 { 601u64 } else { 602u64 };
-                        StateCommand::UnskipHabit { habit: HabitId::from(uuid::Uuid::from_u128(u128::from(habit))) }
-                    }
-                    MirrorStep::Adjust(count) => {
-                        let habit = if index % 2 == 0 { 601u64 } else { 602u64 };
-                        let kind = if index % 2 == 0 { crate::habit::PeriodKind::Day } else { crate::habit::PeriodKind::Week };
-                        StateCommand::AdjustHabitLog {
-                            habit: HabitId::from(uuid::Uuid::from_u128(u128::from(habit))),
-                            window: crate::habit::WindowStart::of_period(kind, day.today(now_i)),
-                            count: *count,
-                        }
-                    }
-                    MirrorStep::Undo => StateCommand::Undo,
-                };
-                // A typed undo refusal (an interleaved write moved
-                // the guarded state) applies nothing — the engine
-                // would refuse identically; the mirror law is about
-                // applied steps.
-                let Ok(plan) = crate::undo::plan_journaled_command(
-                    &app,
-                    &[],
-                    &persisted.journal,
-                    &command,
-                    &ids,
-                    &crate::reminders::ReminderDefaults::default(),
-                    day,
-                    now_i,
-                    None,
-                ) else {
-                    continue;
-                };
-                crate::persistence::apply_actions(&mut persisted, &plan.actions);
-                let app = crate::state::AppState::from(persisted.clone());
-                for raw in [601u64, 602] {
-                    let habit = &app.habits.habits[&HabitId::from(uuid::Uuid::from_u128(u128::from(raw)))];
-                    assert_mirror_law(&app, habit);
-                }
-            }
-        }
-    }
-
     #[test]
     fn us1_s1_log_habit_mints_one_event() {
         let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
@@ -13071,12 +12313,8 @@ mod tests {
         };
         assert_eq!(event, Some(events[0].id), "the receipt names the minted id");
         assert_eq!(count, 1);
-        // The mirror row lands beside the event (the D-C derived
-        // mirror) and the flush roams the batch.
-        assert!(matches!(
-            &plan.actions[1],
-            PersistenceAction::RecordHabitLog(_, entry) if entry.count == 1
-        ));
+        // The board flush roams the batch beside the event.
+        assert!(matches!(&plan.actions[1], PersistenceAction::EnqueueOp(_)));
     }
 
     #[test]
@@ -13287,13 +12525,6 @@ mod tests {
             0,
             "count-0 and row-absence are the same derived fact"
         );
-        // The mirror keeps the honestly-clocked count-0 row (the legal
-        // legacy row shape).
-        let key = HabitLogKey {
-            habit: habit_id(),
-            window: today,
-        };
-        assert_eq!(app_post.habits.log[&key].count, 0);
     }
 
     #[test]
@@ -13491,46 +12722,6 @@ mod tests {
                 ),
             }
         );
-    }
-
-    #[test]
-    fn delete_habit_tombstones_and_never_touches_the_log() {
-        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
-            crate::habit::NonZeroCount::new(1).unwrap(),
-        ));
-        let key = HabitLogKey {
-            habit: super::tests::habit_id(),
-            window: crate::habit::WindowStart::of_period(
-                crate::habit::PeriodKind::Day,
-                ymd(1970, 1, 1),
-            ),
-        };
-        app.habits.log.insert(key, day_log(4));
-        let plan = run(
-            &app,
-            &outbox,
-            &StateCommand::DeleteHabit { habit: habit_id() },
-        )
-        .unwrap();
-        assert_eq!(plan.outcome, CommandOutcome::Applied);
-        assert_eq!(
-            plan.actions.len(),
-            2,
-            "the tombstone upsert plus the flush trigger"
-        );
-        let PersistenceAction::UpsertHabit(tombstone) = &plan.actions[0] else {
-            panic!("wrong action");
-        };
-        assert!(tombstone.deleted);
-        assert_eq!(tombstone.clocks.deleted, now());
-        // The log survives the batch (the executable contract).
-        let mut persisted = crate::persistence::PersistedState {
-            habits: app.habits.clone(),
-            ..crate::persistence::PersistedState::default()
-        };
-        crate::persistence::apply_actions(&mut persisted, &plan.actions);
-        assert_eq!(persisted.habits.log[&key], day_log(4), "history outlives");
-        assert!(persisted.habits.habits[&habit_id()].deleted);
     }
 
     #[test]

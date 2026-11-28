@@ -607,9 +607,9 @@ pub enum StateCommand {
         count: u32,
     },
     /// Mark the habit's **current canonical window** skipped (the typed
-    /// planned skip, issue #955): the window's log row carries the skip
-    /// mark (`HabitLogEntry.skip`) and the streak walk treats the window
-    /// as transparent — neither counts nor breaks. R-4: skip targets the
+    /// planned skip, issue #955): one typed `Skip` mark event mints and
+    /// the posture derives skipped (Ruling B) — the streak walk treats
+    /// the window as transparent — neither counts nor breaks. R-4: skip targets the
     /// current window only (past windows are the audited `AdjustHabitLog`
     /// valve's); R-5: skip is period-grain, one mark per canonical
     /// window. Window minted planner-side via

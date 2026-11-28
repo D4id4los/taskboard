@@ -237,12 +237,8 @@ fn journaled_pre_images(app: &AppState, actions: &[PersistenceAction]) -> UndoFa
 /// comparison at undo.
 ///
 /// The window resolves from the **command**, never the batch: a
-/// reconcile's mirror rows can span DISPLACED windows (a tombstone
-/// re-attributes a grace-repaired event into the addressed window), so
-/// the batch's first `RecordHabitLog` row is not reliably the addressed
-/// one — the batch-row scan is the fallback for the mint/mark classes
-/// (whose batches write exactly one mirror row). Defensive fallback:
-/// an unresolvable window degrades to the plain entity capture
+/// the mint/mark classes' addressed window. Defensive fallback: an
+/// unresolvable window degrades to the plain entity capture
 /// (unreachable for a real plan; never a panic).
 ///
 /// The snapshot's id set: the pre image covers the window's PRE-fold
@@ -277,14 +273,21 @@ fn journaled_habit_event_images(
         StateCommand::LogHabit { habit }
         | StateCommand::SkipHabit { habit }
         | StateCommand::UnskipHabit { habit } => {
-            let Some((_, window)) = actions.iter().find_map(|action| match action {
-                PersistenceAction::RecordHabitLog(key, _) if key.habit == *habit => {
-                    Some((key.habit, key.window))
-                }
+            // The chunk-5 C6 re-key: the batch's mirror row named the
+            // window; the batch's minted EVENT does now — the window
+            // is the natural window of the event's own `at` (the
+            // attribution rule's input, planner-side).
+            let Some(event) = actions.iter().find_map(|action| match action {
+                PersistenceAction::UpsertHabitEvent(event) if event.habit == *habit => Some(event),
                 _ => None,
             }) else {
                 return facts;
             };
+            let Some(row) = app.habits.habits.get(habit) else {
+                return facts;
+            };
+            let window =
+                crate::habit::WindowStart::of_period(row.target.kind(), day.today(event.at));
             (*habit, window)
         }
         _ => return facts,
@@ -954,8 +957,7 @@ fn touched_board(
 /// = a create). Walks the plan's `Upsert*` actions against the
 /// pre-state — arm-agnostic, so cascades are captured for free (D19:
 /// `RecordReminderDismissal` rows carry no pre-image; a
-/// `RecordHabitLog` row does since the undo v2 widening #555 — the log
-/// map lives outside the habit entity; a `DeleteReminderRule` does
+/// `DeleteReminderRule` does
 /// since #900 — the capture reads the rule row from the same
 /// pre-state snapshot the cascade planned from, so the image cannot
 /// diverge from what the cascade actually deletes).
@@ -1039,16 +1041,8 @@ pub fn pre_images(app: &AppState, actions: &[PersistenceAction]) -> Vec<PreImage
                     before: app.tracking.entries.get(&entity.id).cloned().map(Box::new),
                 },
             ),
-            PersistenceAction::RecordHabitLog(key, _) => (
-                JournalEntity::HabitLog(*key),
-                PreImage::HabitLogRow {
-                    key: *key,
-                    before: app.habits.log.get(key).copied(),
-                },
-            ),
             // The event-grammar capture (#1519): the synthesis verbs'
-            // entity pre-image — the row before the batch, verbatim
-            // (the `RecordHabitLog` capture posture at event grain).
+            // entity pre-image — the row before the batch, verbatim.
             PersistenceAction::UpsertHabitEvent(event) => (
                 JournalEntity::HabitEvent(event.id),
                 PreImage::HabitEventRow {
@@ -1100,9 +1094,6 @@ fn watermark_of(actions: &[PersistenceAction]) -> UndoWatermark {
                 JournalEntity::TimeEntry(entry.id),
                 EntityStamps::TimeEntry(entry.updated_at),
             ),
-            PersistenceAction::RecordHabitLog(key, post) => {
-                (JournalEntity::HabitLog(*key), EntityStamps::HabitLog(*post))
-            }
             // The event-grammar stamp (#1519): the post-write row,
             // verbatim — the guard compares the current row as a whole.
             PersistenceAction::UpsertHabitEvent(event) => (
@@ -1247,12 +1238,11 @@ pub fn plan_undo(
     let mut actions = Vec::new();
     // The habit-event inverses' forward planning view: each inverse in
     // the batch plans against the state its predecessors already wrote
-    // (the event row and its mirror rows are LWW-stamped — equal-clock
-    // writes of independently-computed mirror rows would tie and drop,
-    // so the refresh must see the accumulated facts and bump the row
-    // clocks monotonically). The applied batch runs in emission order,
-    // so this planning view yields the identical applied result. Other
-    // inverse kinds keep the pre-state planning posture (unchanged).
+    // (the event rows are set-union facts; a chain of inverses — the
+    // redo walk — must see the accumulated facts). The applied batch
+    // runs in emission order, so this planning view yields the
+    // identical applied result. Other inverse kinds keep the pre-state
+    // planning posture (unchanged).
     let mut habit_view = app.clone();
     for inverse in &inverses {
         let plan = match inverse {
@@ -1278,29 +1268,8 @@ pub fn plan_undo(
                     author,
                 )?;
                 for action in &plan.actions {
-                    match action {
-                        PersistenceAction::UpsertHabitEvent(event) => {
-                            habit_view.habits.events.insert(event.id, *event);
-                        }
-                        PersistenceAction::RecordHabitLog(key, entry)
-                            if habit_view
-                                .habits
-                                .log
-                                .get(key)
-                                .is_none_or(|stored| stored.clock < entry.clock) =>
-                        {
-                            habit_view.habits.log.insert(*key, *entry);
-                        }
-                        PersistenceAction::RecordHabitDayLog(key, entry)
-                            if habit_view
-                                .habits
-                                .day_log
-                                .get(key)
-                                .is_none_or(|stored| stored.clock < entry.clock) =>
-                        {
-                            habit_view.habits.day_log.insert(*key, *entry);
-                        }
-                        _ => {}
+                    if let PersistenceAction::UpsertHabitEvent(event) = action {
+                        habit_view.habits.events.insert(event.id, *event);
                     }
                 }
                 plan
@@ -2817,7 +2786,18 @@ fn synthesize_undo(
             let Some(recorded_post) = habit_log_post(watermark, key) else {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             };
-            if app.habits.log.get(&key) != Some(recorded_post) {
+            // The chunk-5 C6 re-key (plan D-3, ruling 3): the guard
+            // reads the DERIVED posture — the legacy whole-row
+            // (clock-included) compare downgrades to a posture-grain
+            // compare for these pre-#1520 entries only (strictly more
+            // permissive; the event-grammar leg above keeps its exact
+            // snapshot guard).
+            let Some(row) = app.habits.habits.get(&habit) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let posture =
+                crate::habit_event::derive_skip_posture(row, app.habits.events.values(), day);
+            if posture.get(&key.window).copied().unwrap_or(false) != recorded_post.skip {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             }
             let inverse = match &entry.command {
@@ -2902,7 +2882,18 @@ fn synthesize_undo(
             let Some(recorded_post) = habit_log_post(watermark, key) else {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             };
-            if app.habits.log.get(&key) != Some(recorded_post) {
+            // The chunk-5 C6 re-key (plan D-3, ruling 3): the guard
+            // reads the DERIVED count — the legacy whole-row
+            // (clock-included) compare downgrades to a count-grain
+            // compare for these pre-#1520 entries only (strictly more
+            // permissive; the event-grammar leg above keeps its exact
+            // snapshot guard).
+            let Some(row) = app.habits.habits.get(&habit) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let counts =
+                crate::habit_event::derive_window_counts(row, app.habits.events.values(), day);
+            if counts.get(&key.window).copied().unwrap_or(0) != recorded_post.count {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             }
             Ok(vec![StateCommand::AdjustHabitLog {
@@ -2973,15 +2964,20 @@ fn synthesize_undo(
             let Some(recorded_post) = habit_log_post(watermark, key) else {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             };
-            // Count-only guard (not the AdjustHabitLog class's
-            // whole-row compare): this class's own inverse re-stamps
-            // the row (the #986 bump mint), so the clock legitimately
-            // moves between consecutive pops — a whole-row guard would
-            // deadlock the second undo of a burst (US-3/AC-2's
-            // per-increment law). The count is the class's full
-            // semantic payload (one log = exactly one increment), and
-            // the bump's monotone mint keeps the LWW ordering intact.
-            if app.habits.log.get(&key).map(|row| row.count) != Some(recorded_post.count) {
+            // Count-only guard: the chunk-5 C6 re-key (plan D-3,
+            // ruling 3) reads the DERIVED count — the legacy stored-row
+            // read is gone with the mirror. Still count-grain (not the
+            // AdjustHabitLog class's whole-row compare): this class's
+            // own inverse legitimately moves the touched window between
+            // consecutive pops of a burst (US-3/AC-2's per-increment
+            // law), and the count is the class's full semantic payload
+            // (one log = exactly one increment).
+            let Some(row) = app.habits.habits.get(&habit) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let counts =
+                crate::habit_event::derive_window_counts(row, app.habits.events.values(), day);
+            if counts.get(&key.window).copied().unwrap_or(0) != recorded_post.count {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             }
             Ok(vec![StateCommand::AdjustHabitLog {

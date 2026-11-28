@@ -3670,9 +3670,7 @@ mod tests {
         assert_eq!(app.habits, state.habits, "no sections, no fold");
         assert!(actions.iter().all(|a| !matches!(
             a,
-            PersistenceAction::UpsertHabit(_)
-                | PersistenceAction::RecordHabitLog(..)
-                | PersistenceAction::UpsertHabitEvent(_)
+            PersistenceAction::UpsertHabit(_) | PersistenceAction::UpsertHabitEvent(_)
         )),);
 
         // A document carrying a newer definition and a legacy log row
