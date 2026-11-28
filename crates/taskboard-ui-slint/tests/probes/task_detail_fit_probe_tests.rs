@@ -16,10 +16,20 @@ use support::driver::{DriverOptions, advance_probe_clock};
 
 include!(concat!(env!("OUT_DIR"), "/task_detail_fit_probe.rs"));
 
+/// The tight arm's seeded demand (the fixture-robustness law): the
+/// reminder-rule rows grow the page's preferred height by token-floor
+/// row heights, not text metrics.
+const TIGHT_FIT_RULE_ROWS: usize = 12;
+/// The overflow floor the tight arm asserts (px): three orders above
+/// the observed cross-machine font-metric swing (the bare demand sat
+/// 8 px over the viewport locally and at/below it on the runner).
+const TIGHT_FIT_OVERFLOW_FLOOR: f32 = 100.0;
+
 fn run_at(
     scale: f32,
     width: f32,
     height: f32,
+    rule_count: usize,
     job: impl FnOnce(&TaskDetailFitProbe) + Send + 'static,
 ) {
     support::driver::run(
@@ -35,6 +45,17 @@ fn run_at(
                 due_phrase: "in 9h · 23:45".into(),
                 due_kind: DueKind::Soon,
                 tracked_total: "0s".into(),
+                rules: slint::ModelRc::new(std::rc::Rc::new(slint::VecModel::from(
+                    (0..rule_count)
+                        .map(|i| RuleRowModel {
+                            before: format!("in {}m", 10 + i).into(),
+                            created: "in 12m".into(),
+                            detail: "fires at 09:42".into(),
+                            armed: false,
+                            selected: false,
+                        })
+                        .collect::<std::vec::Vec<_>>(),
+                ))),
                 can_done: true,
                 can_track_start: true,
                 ..Default::default()
@@ -59,7 +80,7 @@ fn run_at(
 /// scroll-affordance pair.
 #[test]
 fn the_description_section_stops_at_its_content_at_a_loose_fit() {
-    run_at(0.5, 2000.0, 1800.0, |window| {
+    run_at(0.5, 2000.0, 1800.0, 0, |window| {
         let height = window
             .window()
             .size()
@@ -84,15 +105,27 @@ fn the_description_section_stops_at_its_content_at_a_loose_fit() {
 /// extent stays within it (nothing scrolls).
 #[test]
 fn the_page_scroll_affordance_tracks_the_content_demand() {
-    run_at(1.5, 667.0, 600.0, |window| {
+    run_at(1.5, 667.0, 600.0, TIGHT_FIT_RULE_ROWS, |window| {
+        let overflow = window.get_page_content_height() - window.get_page_height();
+        // A FLOOR on the overflow, not a boundary-equal pair: the bare
+        // fixture's demand at this cell sits within single-digit px of
+        // the viewport (608 vs 600 on the dev box) — inside the
+        // cross-machine font-metric swing, so the strict `>` read an
+        // exact equality on the CI runner (content == viewport == 600:
+        // a Flickable stretches a non-demanding content to the
+        // viewport). Each seeded rule row is one token-height row plus
+        // its caption (~53 px, Theme token floors — not text
+        // metrics), so twelve rows hold the overflow above 100 px even
+        // under the smallest plausible line height — an order of
+        // magnitude above the observed swing, and the floor keeps the
+        // assertion a fixture-contract, not a boundary read.
         assert!(
-            window.get_page_content_height() > window.get_page_height(),
-            "the tight fit demands the page scroll (content {} vs viewport {})",
-            window.get_page_content_height(),
-            window.get_page_height()
+            overflow >= TIGHT_FIT_OVERFLOW_FLOOR,
+            "the tight fit demands the page scroll by a metric-robust margin \
+             (overflow {overflow}, floor {TIGHT_FIT_OVERFLOW_FLOOR})"
         );
     });
-    run_at(0.5, 2000.0, 1800.0, |window| {
+    run_at(0.5, 2000.0, 1800.0, 0, |window| {
         assert!(
             window.get_page_content_height() <= window.get_page_height(),
             "the loose fit absorbs without scrolling (content {} vs viewport {})",
