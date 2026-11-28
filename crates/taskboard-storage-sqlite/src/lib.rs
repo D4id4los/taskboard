@@ -72,6 +72,11 @@ pub(crate) mod connect;
 pub(crate) mod error;
 pub(crate) mod port;
 pub(crate) mod repo;
+/// Shared in-crate unit-test scaffolding (the stage-1 plan's D-TS:
+/// the legacy fixture writer + the event-table byte-dump oracle — one
+/// home, no copy-pasted INSERT blocks across tests).
+#[cfg(test)]
+pub(crate) mod test_support;
 
 /// Migration-rewind fixture support (#877). Workspace-internal test
 /// plumbing — hidden from the rendered API, used by this crate's and

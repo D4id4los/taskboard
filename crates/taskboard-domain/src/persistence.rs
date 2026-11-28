@@ -72,6 +72,11 @@ pub enum PersistedTable {
     HabitLog,
     HabitDayLog,
     HabitTimeEntries,
+    /// The habit event log (migration 0032, #1519 chunk 3). Additive
+    /// variant: the enum rides in-memory typed decode contexts only
+    /// (`CorruptionDetail` → diagnostics), never persisted, so the
+    /// serde stability law is untouched by the insertion point.
+    HabitEvent,
     BreakRules,
     Reflection,
     Roaming,

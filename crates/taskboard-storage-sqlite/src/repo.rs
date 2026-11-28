@@ -9,6 +9,10 @@ use sqlx::SqlitePool;
 use taskboard_domain::entities::{
     Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
+use taskboard_domain::habit_event::{
+    HabitEvent, HabitEventId, HabitEventKind, HabitEventTombstone,
+};
+use taskboard_domain::ids::HabitId;
 use taskboard_domain::ids::{
     AdhocAlarmId, BoardId, BreakRuleId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding,
     RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId,
@@ -1093,6 +1097,274 @@ fn decode_reminder_delivery(
     })
 }
 
+/// The event-table write (the stage-1 plan's D-FL): replace-by-uuid
+/// spelled as an explicit full-column `ON CONFLICT(id) DO UPDATE` —
+/// identical uuid = identical fact; a tombstone correction is a plain
+/// column write. The stamp grammar is the fixed nanos-UTC form (the
+/// id key's grammar, D-ID), so stored text round-trips byte-stably.
+///
+/// NO clock predicate anywhere: the whole-second LWW guards
+/// (`habit_log`/`habit_day_log`, #1095) are row-map machinery for the
+/// *mirror* tables and stay until chunk 5 deletes the mirror writes
+/// with them; the event table never has guards.
+async fn upsert_habit_event_row(
+    tx: &mut sqlx::SqliteConnection,
+    event: &HabitEvent,
+) -> Result<(), RepositoryError> {
+    let kind_text = codec::habit_event_kind_to_text(event.kind);
+    let window_text = match event.kind {
+        HabitEventKind::Completion => None,
+        HabitEventKind::Skip { window } | HabitEventKind::Unskip { window } => {
+            Some(window.as_date().to_string())
+        }
+    };
+    sqlx::query(
+        r"INSERT INTO habit_event (id, habit_id, kind, window, at, au_by, deleted_at, deleted_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   kind = excluded.kind, window = excluded.window,
+                   at = excluded.at, au_by = excluded.au_by,
+                   deleted_at = excluded.deleted_at,
+                   deleted_by = excluded.deleted_by",
+    )
+    .bind(event.id.as_uuid().to_string())
+    .bind(event.habit.as_uuid().to_string())
+    .bind(kind_text)
+    .bind(window_text)
+    .bind(event.at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+    .bind(event.by.map(|a| a.to_string()))
+    .bind(
+        event
+            .deleted
+            .map(|t| t.at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
+    )
+    .bind(event.deleted.and_then(|t| t.by.map(|a| a.to_string())))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| stmt_error(&e))?;
+    tracing::trace!(event = %event.id, "habit event upserted");
+    Ok(())
+}
+
+/// The one-shot load-then-remap pass (the stage-1 plan's D-REM/D-MK,
+/// Ruling A1): on the first load with a 0032-aware binary — the
+/// marker row absent (RQ-2: legacy rows or not) — synthesize one
+/// `Completion` event per quota unit of every legacy `habit_log` row
+/// (plus one `Skip` mark for a set skip bit, RQ-3), write them into
+/// `habit_event`, and insert the marker, all in the caller's
+/// transaction so events-without-marker is an unreachable persisted
+/// state (a crash rolls both back and the pass re-runs idempotently).
+///
+/// MIGRATION CONSEQUENCE (operator ruling on #1549, option 3,
+/// 2026-11-27): a legacy window row whose audited count exceeds the
+/// habit's quota migrates as N events at one instant;
+/// `derive_window_counts` re-attributes them under the event grammar,
+/// the surplus routes into the unmet predecessor window, and the
+/// derived count of the audited window caps at the quota — the limit
+/// the event grammar accepted on #1549 now applies to migrated data.
+/// The legacy row on disk still shows the audited count (inert
+/// history, Ruling F); only the derived truth moved.
+///
+/// Pure row fold (RQ-5): no `habits` join — every legacy row
+/// synthesizes regardless of whether its habit row still exists or is
+/// tombstoned (0017's law: a `habit_log` row is data, not a join; the
+/// D-H6 posture keeps foreign events inert at derivation). The twin
+/// refinement (RQ-4) applies by day geometry (D-REM step 4's recorded
+/// deviation from design §6.2's letter): a `habit_day_log` twin whose
+/// `day` equals the window row's stored `window_start` moves that
+/// row's stamp instant to the twin's clock — instants only, never
+/// counts (the twin's `count` column is read by nothing; the window
+/// row is the sole count authority). Orphan twins and twins whose day
+/// differs from every window start contribute nothing. The legacy
+/// rows themselves are never mutated or deleted.
+///
+/// Determinism (D-ID): ids come from the domain's
+/// `legacy_habit_event_id` recipe over the stored facts; rows are
+/// read in `(habit_id, window_start)` / `(habit_id, day)` order and
+/// ordinals assigned in that order, so two runs over the same
+/// database are byte-identical. The stored window date decodes
+/// as-is, never floored (the D-H12 posture): the id key uses the
+/// stored date verbatim, and derivations re-attribute under the
+/// current config at read time.
+///
+/// Returns the synthesized events (`None` when the marker was
+/// already present — the pass never re-consults the legacy tables).
+async fn remap_habit_events_if_needed(
+    tx: &mut sqlx::SqliteConnection,
+    habit_log_rows: &[HabitLogRow],
+    habit_day_log_rows: &[HabitDayLogRow],
+) -> Result<Option<Vec<HabitEvent>>, RepositoryError> {
+    let (marker_present,): (bool,) =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM habit_event_migration)")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+    if marker_present {
+        return Ok(None);
+    }
+
+    // Twin clocks by `(habit uuid text, day text)` (RQ-4). Orphan
+    // twins (no matching window row) simply never get looked up.
+    let mut twin_clocks: std::collections::HashMap<(&str, &str), &str> =
+        std::collections::HashMap::new();
+    for (habit_id, day, _count, clock) in habit_day_log_rows {
+        twin_clocks
+            .entry((habit_id.as_str(), day.as_str()))
+            .or_insert(clock.as_str());
+    }
+
+    let mut synthesized = Vec::new();
+    for (habit_id, window_start, count, clock, au_by, skip) in habit_log_rows {
+        let row_key = Uuid::parse_str(habit_id).ok();
+        let build = || -> Result<Vec<HabitEvent>, RepositoryError> {
+            let habit = HabitId::from(decode::uuid(habit_id)?);
+            // The stored date decodes as-is, never floored (D-H12).
+            let date = chrono::NaiveDate::parse_from_str(window_start, "%Y-%m-%d")
+                .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate))?;
+            let n = u32::try_from(*count)
+                .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?;
+            let row_clock = decode::clock(clock)?;
+            let stamp = match twin_clocks.get(&(habit_id.as_str(), window_start.as_str())) {
+                Some(raw) => {
+                    decode::clock(raw).map_err(|e| e.attached(PersistedTable::HabitDayLog, None))?
+                }
+                None => row_clock,
+            };
+            let by = decode::author(au_by.as_deref())?;
+            // N = 0 synthesizes zero events: the count-0 row is inert
+            // (a recorded no-mint outcome — count 0 ≡ zero events).
+            let mut events = Vec::with_capacity(n as usize + usize::from(*skip));
+            for ordinal in 0..n {
+                events.push(HabitEvent {
+                    id: taskboard_domain::habit_event::legacy_habit_event_id(
+                        habit,
+                        date,
+                        stamp,
+                        Some(ordinal),
+                    ),
+                    habit,
+                    kind: HabitEventKind::Completion,
+                    at: stamp,
+                    by,
+                    deleted: None,
+                });
+            }
+            // RQ-3: the legacy skip bit is user-asserted intent
+            // (Ruling B) — it rides the migration as one mark, stamped
+            // at the same instant, the recipe's mark leg. `skip = 0`
+            // synthesizes no `Unskip` (absence ≡ unskipped).
+            if *skip {
+                events.push(HabitEvent {
+                    id: taskboard_domain::habit_event::legacy_habit_event_id(
+                        habit, date, stamp, None,
+                    ),
+                    habit,
+                    kind: HabitEventKind::Skip {
+                        window: taskboard_domain::WindowStart::from_stored(date),
+                    },
+                    at: stamp,
+                    by,
+                    deleted: None,
+                });
+            }
+            Ok(events)
+        };
+        let events = build().map_err(|e| e.attached(PersistedTable::HabitLog, row_key))?;
+        for event in &events {
+            // Cannot conflict in practice (the table is empty before
+            // the marker's first run); the idempotence belt costs
+            // nothing (D-ID).
+            upsert_habit_event_row(tx, event).await?;
+        }
+        synthesized.extend(events);
+    }
+
+    sqlx::query("INSERT INTO habit_event_migration (done) VALUES (1)")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+    tracing::info!(
+        events = synthesized.len(),
+        "habit event load-then-remap ran (marker set)"
+    );
+    Ok(Some(synthesized))
+}
+
+/// Raw legacy `habit_log` row (the load SELECT's tuple, in column
+/// order); shared by the load decode and the remap fold.
+pub(crate) type HabitLogRow = (String, String, i64, String, Option<String>, bool);
+
+/// Raw legacy `habit_day_log` overlay row.
+pub(crate) type HabitDayLogRow = (String, String, i64, String);
+
+/// Raw `habit_event` row (migration 0032, #1519 chunk 3): unchecked
+/// query tuple — the `habit_day_log` precedent (a fresh table need not
+/// re-seed the sqlx offline metadata).
+pub(crate) type HabitEventRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// Decodes one `habit_event` row (the stage-1 plan's D-LD). Strict on
+/// load (the trusted-written 0013 rule): an unknown kind string or a
+/// half tombstone is a corrupt row — fail-closed, never demoted to a
+/// completion. The stored `window` decodes as-is, never floored (the
+/// D-H12 decode-seam posture: mark provenance only, never read by the
+/// derivation). A completion row with a set `window` is corruption —
+/// the writer never emits one.
+fn decode_habit_event(row: &HabitEventRow) -> Result<HabitEvent, RepositoryError> {
+    let (id, habit_id, kind, window, at, au_by, deleted_at, deleted_by) = row;
+    let id = HabitEventId::from(decode::uuid(id)?);
+    let habit = HabitId::from(decode::uuid(habit_id)?);
+    let window = match window {
+        None => None,
+        Some(raw) => Some(
+            chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+                .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate))?,
+        ),
+    };
+    let kind = codec::habit_event_kind_from_text(kind, window)
+        .ok_or_else(|| corrupt(DecodeStage::RowBuild, DecodeReason::UnknownEnumVariant))?;
+    let at = decode::clock(at)?;
+    let by = decode::author(au_by.as_deref())?;
+    // The tombstone exists iff `deleted_at` is set; `deleted_by` is
+    // the tombstone's *optional* author (the domain type's
+    // `Option<AuthorId>` — an authorless tombstone is legitimate and
+    // persists as NULL). A `deleted_by` without a `deleted_at` is a
+    // corrupt row.
+    let deleted = match (deleted_at, deleted_by) {
+        (None, None) => None,
+        (Some(raw_at), raw_by) => {
+            let tombstone_at = decode::clock(raw_at)?;
+            let tombstone_by = decode::author(raw_by.as_deref())?;
+            Some(HabitEventTombstone {
+                at: tombstone_at,
+                by: tombstone_by,
+            })
+        }
+        (None, Some(_)) => {
+            return Err(corrupt(
+                DecodeStage::RowBuild,
+                DecodeReason::UnknownEnumVariant,
+            ));
+        }
+    };
+    Ok(HabitEvent {
+        id,
+        habit,
+        kind,
+        at,
+        by,
+        deleted,
+    })
+}
+
 fn decode_reminder_dismissal(
     row: &ReminderDismissalRow,
 ) -> Result<ReminderDismissal, RepositoryError> {
@@ -1422,7 +1694,6 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
-        type HabitLogRow = (String, String, i64, String, Option<String>, bool);
         let habit_log_rows: Vec<HabitLogRow> = sqlx::query_as(
             r"SELECT habit_id, window_start, count, clock, au_by, skip FROM habit_log
                ORDER BY habit_id, window_start",
@@ -1434,7 +1705,6 @@ impl SqliteTaskRepository {
         // The per-day overlay (US-8, #1144): unchecked queries — a
         // fresh table need not re-seed the sqlx offline metadata (the
         // `roaming_settings` precedent).
-        type HabitDayLogRow = (String, String, i64, String);
         let habit_day_log_rows: Vec<HabitDayLogRow> = sqlx::query_as(
             r"SELECT habit_id, day, count, clock FROM habit_day_log
                ORDER BY habit_id, day",
@@ -1459,6 +1729,17 @@ impl SqliteTaskRepository {
         let habit_time_entry_rows: Vec<HabitTimeEntryRow> = sqlx::query_as(
             r"SELECT entry_id, habit_id, habit_title, start, end, created_at, updated_at, au_by
                FROM habit_time_entries ORDER BY entry_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
+        // The habit event log (migration 0032, #1519 chunk 3): unchecked
+        // query — the `habit_day_log` precedent (a fresh table need not
+        // re-seed the sqlx offline metadata).
+        let habit_event_rows: Vec<HabitEventRow> = sqlx::query_as(
+            r"SELECT id, habit_id, kind, window, at, au_by, deleted_at, deleted_by
+               FROM habit_event ORDER BY id",
         )
         .fetch_all(&mut *tx)
         .await
@@ -1795,6 +2076,14 @@ impl SqliteTaskRepository {
             head
         };
 
+        // The one-shot load-then-remap pass (D-REM): runs before the
+        // state assembly so the first post-upgrade load carries the
+        // synthesized events (no restart needed to see them). Its
+        // writes commit with the transaction below (D-REM step 6).
+        let remapped =
+            remap_habit_events_if_needed(&mut tx, &habit_log_rows, &habit_day_log_rows).await?;
+        let remap_ran = remapped.is_some();
+
         let mut state = PersistedState {
             boards,
             stacks,
@@ -1939,6 +2228,15 @@ impl SqliteTaskRepository {
                     .map_err(|e| e.attached(PersistedTable::HabitTimeEntries, row_key))?;
                     habits.time_log.insert(decoded.id, decoded);
                 }
+                for row in &habit_event_rows {
+                    let (id, ..) = row;
+                    let row_key = Uuid::parse_str(id).ok();
+                    let event = decode_habit_event(row)
+                        .map_err(|e| e.attached(PersistedTable::HabitEvent, row_key))?;
+                    // A duplicate id cannot exist (PRIMARY KEY), so the
+                    // insert never overwrites.
+                    habits.events.insert(event.id, event);
+                }
                 habits
             },
             reflection: {
@@ -1974,6 +2272,9 @@ impl SqliteTaskRepository {
                 head,
             },
         };
+        for event in remapped.into_iter().flatten() {
+            state.habits.events.insert(event.id, event);
+        }
         // The per-board projection is derived, never stored: stored rows
         // carry phase/last_success, `pending_ops` is attributed from the
         // outbox rows just hydrated — no second query that could drift.
@@ -1985,9 +2286,17 @@ impl SqliteTaskRepository {
             &state.outbox,
             &mut state.sync,
         );
-        // Read-only transaction: dropping without commit releases the
-        // snapshot.
-        drop(tx);
+        if remap_ran {
+            // The remap's events + marker commit together (D-REM step
+            // 6): events-without-marker is an unreachable persisted
+            // state — a crash rolls both back and the pass re-runs
+            // idempotently (D-ID).
+            tx.commit().await.map_err(|e| stmt_error(&e))?;
+        } else {
+            // Read-only transaction: dropping without commit releases
+            // the snapshot.
+            drop(tx);
+        }
         if journal_quarantined {
             // D-B2-7: the head re-pin is a best-effort write after the
             // load's transaction boundary — a failed re-pin leaves the
@@ -2256,13 +2565,9 @@ async fn execute_batch(
     let mut habit_upserts = Vec::new();
     let mut habit_log_rows = Vec::new();
     let mut habit_day_log_rows = Vec::new();
-    // Inert partition arm (#1519 chunk 2, the stage-1 plan's D-P): the
-    // rows are collected and dropped — event persistence lands with
-    // migration 0032 (a later chunk). The events map itself round-trips
-    // through `PersistedState` serde in every fake/memory path from the
-    // day this arm lands; a sqlite-backed restart before that chunk
-    // drops the events (recorded transitional risk, unshippable-state
-    // only — the dispatch chunks merge serially into one release).
+    // The habit event lane (#1519 chunk 3): chunk 2's inert partition
+    // arm (D-P) became real with migration 0032 — the rows flush below,
+    // replace-by-uuid with no clock predicate (the stage-1 plan's D-FL).
     let mut habit_event_rows = Vec::new();
     let mut habit_time_upserts = Vec::new();
     let mut habit_time_deletes = Vec::new();
@@ -2963,6 +3268,9 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(habit = ?key.habit, day = %key.day, "habit day overlay recorded");
+    }
+    for event in habit_event_rows {
+        upsert_habit_event_row(tx, &event).await?;
     }
     // The habit time-entry writes (#1305): the 0015 conventions —
     // entity upsert discipline (replace by id), no FKs, history
@@ -3715,5 +4023,666 @@ mod author_decode_tests {
             decode::clock(&suffixed),
             Err(RepositoryError::Corrupted(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod habit_event_migration_tests {
+    //! The stage-1 plan's §3 fixture-story catalogue (the sqlite
+    //! migration chunk): remap determinism, the marker discipline,
+    //! the twin-geometry refinement, and the typed decode failures —
+    //! all over isolated tempfile databases, never a real data dir.
+
+    use super::*;
+    use crate::rewind::rewind_to;
+    use crate::test_support::{
+        FixtureDb, LegacyHabitDayRow, LegacyHabitLogRow, RawEventRow, event_table_dump,
+        fixture_habit, marker_present, utc_calendar, write_event_rows, write_legacy_day_rows,
+        write_legacy_habit_rows,
+    };
+    use taskboard_domain::habit::{HabitTarget, NonZeroCount, PeriodKind, WindowStart};
+    use taskboard_domain::habit_event::{HabitEventKind, legacy_habit_event_id};
+    use taskboard_domain::ids::AuthorId;
+    use taskboard_domain::persistence::TaskRepository;
+
+    /// The fixture habit uuid every legacy row names.
+    fn habit_uuid() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0x42)
+    }
+
+    /// A second fixture habit uuid (the twin-clock contrast row).
+    fn other_habit_uuid() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0x43)
+    }
+
+    fn author_uuid() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0x7)
+    }
+
+    /// Whole-second legacy clock grammar (#1095).
+    fn clock_text(hour: u32, minute: u32) -> String {
+        format!("2026-11-23T{hour:02}:{minute:02}:00+00:00")
+    }
+
+    fn instant(text: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(text)
+            .expect("valid fixture clock")
+            .with_timezone(&Utc)
+    }
+
+    fn legacy_row(
+        habit: uuid::Uuid,
+        window: chrono::NaiveDate,
+        count: i64,
+        clock: String,
+    ) -> LegacyHabitLogRow {
+        LegacyHabitLogRow {
+            habit,
+            window,
+            count,
+            clock,
+            au_by: None,
+            skip: false,
+        }
+    }
+
+    fn twin_row(
+        habit: uuid::Uuid,
+        day: chrono::NaiveDate,
+        count: i64,
+        clock: String,
+    ) -> LegacyHabitDayRow {
+        LegacyHabitDayRow {
+            habit,
+            day,
+            count,
+            clock,
+        }
+    }
+
+    fn day_target(quota: u32) -> HabitTarget {
+        HabitTarget::PerDay(NonZeroCount::new(quota).expect("nonzero"))
+    }
+
+    async fn load_events(db: &FixtureDb) -> std::collections::BTreeMap<HabitEventId, HabitEvent> {
+        db.repo().load().await.expect("load").habits.events
+    }
+
+    /// Fixture story 1 (`us4_s2` token): a legacy Week row of count 3
+    /// at clock C with author A synthesizes exactly 3 live
+    /// `Completion` events at C, `by` = A, ordinals 0–2, ids = the v5
+    /// recipe over the recorded facts — and the whole open-load run
+    /// twice leaves the event table byte-identical (D-ID's
+    /// determinism proof).
+    #[tokio::test]
+    async fn us4_s2_migration_synthesizes_a1_events() {
+        let mut db = FixtureDb::new().await;
+        let window = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        let clock = clock_text(10, 0);
+        write_legacy_habit_rows(
+            db.pool(),
+            &[LegacyHabitLogRow {
+                au_by: Some(author_uuid().to_string()),
+                skip: false,
+                ..legacy_row(habit_uuid(), window, 3, clock.clone())
+            }],
+        )
+        .await
+        .expect("fixture rows");
+
+        let events = load_events(&db).await;
+        assert_eq!(events.len(), 3);
+        for ordinal in 0..3_u32 {
+            let event = &events[&legacy_habit_event_id(
+                taskboard_domain::ids::HabitId::from(habit_uuid()),
+                window,
+                instant(&clock),
+                Some(ordinal),
+            )];
+            assert!(matches!(event.kind, HabitEventKind::Completion));
+            assert_eq!(event.at, instant(&clock));
+            assert_eq!(event.by, Some(AuthorId::from_uuid(author_uuid())));
+            assert!(event.is_live());
+        }
+
+        // The whole open-load run twice → byte-identical dump.
+        let before = event_table_dump(db.pool()).await;
+        db.reopen().await;
+        let _ = load_events(&db).await;
+        assert_eq!(event_table_dump(db.pool()).await, before);
+        db.close().await;
+    }
+
+    /// Fixture story 2 (RQ-4's refinement): a Day-geometry row with a
+    /// twin whose `day == window_start` stamps every event at the
+    /// twin's clock; the same row twin-less stamps at the row clock.
+    #[tokio::test]
+    async fn remap_stamps_day_rows_at_the_twin_clock() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        let row_clock = clock_text(23, 0);
+        let twin_clock = clock_text(8, 30);
+        write_legacy_habit_rows(
+            db.pool(),
+            &[
+                legacy_row(habit_uuid(), day, 2, row_clock.clone()),
+                legacy_row(other_habit_uuid(), day, 2, row_clock.clone()),
+            ],
+        )
+        .await
+        .expect("fixture rows");
+        write_legacy_day_rows(
+            db.pool(),
+            &[twin_row(habit_uuid(), day, 2, twin_clock.clone())],
+        )
+        .await
+        .expect("fixture twin");
+
+        let events = load_events(&db).await;
+        // The twin'd habit stamps at the twin clock…
+        let twinful = &events[&legacy_habit_event_id(
+            taskboard_domain::ids::HabitId::from(habit_uuid()),
+            day,
+            instant(&twin_clock),
+            Some(0),
+        )];
+        assert_eq!(twinful.at, instant(&twin_clock));
+        // …the twin-less one at its row clock.
+        let twinless = &events[&legacy_habit_event_id(
+            taskboard_domain::ids::HabitId::from(other_habit_uuid()),
+            day,
+            instant(&row_clock),
+            Some(0),
+        )];
+        assert_eq!(twinless.at, instant(&row_clock));
+        db.close().await;
+    }
+
+    /// Fixture story 3 (RQ-3): `skip = 1` synthesizes its N
+    /// completions plus exactly one `Skip` mark (the recipe's mark
+    /// leg); `skip = 0` synthesizes no `Unskip`.
+    #[tokio::test]
+    async fn remap_synthesizes_skip_marks_from_the_skip_bit() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        let clock = clock_text(10, 0);
+        let mut skipped = legacy_row(habit_uuid(), day, 2, clock.clone());
+        skipped.skip = true;
+        write_legacy_habit_rows(
+            db.pool(),
+            &[
+                skipped,
+                legacy_row(other_habit_uuid(), day, 1, clock.clone()),
+            ],
+        )
+        .await
+        .expect("fixture rows");
+
+        let events = load_events(&db).await;
+        let habit = taskboard_domain::ids::HabitId::from(habit_uuid());
+        let mark = &events[&legacy_habit_event_id(habit, day, instant(&clock), None)];
+        assert!(matches!(mark.kind, HabitEventKind::Skip { .. }));
+        assert_eq!(mark.at, instant(&clock));
+        let completions = events
+            .values()
+            .filter(|event| {
+                event.habit == habit && matches!(event.kind, HabitEventKind::Completion)
+            })
+            .count();
+        assert_eq!(completions, 2);
+        // skip = 0 → every event of the other habit is a completion;
+        // no mark kind exists anywhere for it.
+        let other = taskboard_domain::ids::HabitId::from(other_habit_uuid());
+        assert!(
+            events
+                .values()
+                .filter(|event| event.habit == other)
+                .all(|event| matches!(event.kind, HabitEventKind::Completion))
+        );
+        db.close().await;
+    }
+
+    /// Fixture story 4 (RQ-2): empty legacy tables → zero events, the
+    /// marker row present; a second load never re-runs (and stays
+    /// quiet).
+    #[tokio::test]
+    async fn remap_sets_the_marker_even_without_legacy_rows() {
+        let mut db = FixtureDb::new().await;
+        let events = load_events(&db).await;
+        assert!(events.is_empty());
+        assert!(marker_present(db.pool()).await);
+        db.reopen().await;
+        let events = load_events(&db).await;
+        assert!(events.is_empty());
+        assert!(marker_present(db.pool()).await);
+        db.close().await;
+    }
+
+    /// Fixture story 5: a count-0 legacy row is inert — no events, no
+    /// mark (the recorded no-mint outcome: count 0 ≡ zero events).
+    #[tokio::test]
+    async fn count_zero_legacy_row_migrates_to_zero_events() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        write_legacy_habit_rows(
+            db.pool(),
+            &[legacy_row(habit_uuid(), day, 0, clock_text(10, 0))],
+        )
+        .await
+        .expect("fixture rows");
+        let events = load_events(&db).await;
+        assert!(events.is_empty());
+        assert_eq!(event_table_dump(db.pool()).await, [] as [u8; 0]);
+        db.close().await;
+    }
+
+    /// Fixture story 6 (D-MK): after the marker, an extra legacy row
+    /// (the post-marker mirror-write shape) never synthesizes; a real
+    /// `UpsertHabitEvent` log then adds its v7 event and survives a
+    /// third open.
+    #[tokio::test]
+    async fn marker_prevents_rerun_after_mid_upgrade_log() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        write_legacy_habit_rows(
+            db.pool(),
+            &[legacy_row(habit_uuid(), day, 1, clock_text(10, 0))],
+        )
+        .await
+        .expect("fixture rows");
+        let _ = load_events(&db).await;
+        assert!(marker_present(db.pool()).await);
+
+        // The post-marker mirror shape: a new legacy row appears on
+        // disk (chunk-3 semantics keep writing the mirror) — the
+        // marker forbids its synthesis.
+        let later_day = chrono::NaiveDate::from_ymd_opt(2026, 11, 24).expect("valid date");
+        write_legacy_habit_rows(
+            db.pool(),
+            &[legacy_row(habit_uuid(), later_day, 1, clock_text(11, 0))],
+        )
+        .await
+        .expect("post-marker mirror row");
+        let _ = load_events(&db).await;
+        let one_completion = load_events(&db).await;
+        assert_eq!(one_completion.len(), 1);
+        // Only the pre-marker synthesized event is on disk: exactly
+        // one dump row (one \x1e row terminator).
+        let dump = event_table_dump(db.pool()).await;
+        assert_eq!(
+            String::from_utf8(dump)
+                .expect("utf8 dump")
+                .matches('\u{1e}')
+                .count(),
+            1
+        );
+
+        // The mid-upgrade user log: a v7 event through the port.
+        let logged = HabitEvent {
+            id: HabitEventId::from(uuid::Uuid::now_v7()),
+            habit: taskboard_domain::ids::HabitId::from(habit_uuid()),
+            kind: HabitEventKind::Completion,
+            at: instant(&clock_text(12, 0)),
+            by: None,
+            deleted: None,
+        };
+        db.repo()
+            .apply(vec![PersistenceAction::UpsertHabitEvent(logged)])
+            .await
+            .expect("apply");
+        db.reopen().await;
+        let events = load_events(&db).await;
+        assert_eq!(events.len(), 2);
+        assert!(events.contains_key(&logged.id));
+        db.close().await;
+    }
+
+    /// Fixture story 7 (D-H12 luggage): a row whose stored window is
+    /// not a canonical window of the habit's current kind mints its
+    /// events with the stored date in the id key, and the derivation
+    /// re-attributes under the current config.
+    #[tokio::test]
+    async fn former_kind_row_migrates_as_data() {
+        let mut db = FixtureDb::new().await;
+        let habit = fixture_habit(habit_uuid(), day_target(1));
+        db.repo()
+            .apply(vec![PersistenceAction::UpsertHabit(habit.clone())])
+            .await
+            .expect("fixture habit");
+        // A Week-shaped stored window (a Monday) on a Day-kind habit.
+        let stored_window = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        let clock = clock_text(10, 0);
+        write_legacy_habit_rows(
+            db.pool(),
+            &[legacy_row(habit_uuid(), stored_window, 1, clock.clone())],
+        )
+        .await
+        .expect("fixture rows");
+
+        let state = db.repo().load().await.expect("load");
+        let stored_habit = taskboard_domain::ids::HabitId::from(habit_uuid());
+        let expected_id =
+            legacy_habit_event_id(stored_habit, stored_window, instant(&clock), Some(0));
+        let event = &state.habits.events[&expected_id];
+        assert_eq!(event.at, instant(&clock));
+
+        // The derivation re-attributes under the current Day config:
+        // the completion lands on the plain day window, not the
+        // stored week-shaped key.
+        let derived = taskboard_domain::habit_event::derive_window_counts(
+            &state.habits.habits[&stored_habit],
+            state.habits.events.values(),
+            utc_calendar(),
+        );
+        let day_window = WindowStart::of_period(
+            PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date"),
+        );
+        assert_eq!(derived.get(&day_window), Some(&1));
+        db.close().await;
+    }
+
+    /// Fixture story 8 (RQ-5): legacy rows whose habit row is absent
+    /// still synthesize (a `habit_log` row is data, not a join; the
+    /// events are inert at derivation — the D-H6 posture).
+    #[tokio::test]
+    async fn deleted_habit_rows_still_migrate() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        write_legacy_habit_rows(
+            db.pool(),
+            &[
+                legacy_row(habit_uuid(), day, 2, clock_text(10, 0)),
+                legacy_row(other_habit_uuid(), day, 1, clock_text(11, 0)),
+            ],
+        )
+        .await
+        .expect("fixture rows");
+        // No `habits` row was written for either id — the events
+        // synthesized anyway (the no-join law).
+        let state = db.repo().load().await.expect("load");
+        assert!(state.habits.habits.is_empty());
+        assert_eq!(state.habits.events.len(), 3);
+        db.close().await;
+    }
+
+    /// Fixture story 9 (RQ-4): an orphan twin contributes nothing; a
+    /// twin whose day differs from the window start contributes
+    /// nothing; the twin's `count` column is read by nothing — the
+    /// window row's count alone governs.
+    #[tokio::test]
+    async fn orphan_twin_and_mismatched_twin_contribute_nothing() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        let other_day = chrono::NaiveDate::from_ymd_opt(2026, 11, 24).expect("valid date");
+        let clock = clock_text(10, 0);
+        write_legacy_habit_rows(
+            db.pool(),
+            &[legacy_row(habit_uuid(), day, 2, clock.clone())],
+        )
+        .await
+        .expect("fixture rows");
+        write_legacy_day_rows(
+            db.pool(),
+            &[
+                // Orphan: no window row names this day.
+                twin_row(habit_uuid(), other_day, 5, clock.clone()),
+                // Mismatched day: never equal to the window start.
+                twin_row(other_habit_uuid(), other_day, 99, clock_text(6, 0)),
+            ],
+        )
+        .await
+        .expect("fixture twins");
+
+        let events = load_events(&db).await;
+        // Exactly the window row's count — the twin count 99 is read
+        // by nothing, the orphan twin mints nothing.
+        assert_eq!(events.len(), 2);
+        for ordinal in 0..2_u32 {
+            let event = &events[&legacy_habit_event_id(
+                taskboard_domain::ids::HabitId::from(habit_uuid()),
+                day,
+                instant(&clock),
+                Some(ordinal),
+            )];
+            assert_eq!(event.at, instant(&clock));
+        }
+        db.close().await;
+    }
+
+    /// Fixture story 10 (D-1549): an over-quota legacy row (count 5
+    /// on a quota-3 Day habit) mints 5 events — no loss at the table
+    /// — but `derive_window_counts` yields the capped/surplus-spilled
+    /// map. Typed assertion on the derived map, never text.
+    #[tokio::test]
+    async fn over_quota_legacy_row_derives_capped_after_migration() {
+        let mut db = FixtureDb::new().await;
+        let habit = fixture_habit(habit_uuid(), day_target(3));
+        db.repo()
+            .apply(vec![PersistenceAction::UpsertHabit(habit.clone())])
+            .await
+            .expect("fixture habit");
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 27).expect("valid date");
+        let clock = "2026-11-27T10:00:00+00:00".to_string();
+        write_legacy_habit_rows(
+            db.pool(),
+            &[legacy_row(habit_uuid(), day, 5, clock.clone())],
+        )
+        .await
+        .expect("fixture rows");
+
+        let state = db.repo().load().await.expect("load");
+        // No loss at the table: all 5 events minted.
+        assert_eq!(state.habits.events.len(), 5);
+
+        let stored_habit = taskboard_domain::ids::HabitId::from(habit_uuid());
+        let derived = taskboard_domain::habit_event::derive_window_counts(
+            &state.habits.habits[&stored_habit],
+            state.habits.events.values(),
+            utc_calendar(),
+        );
+        // The #1549 consequence: the audited window caps at the quota
+        // (3), the surplus (2) re-attributes into the unmet
+        // predecessor window; the sum conserves (5).
+        let audited = WindowStart::of_period(PeriodKind::Day, day);
+        let predecessor = WindowStart::of_period(
+            PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 26).expect("valid date"),
+        );
+        assert_eq!(derived.get(&audited), Some(&3));
+        assert_eq!(derived.get(&predecessor), Some(&2));
+        assert_eq!(derived.values().copied().sum::<u32>(), 5);
+        db.close().await;
+    }
+
+    /// Fixture story 11: a state with recipe-synthesized and
+    /// hand-built events (a skip mark, a tombstone) round-trips
+    /// through `apply` and `load` to the identical event map.
+    #[tokio::test]
+    async fn event_round_trips_through_persist_and_load() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        let clock = clock_text(10, 0);
+        let habit = taskboard_domain::ids::HabitId::from(habit_uuid());
+        let synthesized = HabitEvent {
+            id: legacy_habit_event_id(habit, day, instant(&clock), Some(0)),
+            habit,
+            kind: HabitEventKind::Completion,
+            at: instant(&clock),
+            by: Some(AuthorId::from_uuid(author_uuid())),
+            deleted: None,
+        };
+        let marked = HabitEvent {
+            id: HabitEventId::from(uuid::Uuid::now_v7()),
+            habit,
+            kind: HabitEventKind::Skip {
+                window: WindowStart::from_stored(day),
+            },
+            at: instant(&clock),
+            by: None,
+            deleted: None,
+        };
+        let mut tombstoned = HabitEvent {
+            id: HabitEventId::from(uuid::Uuid::now_v7()),
+            habit,
+            kind: HabitEventKind::Completion,
+            at: instant(&clock),
+            by: None,
+            deleted: None,
+        };
+        tombstoned.deleted = Some(HabitEventTombstone {
+            at: instant(&clock_text(11, 0)),
+            by: Some(AuthorId::from_uuid(author_uuid())),
+        });
+
+        db.repo()
+            .apply(vec![
+                PersistenceAction::UpsertHabitEvent(synthesized),
+                PersistenceAction::UpsertHabitEvent(marked),
+                PersistenceAction::UpsertHabitEvent(tombstoned),
+            ])
+            .await
+            .expect("apply");
+        db.reopen().await;
+        let events = load_events(&db).await;
+        let expected = std::collections::BTreeMap::from([
+            (synthesized.id, synthesized),
+            (marked.id, marked),
+            (tombstoned.id, tombstoned),
+        ]);
+        assert_eq!(events, expected);
+        db.close().await;
+    }
+
+    /// Fixture story 12 (D-FL): the same id upserted twice — the
+    /// second with a tombstone and an *earlier* `at` — replaces the
+    /// row, pinning the whole-second guards' absence on this table.
+    #[tokio::test]
+    async fn upsert_replaces_by_id_with_no_clock_guard() {
+        let mut db = FixtureDb::new().await;
+        let habit = taskboard_domain::ids::HabitId::from(habit_uuid());
+        let id = HabitEventId::from(uuid::Uuid::now_v7());
+        let later = HabitEvent {
+            id,
+            habit,
+            kind: HabitEventKind::Completion,
+            at: instant(&clock_text(12, 0)),
+            by: None,
+            deleted: None,
+        };
+        db.repo()
+            .apply(vec![PersistenceAction::UpsertHabitEvent(later)])
+            .await
+            .expect("apply");
+
+        let mut earlier = later;
+        earlier.at = instant(&clock_text(9, 0));
+        earlier.deleted = Some(HabitEventTombstone {
+            at: instant(&clock_text(9, 30)),
+            by: None,
+        });
+        db.repo()
+            .apply(vec![PersistenceAction::UpsertHabitEvent(earlier)])
+            .await
+            .expect("apply");
+
+        db.reopen().await;
+        let events = load_events(&db).await;
+        let stored = &events[&id];
+        // The earlier-at tombstoned row won: no clock predicate stood
+        // in its way.
+        assert_eq!(stored.at, instant(&clock_text(9, 0)));
+        assert!(stored.deleted.is_some());
+        db.close().await;
+    }
+
+    /// Fixture story 13 (D-RW): rewind to 0031 and re-open — 0032
+    /// replays, the remap re-runs over the surviving legacy rows, and
+    /// the event-table dump equals the pre-rewind dump byte-for-byte
+    /// (the determinism recipe's end-to-end proof).
+    #[tokio::test]
+    async fn rewind_to_0031_and_back_reproduces_identical_events() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        let clock = clock_text(10, 0);
+        write_legacy_habit_rows(
+            db.pool(),
+            &[LegacyHabitLogRow {
+                au_by: Some(author_uuid().to_string()),
+                skip: true,
+                ..legacy_row(habit_uuid(), day, 2, clock.clone())
+            }],
+        )
+        .await
+        .expect("fixture rows");
+        let _ = load_events(&db).await;
+        let before = event_table_dump(db.pool()).await;
+        assert_ne!(before, [] as [u8; 0]);
+
+        rewind_to(db.pool(), 31, &[]).await.expect("rewind");
+        db.reopen().await;
+        let _ = load_events(&db).await;
+        assert_eq!(event_table_dump(db.pool()).await, before);
+        db.close().await;
+    }
+
+    /// Fixture story 14 (D-LD): bad uuid, unknown kind string, half
+    /// tombstone — each a typed `Corrupted` rejection attached to
+    /// `PersistedTable::HabitEvent`, never a silent demotion.
+    #[tokio::test]
+    async fn corrupt_event_rows_are_typed_rejections() {
+        let valid = RawEventRow {
+            id: uuid::Uuid::from_u128(0x1).to_string(),
+            habit: habit_uuid().to_string(),
+            kind: "completion".to_string(),
+            window: None,
+            at: clock_text(10, 0),
+            au_by: None,
+            deleted_at: None,
+            deleted_by: None,
+        };
+        let cases: Vec<(String, RawEventRow)> = vec![
+            (
+                "bad uuid".to_string(),
+                RawEventRow {
+                    id: "not-a-uuid".to_string(),
+                    ..valid.clone()
+                },
+            ),
+            (
+                "unknown kind".to_string(),
+                RawEventRow {
+                    kind: "observed".to_string(),
+                    ..valid.clone()
+                },
+            ),
+            (
+                "author without deletion".to_string(),
+                RawEventRow {
+                    deleted_by: Some(author_uuid().to_string()),
+                    ..valid.clone()
+                },
+            ),
+        ];
+        for (why, row) in cases {
+            let mut db = FixtureDb::new().await;
+            write_event_rows(db.pool(), &[row])
+                .await
+                .expect("fixture row");
+            let err = db
+                .repo()
+                .load()
+                .await
+                .expect_err(&format!("corrupt decode: {why}"));
+            match err {
+                RepositoryError::Corrupted(detail) => {
+                    assert_eq!(detail.table, Some(PersistedTable::HabitEvent), "{why}");
+                }
+                RepositoryError::Unavailable => {
+                    panic!("{why} mapped to Unavailable");
+                }
+            }
+            db.close().await;
+        }
     }
 }
