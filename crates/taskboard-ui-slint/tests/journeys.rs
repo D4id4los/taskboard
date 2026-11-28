@@ -16928,6 +16928,22 @@ fn editor_mirror(harness: &Harness) -> (String, i32) {
     (buffer, cursor)
 }
 
+/// Arms the multi-line description editor through `preset`'s own
+/// binding table and asserts it holds focus (the US-6 journeys'
+/// shared setup — the enter-edit walk is not either journey's
+/// subject; the departure strokes are).
+fn focus_description_editor(harness: &mut Harness, preset: taskboard_ui_slint::keymap::Preset) {
+    press_preset(harness, preset, ActionId::NavFocusDown);
+    press_preset(harness, preset, ActionId::TaskEdit);
+    press_preset(harness, preset, ActionId::TaskDescriptionEdit);
+    harness.driver.advance_time(0);
+    assert_eq!(
+        editor_focus(harness),
+        1,
+        "the description editor holds focus"
+    );
+}
+
 /// US-6/S1 — the field departure (#1257, D3, Standard): from a
 /// focused multi-line editor, `Alt+Right` departs the field along the
 /// walk without altering its text; the bare caret keys keep their
@@ -16939,15 +16955,7 @@ fn editor_mirror(harness: &Harness) -> (String, i32) {
 fn us6_s1_alt_axis_departs_the_field_and_caret_keys_stay_caret() {
     let (_fixture, state) = fixture::golden_state();
     support::harness::run_journey(state, move |harness| {
-        harness.press(ActionId::NavFocusDown);
-        harness.press(ActionId::TaskEdit);
-        harness.press(ActionId::TaskDescriptionEdit);
-        harness.driver.advance_time(0);
-        assert_eq!(
-            editor_focus(&*harness),
-            1,
-            "the description editor holds focus"
-        );
+        focus_description_editor(&mut *harness, taskboard_ui_slint::keymap::Preset::Standard);
         let (seeded, cursor_before) = editor_mirror(&*harness);
 
         // In-field: the caret keys are the caret's — the editor takes
@@ -17007,15 +17015,7 @@ fn us6_s2_emacs_alt_f_quartet_departs_the_field() {
         ..UiSettings::default()
     };
     support::harness::run_journey_with_settings(state, settings, move |harness| {
-        press_preset(&mut *harness, preset, ActionId::NavFocusDown);
-        press_preset(&mut *harness, preset, ActionId::TaskEdit);
-        press_preset(&mut *harness, preset, ActionId::TaskDescriptionEdit);
-        harness.driver.advance_time(0);
-        assert_eq!(
-            editor_focus(&*harness),
-            1,
-            "the description editor holds focus"
-        );
+        focus_description_editor(&mut *harness, preset);
         let (seeded, _cursor) = editor_mirror(&*harness);
 
         harness.stroke(parse("Alt+f").expect("Alt+f"));
@@ -17043,16 +17043,14 @@ fn us6_s2_emacs_alt_f_quartet_departs_the_field() {
 }
 
 /// US-4/S1 — the plan-window box family's keyboard journey (#1394,
-/// D1): open the planner by chord, walk the box cursor on the new Alt
-/// axis (Alt+Down), activate it (Return — the seeded re-open), commit
-/// a placement from the pool (Return), reorder via the box row's
-/// walk-and-activate keyboard path (the AT default action is the
-/// click equivalence), and remove — the swap and unplace writes are
-/// the typed oracle. KNOWN GAP (recorded, the backlog issue): the
-/// reorder/removal chords resolve (T1) but the box verbs' one-shot
-/// `plan_target` mints only at the activation/click seams, so a bare
-/// `Shift+Down` after cursor nav is the typed `NoTarget` today — the
-/// mint's cursor fallback is the follow-up.
+/// D1): open the planner by chord, commit a placement from the pool
+/// (the pool row's AT action mints the placement target; Return
+/// commits), then drive the family by its D1 chords — Alt+Down (the
+/// departure axis, the planner's Standard vertical) arms the planner
+/// cursor, pinned to the boxes pane's head, Shift+Down reorders
+/// the cursor'd box later (the cursor-fallback mint supplies the
+/// one-shot target exactly as the click seam does), Delete removes
+/// it — the swap and unplace writes are the typed oracle.
 #[test]
 #[allow(clippy::too_many_lines)] // the family's place/commit/reorder/remove legs
 fn us4_s1_box_family_keyboard_journey() {
