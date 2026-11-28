@@ -1023,7 +1023,11 @@ pub fn apply_sync_report(
         // against the same copy-on-write state; no card map is needed —
         // habits carry no card hop at all.
         folds.fold_habits(document.sections.habits.as_ref(), board_id);
-        folds.fold_habit_log(document.sections.habit_log.as_ref());
+        // The legacy shim first, then the events fold right after it
+        // (D-4's plumbing: both feed `UpsertHabitEvent`; identical
+        // uuids from the two lanes collapse in the state map).
+        folds.fold_legacy_habit_log(document.sections.habit_log.as_ref());
+        folds.fold_habit_events(document.sections.habit_events.as_ref());
         // The habit-time-entries fold (#1305 D-6): board-level, right
         // after the habit-log fold — no card map needed.
         folds.fold_habit_time_entries(document.sections.habit_time_entries.as_ref());
@@ -1554,8 +1558,9 @@ impl<'a> SectionFolds<'a> {
         }
     }
 
-    /// The board-level habit-log fold (set-union facts, row-clock LWW).
-    fn fold_habit_log(
+    /// The board-level legacy habit-log fold (D-6's shim: synthesizes
+    /// events under the chunk-3 recipe, never writes `habits.log`).
+    fn fold_legacy_habit_log(
         &mut self,
         rows: Option<&std::collections::BTreeMap<String, crate::appdata::HabitLogRecord>>,
     ) {
@@ -1563,10 +1568,27 @@ impl<'a> SectionFolds<'a> {
         let habits = self
             .folded_habits
             .get_or_insert_with(|| self.current.habits.clone());
-        let changes = crate::merge::fold_habit_log(habits, rows);
-        for (key, entry) in changes.records {
+        let changes = crate::merge::fold_legacy_habit_log(habits, rows);
+        for event in changes.upserts {
             self.habit_actions
-                .push(PersistenceAction::RecordHabitLog(key, entry));
+                .push(PersistenceAction::UpsertHabitEvent(event));
+        }
+    }
+
+    /// The board-level habit-events fold (D-4: union-by-uuid, the
+    /// tombstone max law, no clock arbitration).
+    fn fold_habit_events(
+        &mut self,
+        rows: Option<&std::collections::BTreeMap<String, crate::appdata::HabitEventRecord>>,
+    ) {
+        let Some(rows) = rows else { return };
+        let habits = self
+            .folded_habits
+            .get_or_insert_with(|| self.current.habits.clone());
+        let changes = crate::merge::fold_habit_events(habits, rows);
+        for event in changes.upserts {
+            self.habit_actions
+                .push(PersistenceAction::UpsertHabitEvent(event));
         }
     }
 
@@ -1994,7 +2016,11 @@ pub fn apply_files_board_snapshot(
             folds.fold_time_entries(Some(rows), &board_cards);
         }
         folds.fold_habits(document.sections.habits.as_ref(), board_id);
-        folds.fold_habit_log(document.sections.habit_log.as_ref());
+        // The legacy shim first, then the events fold right after it
+        // (D-4's plumbing: both feed `UpsertHabitEvent`; identical
+        // uuids from the two lanes collapse in the state map).
+        folds.fold_legacy_habit_log(document.sections.habit_log.as_ref());
+        folds.fold_habit_events(document.sections.habit_events.as_ref());
         // The habit-time-entries fold (#1305 D-6): board-level, right
         // after the habit-log fold — no card map needed.
         folds.fold_habit_time_entries(document.sections.habit_time_entries.as_ref());
@@ -3644,11 +3670,15 @@ mod tests {
         assert_eq!(app.habits, state.habits, "no sections, no fold");
         assert!(actions.iter().all(|a| !matches!(
             a,
-            PersistenceAction::UpsertHabit(_) | PersistenceAction::RecordHabitLog(..)
+            PersistenceAction::UpsertHabit(_)
+                | PersistenceAction::RecordHabitLog(..)
+                | PersistenceAction::UpsertHabitEvent(_)
         )),);
 
-        // A document carrying a newer definition and a newer log row
-        // folds both into the state and emits the persistence actions.
+        // A document carrying a newer definition and a legacy log row
+        // folds both into the state: the shim (D-6) synthesizes the
+        // row's events — never a log write — and the persistence
+        // batch carries `UpsertHabitEvent`.
         let remote_id = uuid::Uuid::from_u128(701);
         let evidence = document_with_habit_sections(
             &[(remote_id, wire_live_habit(BASE + 500))],
@@ -3679,11 +3709,25 @@ mod tests {
             *state.boards.keys().next().unwrap(),
             "the fold stamps the locally-bound board"
         );
-        assert_eq!(app.habits.log[&key].count, 6, "the newer log row adopted");
+        assert_eq!(
+            app.habits.log[&key].count, 2,
+            "the legacy fold never writes the log (D-6)"
+        );
+        assert_eq!(
+            app.habits.events.len(),
+            6,
+            "the legacy row synthesizes one event per count unit"
+        );
         assert!(actions.iter().any(|a| matches!(a,
             PersistenceAction::UpsertHabit(h) if h.id == crate::ids::HabitId::from(remote_id))));
-        assert!(actions.iter().any(|a| matches!(a,
-            PersistenceAction::RecordHabitLog(k, e) if *k == key && e.count == 6)));
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, PersistenceAction::UpsertHabitEvent(_)))
+                .count(),
+            6,
+            "the persistence batch carries the synthesized events"
+        );
         // The local habit the document does not name stands untouched.
         assert_eq!(app.habits.habits[&habit.id], habit);
     }
