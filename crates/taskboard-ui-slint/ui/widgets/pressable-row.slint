@@ -41,6 +41,15 @@ export component PressableRow inherits Rectangle {
     out property <bool> hovered: touch.has-hover;
     callback activated();
 
+    // The walk inventory's grab seam (#1259): a mask-clamped host's
+    // stop consumer focuses the row's scope through this named
+    // function — the mask `focus-index` landing addresses the stop
+    // itself, never the host's root. Named for the stop role; only
+    // the walk's clamped landings call it.
+    public function grab-walk-stop() {
+        scope.focus();
+    }
+
     border-radius: Theme.radius-small;
     background: root.hover-tint && touch.has-hover ? Theme.surface-hover
         : root.rest-background != transparent ? root.rest-background
