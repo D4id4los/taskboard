@@ -2013,35 +2013,7 @@ mod tests {
                 // Advance the fixture's state by the plan's actions
                 // (the executable contract); the log re-derives from
                 // the accumulated events (the chunk-5 C6 truth).
-                let mut persisted = PersistedState {
-                    habits: fixture.state(),
-                    ..PersistedState::default()
-                };
-                apply_actions(&mut persisted, &plan.actions);
-                fixture.events = persisted.habits.events;
-                let derived = crate::habit_event::derive_window_counts(
-                    &fixture.habit,
-                    fixture.events.values(),
-                    fixture.day,
-                );
-                fixture.log = derived
-                    .into_iter()
-                    .map(|(window, count)| {
-                        (
-                            HabitLogKey {
-                                habit: fixture.habit.id,
-                                window,
-                            },
-                            HabitLogEntry {
-                                count,
-                                clock: now,
-                                by: None,
-
-                                skip: false,
-                            },
-                        )
-                    })
-                    .collect();
+                advance_fixture(&mut fixture, &plan, now);
             }
             // When no correction ran, each +1 lands in exactly one
             // window: the partition invariant (pinned constructively
@@ -2436,7 +2408,8 @@ mod tests {
         // mint is a pure function of the pre-state; real replays
         // execute commands in order, so this mirrors the engine — and
         // the shared id seam mints the second event a DISTINCT id).
-        advance_fixture(&mut fixture, &plan1);
+        let log_clock = fixture.now;
+        advance_fixture(&mut fixture, &plan1, log_clock);
         let plan2 = log_plan(
             &fixture,
             &StateCommand::LogHabit {
@@ -2468,8 +2441,14 @@ mod tests {
 
     /// Apply a plan's actions to the fixture's log in place — the
     /// engine-shaped advance the mint pins replay (commands execute in
-    /// order against the post-previous-command state).
-    fn advance_fixture(fixture: &mut HabitFixture, plan: &crate::command::CommandPlan) {
+    /// order against the post-previous-command state). `log_clock` is
+    /// the stamp the re-derived log rows carry (the sequence clock for
+    /// the sequential pins, the fixture's `now` otherwise).
+    fn advance_fixture(
+        fixture: &mut HabitFixture,
+        plan: &crate::command::CommandPlan,
+        log_clock: chrono::DateTime<chrono::Utc>,
+    ) {
         let mut persisted = PersistedState {
             habits: fixture.state(),
             ..PersistedState::default()
@@ -2493,7 +2472,7 @@ mod tests {
                     },
                     HabitLogEntry {
                         count,
-                        clock: fixture.now,
+                        clock: log_clock,
                         by: None,
 
                         skip: false,
