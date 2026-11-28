@@ -449,6 +449,73 @@ fn habit_event_snapshots(
     Some((window, pre, post, minted))
 }
 
+/// The shared event-grammar inverse leg of the mint-and-tombstone
+/// classes (`LoggedHabit`/`SkipHabit`, #1519): guard the recorded
+/// window snapshot against interleaved writes, then tombstone exactly
+/// the facts the entry's command minted. `None` = the entry predates
+/// the event grammar — the caller falls through to its legacy
+/// `PreImage::HabitLogRow` leg (the two classes' legacy tails differ;
+/// the snapshot leg is the shared law).
+fn tombstone_minted_habit_events(
+    app: &AppState,
+    images: &[PreImage],
+    watermark: &UndoWatermark,
+    habit: crate::ids::HabitId,
+    day: DayCalendar,
+) -> Option<Result<Vec<StateCommand>, CommandError>> {
+    let (window, _pre, post, minted) = habit_event_snapshots(images, watermark, habit)?;
+    let Some(row) = app.habits.habits.get(&habit) else {
+        return Some(Err(CommandError::NothingToUndo));
+    };
+    let entity = JournalEntity::HabitEventWindow(habit, window);
+    if minted.is_empty() {
+        // Unreachable for a journaled mint (the mint always lands);
+        // defensive.
+        return Some(Err(CommandError::NothingToUndo));
+    }
+    Some(
+        current_window_snapshot(app, row, window, day, &post)
+            .map(|_| {
+                minted
+                    .into_iter()
+                    .map(|event| StateCommand::TombstoneHabitEvent { event })
+                    .collect()
+            })
+            .map_err(|()| CommandError::TargetNoLongerInvertible {
+                entity,
+                field: UndoField::HabitEvents,
+            }),
+    )
+}
+
+/// The synthesis verbs' verbatim-row guard (shared by the
+/// `HabitEventTombstoned`/`HabitEventRestored` inverse arms): the
+/// current row must equal the recorded post stamp as a whole — any
+/// later write to the id moved a fact and refuses.
+fn habit_event_row_guard(
+    app: &AppState,
+    watermark: &UndoWatermark,
+    id: crate::habit_event::HabitEventId,
+) -> Result<(), CommandError> {
+    let entity = JournalEntity::HabitEvent(id);
+    let Some(recorded_post) = (match watermark.0.get(&entity) {
+        Some(EntityStamps::HabitEvent(row)) => Some(*row),
+        _ => None,
+    }) else {
+        return Err(CommandError::TargetNoLongerInvertible {
+            entity,
+            field: UndoField::HabitEvents,
+        });
+    };
+    if app.habits.events.get(&id) != Some(&recorded_post) {
+        return Err(CommandError::TargetNoLongerInvertible {
+            entity,
+            field: UndoField::HabitEvents,
+        });
+    }
+    Ok(())
+}
+
 /// The guard oracle for the snapshot grammar: the recorded post ids'
 /// **present** tombstone states, plus a typed divergence when the
 /// window moved under the entry — a recorded id's row vanished from
@@ -2733,24 +2800,9 @@ fn synthesize_undo(
             }) else {
                 return Err(CommandError::NothingToUndo);
             };
-            if let Some((window, _pre, post, minted)) =
-                habit_event_snapshots(images, watermark, habit)
+            if let Some(inverse) = tombstone_minted_habit_events(app, images, watermark, habit, day)
             {
-                let Some(row) = app.habits.habits.get(&habit) else {
-                    return Err(CommandError::NothingToUndo);
-                };
-                let entity = JournalEntity::HabitEventWindow(habit, window);
-                current_window_snapshot(app, row, window, day, &post)
-                    .map_err(|()| refuse(entity, UndoField::HabitEvents))?;
-                if minted.is_empty() {
-                    // Unreachable for a journaled mark (the mint always
-                    // lands); defensive.
-                    return Err(CommandError::NothingToUndo);
-                }
-                return Ok(minted
-                    .into_iter()
-                    .map(|event| StateCommand::TombstoneHabitEvent { event })
-                    .collect());
+                return inverse;
             }
             // The legacy leg: pre-#1520 entries recorded
             // `PreImage::HabitLogRow` — the unchanged row-guard paths
@@ -2896,24 +2948,9 @@ fn synthesize_undo(
             // the compared row) cannot deadlock; an interleaved write
             // to the window refuses. The old count-only-vs-whole-row
             // guard tension dies with the row grammar.
-            if let Some((window, _pre, post, minted)) =
-                habit_event_snapshots(images, watermark, habit)
+            if let Some(inverse) = tombstone_minted_habit_events(app, images, watermark, habit, day)
             {
-                let Some(row) = app.habits.habits.get(&habit) else {
-                    return Err(CommandError::NothingToUndo);
-                };
-                let entity = JournalEntity::HabitEventWindow(habit, window);
-                current_window_snapshot(app, row, window, day, &post)
-                    .map_err(|()| refuse(entity, UndoField::HabitEvents))?;
-                if minted.is_empty() {
-                    // Unreachable for a journaled log (the mint always
-                    // lands); defensive.
-                    return Err(CommandError::NothingToUndo);
-                }
-                return Ok(minted
-                    .into_iter()
-                    .map(|event| StateCommand::TombstoneHabitEvent { event })
-                    .collect());
+                return inverse;
             }
             // The legacy leg: pre-#1520 entries recorded
             // `PreImage::HabitLogRow` — the unchanged row-guard path
@@ -2963,16 +3000,7 @@ fn synthesize_undo(
             let StateCommand::TombstoneHabitEvent { event: id } = entry.command else {
                 return Err(CommandError::NothingToUndo);
             };
-            let entity = JournalEntity::HabitEvent(id);
-            let Some(recorded_post) = (match watermark.0.get(&entity) {
-                Some(EntityStamps::HabitEvent(row)) => Some(*row),
-                _ => None,
-            }) else {
-                return Err(refuse(entity, UndoField::HabitEvents));
-            };
-            if app.habits.events.get(&id) != Some(&recorded_post) {
-                return Err(refuse(entity, UndoField::HabitEvents));
-            }
+            habit_event_row_guard(app, watermark, id)?;
             let Some(pre_row) = images.iter().find_map(|image| match image {
                 PreImage::HabitEventRow {
                     id: image_id,
@@ -2995,16 +3023,7 @@ fn synthesize_undo(
                 return Err(CommandError::NothingToUndo);
             };
             let id = event.id;
-            let entity = JournalEntity::HabitEvent(id);
-            let Some(recorded_post) = (match watermark.0.get(&entity) {
-                Some(EntityStamps::HabitEvent(row)) => Some(*row),
-                _ => None,
-            }) else {
-                return Err(refuse(entity, UndoField::HabitEvents));
-            };
-            if app.habits.events.get(&id) != Some(&recorded_post) {
-                return Err(refuse(entity, UndoField::HabitEvents));
-            }
+            habit_event_row_guard(app, watermark, id)?;
             Ok(vec![StateCommand::TombstoneHabitEvent { event: id }])
         }
         InverseClass::AddedReminderRule => {

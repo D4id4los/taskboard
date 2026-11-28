@@ -807,6 +807,46 @@ fn events_after_writes(
     map.into_values().collect()
 }
 
+/// One typed mark event mint (Ruling B — the shared shape of the
+/// `Skip`/`Unskip` arms): the `Skip { window }`/`Unskip { window }`
+/// fact, the derived mirror refresh, the board flush. Returns the
+/// batch and the minted id (the receipt's undo target).
+fn plan_mark_event(
+    app: &AppState,
+    habit: &Habit,
+    kind: crate::habit_event::HabitEventKind,
+    ids: &dyn IdGenerator,
+    day: DayCalendar,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+) -> (Vec<PersistenceAction>, crate::habit_event::HabitEventId) {
+    let event = crate::habit_event::HabitEvent {
+        id: ids.new_habit_event_id(),
+        habit: habit.id,
+        kind,
+        at: now,
+        by: author,
+        deleted: None,
+    };
+    let event_id = event.id;
+    // The mirror (D-C): the affected rows recomputed from the
+    // post-mint derivation — the mark's posture bit derives, the
+    // counts stay.
+    let after = events_after_writes(app, &[event]);
+    let mut actions = vec![PersistenceAction::UpsertHabitEvent(event)];
+    actions.extend(habit_mirror_refresh(
+        app,
+        habit,
+        &app.habits.events.values().copied().collect::<Vec<_>>(),
+        &after,
+        day,
+        now,
+        author,
+    ));
+    actions.push(board_flush(habit.board, ids, now));
+    (actions, event_id)
+}
+
 /// The derived mirror refresh (the stage-1 plan's D-C coexistence
 /// rule): diff the habit's legacy projections between the pre-event
 /// set and the post-event set and emit absolute legacy-row writes for
@@ -3668,30 +3708,15 @@ pub fn plan_command(
                 // Already marked: the accepted no-op — no churn.
                 return Ok(no_op());
             }
-            let event = crate::habit_event::HabitEvent {
-                id: ids.new_habit_event_id(),
-                habit: *id,
-                kind: crate::habit_event::HabitEventKind::Skip { window },
-                at: now,
-                by: author,
-                deleted: None,
-            };
-            let event_id = event.id;
-            // The mirror (D-C): the legacy row's skip bit recomputed
-            // from the post-mint derivation (preserving the derived
-            // count), the `RecordHabitLog` shape of the old write.
-            let after = events_after_writes(app, &[event]);
-            let mut actions = vec![PersistenceAction::UpsertHabitEvent(event)];
-            actions.extend(habit_mirror_refresh(
+            let (actions, event_id) = plan_mark_event(
                 app,
                 habit,
-                &app.habits.events.values().copied().collect::<Vec<_>>(),
-                &after,
+                crate::habit_event::HabitEventKind::Skip { window },
+                ids,
                 day,
                 now,
                 author,
-            ));
-            actions.push(board_flush(habit.board, ids, now));
+            );
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::HabitSkipped {
@@ -3718,27 +3743,15 @@ pub fn plan_command(
             if !skipped {
                 return Ok(no_op());
             }
-            let event = crate::habit_event::HabitEvent {
-                id: ids.new_habit_event_id(),
-                habit: *id,
-                kind: crate::habit_event::HabitEventKind::Unskip { window },
-                at: now,
-                by: author,
-                deleted: None,
-            };
-            let event_id = event.id;
-            let after = events_after_writes(app, &[event]);
-            let mut actions = vec![PersistenceAction::UpsertHabitEvent(event)];
-            actions.extend(habit_mirror_refresh(
+            let (actions, event_id) = plan_mark_event(
                 app,
                 habit,
-                &app.habits.events.values().copied().collect::<Vec<_>>(),
-                &after,
+                crate::habit_event::HabitEventKind::Unskip { window },
+                ids,
                 day,
                 now,
                 author,
-            ));
-            actions.push(board_flush(habit.board, ids, now));
+            );
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::HabitUnskipped {
