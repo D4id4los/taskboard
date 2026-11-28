@@ -1765,6 +1765,29 @@ mod tests {
                 "vi must not carry the departure axis"
             );
         }
+        // The in-field half: the insert chain (`[ViInsert, Global]`,
+        // the focused-field shape) resolves the same axis — the view
+        // rows above are unreachable there, these carry the departure.
+        for preset in [Preset::Standard, Preset::Emacs] {
+            let keymap = Keymap::from_preset(preset);
+            let insert_chain = [ContextId::ViInsert, ContextId::Global];
+            for (spelling, action) in axis {
+                assert_eq!(
+                    keymap.resolve(&insert_chain, &[stroke::parse(spelling).expect("parses")]),
+                    Some(*action),
+                    "{preset:?}: {spelling} departs the focused field"
+                );
+            }
+            if preset == Preset::Emacs {
+                for (spelling, action) in quartet {
+                    assert_eq!(
+                        keymap.resolve(&insert_chain, &[stroke::parse(spelling).expect("parses")]),
+                        Some(*action),
+                        "emacs: {spelling} departs the focused field"
+                    );
+                }
+            }
+        }
         // The field-proof half: no departure sequence is an editor
         // command, so the focused field can never intercept it.
         let departures: Vec<Vec<crate::keymap::Stroke>> = axis

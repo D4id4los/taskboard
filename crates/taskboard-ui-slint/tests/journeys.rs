@@ -16902,6 +16902,369 @@ fn the_kiosk_mount_never_shows_the_planner() {
     });
 }
 
+// -- the keybinding-coverage chunk's journeys (#1394/#1393/#1257,
+//    the keymap-parity plan's US-4/US-5/US-6 amendment) ----------------
+
+/// The `EditingFacts` editor-scope focus count (the multi-line
+/// editor's element scope — the description editor's focus seam).
+fn editor_focus(harness: &Harness) -> i32 {
+    harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::EditingFacts>()
+        .get_editor_focus_count()
+}
+
+/// The `EditorScope` mirror read (the edit mount's live buffer and
+/// cursor byte offset — the field-departure journey's typed oracle):
+/// `(buffer, cursor)`.
+fn editor_mirror(harness: &Harness) -> (String, i32) {
+    let scope = harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::EditorScope>();
+    let buffer = scope.get_buffer_mirror().to_string();
+    let cursor = scope.get_cursor_offset();
+    (buffer, cursor)
+}
+
+/// US-6/S1 — the field departure (#1257, D3, Standard): from a
+/// focused multi-line editor, `Alt+Right` departs the field along the
+/// walk without altering its text; the bare caret keys keep their
+/// in-field meaning (an edit and its retrace land in the buffer, the
+/// focus never moves). Typed oracles: the `EditingFacts` editor focus
+/// count and the `EditorScope` buffer/cursor mirror — never rendered
+/// text.
+#[test]
+fn us6_s1_alt_axis_departs_the_field_and_caret_keys_stay_caret() {
+    let (_fixture, state) = fixture::golden_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::TaskEdit);
+        harness.press(ActionId::TaskDescriptionEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            editor_focus(&*harness),
+            1,
+            "the description editor holds focus"
+        );
+        let (seeded, cursor_before) = editor_mirror(&*harness);
+
+        // In-field: the caret keys are the caret's — the editor takes
+        // an edit and takes it back (the value restored), the focus
+        // never moves, the cursor mirror tracks the caret.
+        harness.type_text("x");
+        harness.driver.advance_time(0);
+        let (grown, cursor_typed) = editor_mirror(&*harness);
+        assert_eq!(editor_focus(&*harness), 1, "typing never departs the field");
+        assert_eq!(grown, format!("{seeded}x"), "the edit landed");
+        assert!(
+            cursor_typed > cursor_before,
+            "the caret sits after the typed glyph"
+        );
+        harness.stroke(parse("Backspace").expect("Backspace"));
+        harness.driver.advance_time(0);
+        let (restored, cursor_after) = editor_mirror(&*harness);
+        assert_eq!(editor_focus(&*harness), 1, "Backspace never departs");
+        assert_eq!(restored, seeded, "the value is restored");
+        assert_eq!(cursor_after, cursor_before, "the caret retraced");
+        harness.stroke(parse("Left").expect("Left"));
+        harness.driver.advance_time(0);
+        let (buffer, _cursor) = editor_mirror(&*harness);
+        assert_eq!(editor_focus(&*harness), 1, "Left never departs the field");
+        assert_eq!(buffer, seeded, "Left never alters the text");
+        harness.stroke(parse("Right").expect("Right"));
+        harness.driver.advance_time(0);
+        let (buffer, _cursor) = editor_mirror(&*harness);
+        assert_eq!(editor_focus(&*harness), 1, "Right never departs the field");
+        assert_eq!(buffer, seeded, "Right never alters the text");
+
+        // The departure: Alt+Right resolves the axis (no editor-table
+        // entry, no caret behaviour) and the editor is left — the
+        // text untouched.
+        harness.stroke(parse("Alt+Right").expect("Alt+Right"));
+        harness.driver.advance_time(0);
+        let (buffer, _cursor) = editor_mirror(&*harness);
+        assert_eq!(
+            editor_focus(&*harness),
+            0,
+            "the Alt axis departed the editor"
+        );
+        assert_eq!(buffer, seeded, "the departure never altered the text");
+    });
+}
+
+/// US-6/S2 — the emacs quartet's departure (#1257, D3): `Alt+f`
+/// departs the focused editor the same way (the home-row twin; the
+/// chord user never hand-shifts). Typed oracles as S1.
+#[test]
+fn us6_s2_emacs_alt_f_quartet_departs_the_field() {
+    let (_fixture, state) = fixture::golden_state();
+    let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+    let settings = UiSettings {
+        keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+        keymap_preset: preset,
+        ..UiSettings::default()
+    };
+    support::harness::run_journey_with_settings(state, settings, move |harness| {
+        press_preset(&mut *harness, preset, ActionId::NavFocusDown);
+        press_preset(&mut *harness, preset, ActionId::TaskEdit);
+        press_preset(&mut *harness, preset, ActionId::TaskDescriptionEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            editor_focus(&*harness),
+            1,
+            "the description editor holds focus"
+        );
+        let (seeded, _cursor) = editor_mirror(&*harness);
+
+        harness.stroke(parse("Alt+f").expect("Alt+f"));
+        harness.driver.advance_time(0);
+        let (buffer, _cursor) = editor_mirror(&*harness);
+        assert_eq!(
+            editor_focus(&*harness),
+            0,
+            "Alt+f departed the editor (emacs)"
+        );
+        assert_eq!(buffer, seeded, "the departure never altered the text");
+
+        // Re-arm and depart the other way: Alt+b, the left twin.
+        press_preset(&mut *harness, preset, ActionId::TaskDescriptionEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(editor_focus(&*harness), 1, "the editor re-armed");
+        harness.stroke(parse("Alt+b").expect("Alt+b"));
+        harness.driver.advance_time(0);
+        assert_eq!(
+            editor_focus(&*harness),
+            0,
+            "Alt+b departed the editor (emacs)"
+        );
+    });
+}
+
+/// US-4/S1 — the plan-window box family's keyboard journey (#1394,
+/// D1): open the planner by chord, walk the box cursor on the new Alt
+/// axis (Alt+Down), activate it (Return — the seeded re-open), commit
+/// a placement from the pool (Return), reorder via the box row's
+/// walk-and-activate keyboard path (the AT default action is the
+/// click equivalence), and remove — the swap and unplace writes are
+/// the typed oracle. KNOWN GAP (recorded, the backlog issue): the
+/// reorder/removal chords resolve (T1) but the box verbs' one-shot
+/// `plan_target` mints only at the activation/click seams, so a bare
+/// `Shift+Down` after cursor nav is the typed `NoTarget` today — the
+/// mint's cursor fallback is the follow-up.
+#[test]
+#[allow(clippy::too_many_lines)] // the family's place/commit/reorder/remove legs
+fn us4_s1_box_family_keyboard_journey() {
+    // The clock pinned (docs/testing_strategy.org §6.2): the seeds
+    // and the pass derive from the one `now`.
+    let now = fixture::PINNED_NOW;
+    let (fixture, mut state) = fixture::golden_state_at(now);
+    let (task0, task1) = (fixture.task0, fixture.task1);
+    let title0 = state.tasks.get(&task0).expect("task0").title.clone();
+    let title1 = state.tasks.get(&task1).expect("task1").title.clone();
+    let day_start = (
+        taskboard_domain::SettingsSnapshot::default().day_start_time,
+        UiSettings::default().boot_offset,
+    );
+    let (next_start, _) = taskboard_domain::days::next_day_window(now, day_start.0, day_start.1);
+    let early = next_start + TimeDelta::hours(9);
+    let late = next_start + TimeDelta::hours(11);
+    state.tasks.get_mut(&task0).expect("task0").scheduled = Some(early);
+    state.tasks.get_mut(&task1).expect("task1").scheduled = Some(late);
+    let pool_title = state
+        .tasks
+        .values()
+        .find(|t| t.scheduled.is_none() && !t.deleted)
+        .map(|t| t.title.clone())
+        .unwrap_or_default();
+    support::harness::run_journey_with_settings(
+        state,
+        UiSettings {
+            clock: Some(now),
+            ..UiSettings::default()
+        },
+        move |harness| {
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::ViewPlanNextDay);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay
+            );
+
+            // Begin place from the pool (the pool row's AT action —
+            // the seam that mints the placement target), commit with
+            // Return: ONE placement write, the pool shrinks, the box
+            // renders.
+            let row = harness
+                .driver
+                .find_by_label(&format!("Place {pool_title}"))
+                .unwrap_or_else(|| panic!("the pool row is mounted"));
+            row.invoke_default_action();
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_plan_model().placing,
+                "the placement form armed"
+            );
+            click_field_centre(&mut *harness, "Time");
+            harness.type_text("13:00");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::UpdateTask { changes, .. }] => {
+                    assert!(
+                        matches!(changes.scheduled, Some(Some(_))),
+                        "the placement write schedules the box"
+                    );
+                }
+                other => panic!("one placement write, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                harness.handle.window().get_plan_model().boxes.row_count(),
+                3,
+                "the committed box joined the surface"
+            );
+
+            // The reorder: the box family's row verb (the AT default
+            // action is the click equivalence) routes the two honest
+            // swap writes; the fake engine folds them and the display
+            // order flips.
+            let row = harness
+                .driver
+                .find_by_label("Move box later")
+                .unwrap_or_else(|| panic!("the later affordance is mounted"));
+            row.invoke_default_action();
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [
+                    StateCommand::UpdateTask { id: a, .. },
+                    StateCommand::UpdateTask { id: b, .. },
+                ] => {
+                    assert_eq!(
+                        (*a, *b),
+                        (task0, task1),
+                        "the swap's two honest writes, ids preserved"
+                    );
+                }
+                other => panic!("two swap writes, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            let boxes = harness.handle.window().get_plan_model().boxes;
+            assert_eq!(
+                boxes.row_data(0).expect("box").card.title.to_string(),
+                title1,
+                "the late box leads after the reorder"
+            );
+            assert_eq!(
+                boxes.row_data(1).expect("box").card.title.to_string(),
+                title0,
+            );
+
+            // The removal: one honest unplace write (the scheduled
+            // mask cleared); the box leaves the surface.
+            let row = harness
+                .driver
+                .find_by_label("Remove box")
+                .unwrap_or_else(|| panic!("the remove affordance is mounted"));
+            row.invoke_default_action();
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::UpdateTask { changes, .. }] => {
+                    assert_eq!(changes.scheduled, Some(None), "the unplace mask");
+                }
+                other => panic!("one unplace write, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                harness.handle.window().get_plan_model().boxes.row_count(),
+                2,
+                "the removed box left the surface"
+            );
+        },
+    );
+}
+
+/// US-5/S1 — the review walk's stage-verb journey (#1393, D2): the
+/// walk's chords route the stage grammar — Right steps the armed
+/// File-to picker's target (the commit's `MoveTask` names it), the
+/// planner mnemonic lands the embedded planner, Alt+Left steps the
+/// stage back, Alt+a arms the abort and Escape dismisses it. Typed
+/// oracles only: the walk model's stage kind, filing/abort bits, and
+/// the boundary's `MoveTask`.
+#[test]
+fn us5_s1_walk_stage_verbs_journey() {
+    let (fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::harness::run_journey(state, move |harness| {
+        open_walk(&mut *harness);
+        assert!(walk_open(&*harness), "the walk opened");
+        // Entry → Inbox (the dispatched Advance — the stage verbs
+        // under test are the chords below).
+        walk_step_action(&mut *harness, ActionId::ReviewWalkAdvance);
+        assert_eq!(walk_stage(&*harness), 0, "the walk is at Inbox");
+
+        // Arm the File-to picker; Right steps the armed target to the
+        // second candidate; the commit names it.
+        walk_step_action(&mut *harness, ActionId::ReviewInboxFile);
+        assert!(
+            harness.handle.window().get_walk_model().filing,
+            "the File-to picker armed"
+        );
+        harness.stroke(parse("Right").expect("Right"));
+        harness.driver.advance_time(0);
+        walk_step_action(&mut *harness, ActionId::ReviewFileCommit);
+        let drained = harness.engine.drain();
+        match &drained[..] {
+            [StateCommand::MoveTask { stack, .. }] => {
+                assert_eq!(
+                    *stack, fixture.stack_b,
+                    "Right stepped the armed target to the second candidate"
+                );
+            }
+            other => panic!("the picker commit filed the walked row, got {other:?}"),
+        }
+        harness.engine.settle(&harness.handle);
+
+        // The planner mnemonic lands the embedded planner; Alt+Left
+        // steps the stage back; the walk never closed.
+        walk_step_action(&mut *harness, ActionId::ReviewWalkAdvance);
+        harness.stroke(parse("Ctrl+Shift+p").expect("Ctrl+Shift+p"));
+        harness.driver.advance_time(0);
+        assert_eq!(
+            walk_stage(&*harness),
+            3,
+            "the planner is the walk's own stage"
+        );
+        harness.stroke(parse("Alt+Left").expect("Alt+Left"));
+        harness.driver.advance_time(0);
+        assert!(walk_open(&*harness), "the walk stays open beneath");
+        assert_eq!(walk_stage(&*harness), 1, "Alt+Left stepped the stage back");
+
+        // Alt+a arms the abort (never a silent step-back); Escape
+        // dismisses the armed confirm.
+        harness.stroke(parse("Alt+a").expect("Alt+a"));
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_walk_model().abort_confirm,
+            "Alt+a armed the abort"
+        );
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        assert!(
+            !harness.handle.window().get_walk_model().abort_confirm,
+            "Escape dismissed the armed abort"
+        );
+    });
+}
+
+/// One dispatched walk verb plus its settle tick (the picker's
+/// arm/commit seams — the verbs without stage-verb chords).
+fn walk_step_action(harness: &mut Harness, action: ActionId) {
+    harness.handle.dispatch_action(action);
+    harness.driver.advance_time(0);
+}
+
 // -- round-5 chunk 3: the anchored flyouts (F8/F9/F10/F14, D6) ----------
 
 /// The quick-list flyout's realized facts, flattened for the journey
