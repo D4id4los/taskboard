@@ -1709,6 +1709,9 @@ fn sections_document(
         } else {
             Some(habit_log)
         },
+        // The emission cut-over (D-7) lands in the connector commit;
+        // until then the new section never emits.
+        habit_events: None,
         break_rules: if break_rules.is_empty() {
             None
         } else {
