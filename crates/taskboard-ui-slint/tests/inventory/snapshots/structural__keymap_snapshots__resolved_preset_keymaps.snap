@@ -612,11 +612,26 @@ expression: rows
             - Escape
           action: review.walk-back
         - sequence:
+            - Alt+a
+          action: review.abort-arm
+        - sequence:
+            - Ctrl+Shift+p
+          action: review.planner
+        - sequence:
             - Up
           action: review.walk-cursor-up
         - sequence:
             - Down
           action: review.walk-cursor-down
+        - sequence:
+            - Left
+          action: review.file-target-prev
+        - sequence:
+            - Alt+Left
+          action: review.walk-prev
+        - sequence:
+            - Right
+          action: review.file-target-next
     - context: alarm-window
       bindings:
         - sequence:
@@ -1336,6 +1351,9 @@ expression: rows
             - Escape
           action: review.walk-back
         - sequence:
+            - Alt+a
+          action: review.abort-arm
+        - sequence:
             - Ctrl+g
           action: review.walk-back
         - sequence:
@@ -1344,6 +1362,18 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: review.walk-cursor-up
+        - sequence:
+            - Ctrl+Shift+p
+          action: review.planner
+        - sequence:
+            - Left
+          action: review.file-target-prev
+        - sequence:
+            - Alt+Left
+          action: review.walk-prev
+        - sequence:
+            - Right
+          action: review.file-target-next
     - context: alarm-window
       bindings:
         - sequence:
@@ -1924,11 +1954,26 @@ expression: rows
             - Escape
           action: review.walk-back
         - sequence:
+            - Alt+a
+          action: review.abort-arm
+        - sequence:
+            - Ctrl+Shift+p
+          action: review.planner
+        - sequence:
             - Up
           action: review.walk-cursor-up
         - sequence:
             - Down
           action: review.walk-cursor-down
+        - sequence:
+            - Left
+          action: review.file-target-prev
+        - sequence:
+            - Alt+Left
+          action: review.walk-prev
+        - sequence:
+            - Right
+          action: review.file-target-next
     - context: alarm-window
       bindings:
         - sequence:

@@ -54,6 +54,7 @@ impl Preset {
                 STANDARD_S2,
                 TRACK_ENTRIES_ROWS,
                 REVIEW_WALK_ROWS,
+                REVIEW_WALK_STAGE_ROWS,
                 STANDARD_S4,
                 ALARM_WINDOW_ROWS,
                 NOTIFICATION_ROWS,
@@ -65,6 +66,7 @@ impl Preset {
                 EMACS_S0B,
                 LABELS_CONTROL_WALK_ROWS,
                 EMACS_S1,
+                REVIEW_WALK_STAGE_ROWS,
                 ALARM_WINDOW_ROWS,
                 NOTIFICATION_ROWS,
             ]),
@@ -80,6 +82,7 @@ impl Preset {
                 VI_PLANNER_ROWS,
                 TRACK_ENTRIES_ROWS,
                 REVIEW_WALK_ROWS,
+                REVIEW_WALK_STAGE_ROWS,
                 VI_S4,
                 ALARM_WINDOW_ROWS,
                 NOTIFICATION_ROWS,
@@ -263,6 +266,51 @@ const REVIEW_WALK_ROWS: &[(ActionId, ContextId, &[&str])] = &[
         &["Down"],
     ),
     (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+];
+
+/// The review walk's stage verbs (#1393, D2): one shared block wired
+/// into all three presets' chains (emacs carries its cursor rows in
+/// `EMACS_S1`, so the stage rows ride a sibling shared block rather
+/// than growing this one — no existing row moves, the C-5 rule).
+/// Every spelling is non-printable and absent from both editor
+/// tables, so each is stage-proof beside the walk's Prompts-stage
+/// reflection field. `ReviewAbortAccept`/`ReviewAbortDismiss` get NO
+/// row — the armed Return/Escape grammar stands (a second address
+/// for one semantics is what the O-8 law forbids).
+const REVIEW_WALK_STAGE_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    // The File-to picker's horizontal axis — free in the masking
+    // walk context (no Left/Right rows there) and meaningful exactly
+    // while the picker is armed on the cursor row, where no field
+    // holds focus.
+    (
+        ActionId::ReviewFileTargetPrev,
+        ContextId::ReviewWalk,
+        &["Left"],
+    ),
+    (
+        ActionId::ReviewFileTargetNext,
+        ContextId::ReviewWalk,
+        &["Right"],
+    ),
+    // The app-wide Alt+Left = "back" convention applied inside the
+    // masking walk context, where the Global row is unreachable (no
+    // collision); Alt is never caret, never printable.
+    (
+        ActionId::ReviewWalkPrev,
+        ContextId::ReviewWalk,
+        &["Alt+Left"],
+    ),
+    // The planner mnemonic — the same spelling as `ViewPlanNextDay`'s
+    // Global row, unreachable in the walk (masked), and not an editor
+    // command, so field-safe.
+    (
+        ActionId::ReviewWalkPlanner,
+        ContextId::ReviewWalk,
+        &["Ctrl+Shift+p"],
+    ),
+    // The arm verb joins the Alt family rather than stealing a caret
+    // key (`Ctrl+a` is the emacs LineStart in-field); free app-wide.
+    (ActionId::ReviewAbortArm, ContextId::ReviewWalk, &["Alt+a"]),
 ];
 
 /// The alarm window's local grammar (all presets, the r5 letter).
