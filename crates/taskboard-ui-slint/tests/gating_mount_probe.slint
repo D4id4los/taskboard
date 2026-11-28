@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The gating-mount probe (#1464, the §5 `visible:`→`if` sweep): the
+// real `TodayView`, `TaskView` (both variants) and `SearchPalette`
+// mounted in one window — the regression host for the mount-law
+// conversions. The assertions read element mounts and realized
+// geometry from Rust (`probes/gating_mount_probe_tests.rs`); the
+// probe only carries the mounts and the model in-properties. The
+// surfaces are placed in disjoint vertical bands so the per-instance
+// element reads stay addressable from one window.
+
+import { Theme } from "../ui/theme.slint";
+import { TodayView, TodayModel } from "../ui/views/today-view.slint";
+import { TaskView, TaskDetailModel, HabitDetailModel } from "../ui/views/task-view.slint";
+import { SearchPalette, PaletteRowModel } from "../ui/compositions/search-palette.slint";
+
+export component GatingMountProbe inherits Window {
+    width: Theme.space-15 * 10;
+    height: Theme.space-15 * 22;
+    background: Theme.background;
+
+    in property <TodayModel> today;
+    in property <TaskDetailModel> task-model;
+    in property <TaskDetailModel> habit-task-model;
+    in property <HabitDetailModel> habit-model;
+    in property <[PaletteRowModel]> palette-rows;
+    in property <int> palette-overflow;
+
+    // Four disjoint vertical bands (the Theme token ladder's
+    // space-15 multiples — no literal dimensions, the token-hook
+    // rule): today / task variant / habit variant / palette.
+    today-instance := TodayView {
+        y: 0;
+        width: 100%;
+        height: Theme.space-15 * 6;
+        today: root.today;
+    }
+
+    // Band 2: the task variant.
+    task-instance := TaskView {
+        y: Theme.space-15 * 6;
+        width: 100%;
+        height: Theme.space-15 * 6;
+        task: root.task-model;
+    }
+
+    // Band 3: the habit variant.
+    habit-instance := TaskView {
+        y: Theme.space-15 * 12;
+        width: 100%;
+        height: Theme.space-15 * 6;
+        task: root.habit-task-model;
+        habit: root.habit-model;
+    }
+
+    // Band 4: the palette with rows and no overflow (neither caption
+    // gate holds).
+    palette-instance := SearchPalette {
+        y: Theme.space-15 * 18;
+        x: Theme.space-3;
+        width: Theme.space-15 * 3;
+        rows: root.palette-rows;
+        overflow: root.palette-overflow;
+    }
+}

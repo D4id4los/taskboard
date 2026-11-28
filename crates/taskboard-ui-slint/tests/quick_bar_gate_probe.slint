@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The quick-bar gate probe (#1464's gating law, the action-menu
+// half): the real `ActionMenu` mounted SOLO with a three-entry
+// quick-bar whose middle entry is withheld — the regression host for
+// the shown-half mount law (the withheld entry mounts no button and
+// no slot; the model-index routing survives). The assertions read
+// the buttons' realized geometry from Rust
+// (`probes/quick_bar_gate_probe_tests.rs`); the probe only carries
+// the mount.
+
+import { Theme } from "../ui/theme.slint";
+import { ActionMenu } from "../ui/compositions/action-menu.slint";
+import { IconKind } from "../ui/widgets/icon.slint";
+
+export component QuickBarGateProbe inherits Window {
+    width: Theme.space-8 * 8;
+    height: Theme.space-8 * 6;
+
+    menu := ActionMenu {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: Theme.space-8 * 7;
+        available-height: Theme.space-8 * 4;
+        quick-bar: [
+            { action: "task.a", label: "Shown one", icon: IconKind.calendar, enabled: true, visible: true, hint-keys: [] },
+            { action: "task.b", label: "Withheld", icon: IconKind.stop, enabled: true, visible: false, hint-keys: [] },
+            { action: "task.c", label: "Shown two", icon: IconKind.play, enabled: true, visible: true, hint-keys: [] },
+        ];
+        entries: [
+            { action: "task.withheld-leaf", label: "Withheld leaf", description: "", enabled: true, hint: [], submenu: false },
+        ];
+        // The routing seam (the populated probe's twin): the probe
+        // counts the bar's callback fires by MODEL index.
+        out property <int> bar-invoked: -1;
+        invoke-quick-bar(index) => { self.bar-invoked = index; }
+    }
+
+    out property <int> bar-invoked: menu.bar-invoked;
+}
