@@ -278,6 +278,17 @@ Fallback leg (per family, one run): vanished anchor (delete the task
 under an open overlay) → the view scope, never no-control — the
 `us1_s2` letter re-pinned for the detail's new kinds.
 
+Row 12's Test nomination (issue #1259, the 2026-11-28 harness
+journeys plan D-#1259):
+`detail_focus_journeys.rs::row12_entries_overlay_walk_lands_on_the_add_affordance_and_return_opens_the_form`
+— the entries overlay's proven stop inventory (rows → "Add time
+entry") and Return on the add affordance opening the seeded entry
+form (`track_form_open`, typed). The row's literal reading ("Set a
+timer" opener → `TimerSetter` inside the overlay) was geographically
+wrong: the overlay carries no such control — the opener lives on the
+today view's Timers section — so the overlay-leg journey pins the
+overlay's own walk instead (correction recorded on #1259).
+
 ## 5. TDD order & commit sequencing (each commit standalone)
 
 1. `test(ui): the detail widget-inventory table — the stolen-Enter and
