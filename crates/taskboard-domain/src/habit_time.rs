@@ -8,7 +8,7 @@
 //! at read ([`HabitTimeEntry::duration`]), and an end is stamped only by
 //! a command at the acting planner's `now`. Rows live in
 //! [`crate::habit::HabitState::time_log`], `serde(default)` default-
-//! absent (the `day_log` additive law).
+//! absent (the additive default-absent law).
 //!
 //! D-2 (the plan's ruling): habit time entries never feed `log`,
 //! `streak`, `adherence`, `log_window`, or any stats projection — the
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn old_state_without_time_log_decodes_empty() {
-        // The additive default-absent law (the `day_log` precedent): a
+        // The additive default-absent law: a
         // state persisted before the field decodes with an empty map —
         // never a decode failure.
         let old = serde_json::json!({

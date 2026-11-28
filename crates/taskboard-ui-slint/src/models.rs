@@ -7533,7 +7533,7 @@ fn board_content_counts(
 /// The habit history dialog's projection pass (HF3 W-8/W-10, US-7 /
 /// US-9): while the view state holds a one-shot history target, the
 /// month-grid model and the statistics ride the window globals —
-/// pure projection over `HabitState.log`, zero commands (the plan's
+/// pure projection over the derived views, zero commands (the plan's
 /// no-command reason per US-7/S2–S4). The target may be tombstoned:
 /// the log outlives the tracker (US-7 AC-5), so the lookup reads the
 /// full habit map, live rows and tombstones alike. Returns the diff's

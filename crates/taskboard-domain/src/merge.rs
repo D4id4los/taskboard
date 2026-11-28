@@ -1584,7 +1584,7 @@ pub fn fold_habit_events(
 /// [`crate::habit_event::legacy_habit_event_id`] through the domain
 /// function, the namespace imported, never re-declared (one recipe,
 /// two call sites: the sqlite remap and this shim). The shim **no
-/// longer writes `habits.log`** — the synthesized events fold into
+/// never writes log rows** — the synthesized events fold into
 /// `habits.events` under the same [`adopt_event`] law, so a shim
 /// re-import after the same facts arrived via the `habit-events`
 /// section is idempotent (identical uuids).

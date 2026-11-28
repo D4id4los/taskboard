@@ -201,7 +201,7 @@ pub struct HabitEvent {
     /// What happened.
     pub kind: HabitEventKind,
     /// The completion / mark instant — the event's own fact. No clock
-    /// inflation: the LWW `mint_log_clock` bump (#986) is row-map
+    /// inflation: the #986 LWW clock bump was row-map
     /// machinery; the derivation fold arbitrates nothing and never
     /// reads a clock.
     ///
@@ -230,7 +230,7 @@ impl HabitEvent {
 
 /// The liveness/membership re-check (no validate-and-forget): the
 /// fold re-checks each event itself rather than trusting a
-/// pre-filtered input — the `habit_log_for` posture. An event
+/// pre-filtered input — the liveness/membership posture. An event
 /// participates in a derivation only if it is live, belongs to
 /// `habit`, and carries the kind the fold wants.
 fn participates(event: &HabitEvent, habit: &Habit, want_mark: bool) -> bool {
@@ -363,7 +363,7 @@ pub fn window_mark_members<'a>(
 }
 
 /// The derived per-window completion counts (#1519): the event-log
-/// successor of the stored `HabitState.log` rows. Pure and total over
+/// successor of the deleted mirror rows (#1542). Pure and total over
 /// the event set + the habit's *current* config — a kind or day-start
 /// change re-derives all history by re-running the fold. Only
 /// windows with count >= 1 appear (count-0 rows do not exist in the
@@ -940,7 +940,7 @@ mod derivation_tests {
         /// The day overlay's oracle leg (T10): on the correspondence
         /// sets (at == log-now) the derived day map equals the legacy
         /// overlay counts — one increment per completion at
-        /// day.today(log-now), keyed in the legacy HabitDayKey shape.
+        /// day.today(log-now), keyed by calendar day.
         #[test]
         fn derive_day_counts_match_legacy_overlay_on_correspondence_sets(
             habit in bounded_habit_strategy(),

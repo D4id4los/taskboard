@@ -1260,7 +1260,7 @@ pub fn habit_streak_unioned(
 
 // ---- Statistics (HF3, US-9 / #963) ----------------------------------------
 //
-// Pure, total, projection-only over `HabitState.log`. Every function
+// Pure, total, projection-only over the derived window views. Every function
 // enumerates canonical windows of the habit's *current* target kind
 // only, so former-kind rows stay analytically inert (D-H12) and a
 // kind change starts a fresh statistical horizon (the same read law
@@ -1333,13 +1333,12 @@ impl AdherenceRatio {
 }
 
 /// The habit's statistics horizon: canonical windows of the current
-/// target kind, from the log's earliest current-kind row through the
-/// natural (current) window of `now`. Deliberate documented leniency:
-/// the horizon starts at the **earliest log row**, not at a habit
-/// creation stamp — the log is the module's only historical record
-/// (HF3 trap (a): statistics read `HabitState.log`, no new
-/// persistence), so pre-log windows are simply outside the horizon
-/// rather than assumed missed.
+/// target kind, from the earliest derived window through the natural
+/// (current) window of `now`. Deliberate documented leniency: the
+/// horizon starts at the **earliest derived window**, not at a habit
+/// creation stamp — the event log is the module's only historical
+/// record, so pre-log windows are simply outside the horizon rather
+/// than assumed missed.
 ///
 /// The horizon is the *enumeration* only — which windows join the
 /// denominator is [`window_joins_denominator`]'s law (the weekly/
@@ -2407,14 +2406,10 @@ mod tests {
         }
     }
 
-    /// Desired semantics (#986): two `LogHabit`s stamped with the
-    /// SAME `now` (same planner second — double-tap, scripted CLI)
-    /// BOTH land. The mint rule
-    /// `mint_log_clock(now, stored_clock) = max(now, stored_clock + 1s)`
-    /// stamps the second log's row strictly past the first, so the
-    /// strictly-newer LWW apply admits it. All apply/fold/SQL layers
-    /// stay strictly-newer; determinism holds because the bump is a
-    /// pure function of (pre-state, command, `now`).
+    /// Desired semantics (#986's successor law): two `LogHabit`s
+    /// stamped with the SAME `now` (same planner second — double-tap,
+    /// scripted CLI) BOTH land — the event grammar makes them distinct
+    /// individuals (distinct minted ids), so the derived count is 2.
     #[test]
     fn log_same_instant_double_log_increments_twice() {
         let mut fixture = HabitFixture {
