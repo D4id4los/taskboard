@@ -53,6 +53,7 @@ impl Preset {
                 CONTROL_WALK_SETTINGS_ROWS,
                 STANDARD_S2,
                 ALT_AXIS_ROWS,
+                INSERT_AXIS_ROWS,
                 TRACK_ENTRIES_ROWS,
                 REVIEW_WALK_ROWS,
                 REVIEW_WALK_STAGE_ROWS,
@@ -68,7 +69,9 @@ impl Preset {
                 LABELS_CONTROL_WALK_ROWS,
                 EMACS_S1,
                 EMACS_ALT_QUARTET_ROWS,
+                EMACS_INSERT_QUARTET_ROWS,
                 ALT_AXIS_ROWS,
+                INSERT_AXIS_ROWS,
                 REVIEW_WALK_STAGE_ROWS,
                 ALARM_WINDOW_ROWS,
                 NOTIFICATION_ROWS,
@@ -1001,6 +1004,33 @@ const EMACS_ALT_QUARTET_ROWS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavFocusLeft, ContextId::PlanNextDay, &["Alt+b"]),
     (ActionId::NavFocusDown, ContextId::PlanNextDay, &["Alt+n"]),
     (ActionId::NavFocusUp, ContextId::PlanNextDay, &["Alt+p"]),
+];
+
+/// The axis's in-field half (#1257, D3, the journey-oracle fix): a
+/// focused text field flips the shell to `Mode::Insert` and the
+/// insert chain replaces the view context — `[ViInsert, Global]` —
+/// so the view-context rows above can never resolve while a field
+/// holds focus. The same Alt spellings therefore bind in the
+/// `ViInsert` context of the Standard and Emacs presets, where the
+/// non-printable chord resolves past the field (no editor table
+/// binds it; no caret behaviour claims it) and departs the field
+/// along the walk. Vi carries no rows here — its Escape contract is
+/// the insert-chain exit.
+const INSERT_AXIS_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::NavFocusLeft, ContextId::ViInsert, &["Alt+Left"]),
+    (ActionId::NavFocusRight, ContextId::ViInsert, &["Alt+Right"]),
+    (ActionId::NavFocusUp, ContextId::ViInsert, &["Alt+Up"]),
+    (ActionId::NavFocusDown, ContextId::ViInsert, &["Alt+Down"]),
+];
+
+/// The quartet's in-field half (#1257, D3): the emacs Alt-letter
+/// spellings in the `ViInsert` context, the same law as
+/// [`INSERT_AXIS_ROWS`].
+const EMACS_INSERT_QUARTET_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::NavFocusRight, ContextId::ViInsert, &["Alt+f"]),
+    (ActionId::NavFocusLeft, ContextId::ViInsert, &["Alt+b"]),
+    (ActionId::NavFocusDown, ContextId::ViInsert, &["Alt+n"]),
+    (ActionId::NavFocusUp, ContextId::ViInsert, &["Alt+p"]),
 ];
 
 static STANDARD_S4: &[(ActionId, ContextId, &[&str])] = &[

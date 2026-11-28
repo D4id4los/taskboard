@@ -622,6 +622,18 @@ expression: rows
         - sequence:
             - Escape
           action: mode.normal
+        - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
     - context: date-picker
       bindings:
         - sequence:
@@ -1502,6 +1514,30 @@ expression: rows
         - sequence:
             - Escape
           action: mode.normal
+        - sequence:
+            - Alt+b
+          action: nav.focus-left
+        - sequence:
+            - Alt+f
+          action: nav.focus-right
+        - sequence:
+            - Alt+n
+          action: nav.focus-down
+        - sequence:
+            - Alt+p
+          action: nav.focus-up
+        - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
     - context: date-picker
       bindings:
         - sequence:
