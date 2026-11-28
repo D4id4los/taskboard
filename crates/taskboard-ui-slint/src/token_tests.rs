@@ -94,9 +94,10 @@ use crate::presentation::contrast_ratio;
 // ---------------------------------------------------------------------------
 
 /// WCAG role classes (§9.1): body text ≥ 4.5, large display ≥ 3.0,
-/// non-text UI ≥ 3.0. (`PartialEq` only: the waived variant carries
-/// the recorded `f64` floor, which is not `Eq`.)
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// non-text UI ≥ 3.0. Every pair carries its real class floor — the
+/// #1450 waivers are gone (the dark tokens were raised to clear the
+/// floors; a failing pair is fixed in the tokens, never waived).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MinRatio {
     /// Body-size text: ≥ 4.5:1.
     Body,
@@ -104,43 +105,6 @@ enum MinRatio {
     Large,
     /// Non-text UI (borders, focus rings, indicators): ≥ 3.0:1.
     NonText,
-    /// An explicitly-named debt pair (#1450): the *measured* ratio sits
-    /// below the class floor today, and the remediation is a design
-    /// call out of the landing chunk's scope. The entry asserts the
-    /// recorded measured floor — a further regression fails, and the
-    /// waiver is deleted (the real class minimum flips on) once #1450
-    /// lands. Never a lowered threshold: the class the pair owes stays
-    /// `owed`, named here so the debt is legible at the table.
-    Waived {
-        issue: &'static str,
-        /// The measured ratio rounded down — the pin floor.
-        recorded_floor: f64,
-        /// The WCAG class the pair owes when the waiver is lifted.
-        owed: Owed,
-    },
-}
-
-/// The WCAG class a waived pair owes once its remediation lands (the
-/// minimum the waiver flips to).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Owed {
-    Body,
-    NonText,
-}
-
-impl Owed {
-    const fn minimum(self) -> f64 {
-        match self {
-            Self::Body => 4.5,
-            Self::NonText => 3.0,
-        }
-    }
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Body => "Body",
-            Self::NonText => "NonText",
-        }
-    }
 }
 
 impl MinRatio {
@@ -149,7 +113,6 @@ impl MinRatio {
             Self::Body => 4.5,
             // Large display text and non-text UI share the 3.0 floor.
             Self::Large | Self::NonText => 3.0,
-            Self::Waived { recorded_floor, .. } => recorded_floor,
         }
     }
     const fn label(self) -> &'static str {
@@ -157,25 +120,6 @@ impl MinRatio {
             Self::Body => "Body",
             Self::Large => "Large",
             Self::NonText => "NonText",
-            Self::Waived { .. } => "Waived",
-        }
-    }
-    /// The issue that owns the remediation of a waived pair (empty for
-    /// the real class floors).
-    const fn debt_issue(self) -> &'static str {
-        match self {
-            Self::Waived { issue, .. } => issue,
-            _ => "",
-        }
-    }
-    /// The class the pair owes when the waiver lifts (the real floors
-    /// owe themselves).
-    const fn owed_minimum(self) -> f64 {
-        match self {
-            Self::Waived { owed, .. } => owed.minimum(),
-            Self::Body => 4.5,
-            // Large display text and non-text UI share the 3.0 floor.
-            Self::Large | Self::NonText => 3.0,
         }
     }
 }
@@ -218,17 +162,9 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
     (("Semantic", "danger"), BACKGROUND, MinRatio::Body),
     (("Semantic", "danger"), SURFACE, MinRatio::Body),
     (("Semantic", "danger"), SURFACE_RAISED, MinRatio::Body),
-    // Measured 4.19:1 today — below the 4.5 body floor (status-bar.slint:375,
-    // review-view.slint:693). Waived debt; #1450 owns the remediation.
-    (
-        ("Semantic", "danger"),
-        SURFACE_HOVER,
-        MinRatio::Waived {
-            issue: "#1450",
-            recorded_floor: 4.18,
-            owed: Owed::Body,
-        },
-    ),
+    // The hover leg (#1450's remediation: the dark danger token raised
+    // to 0xeb8680) — the real Body floor, no waiver.
+    (("Semantic", "danger"), SURFACE_HOVER, MinRatio::Body),
     (("Semantic", "overdue"), BACKGROUND, MinRatio::Body),
     (("Semantic", "overdue"), SURFACE, MinRatio::Body),
     (("Semantic", "overdue"), SURFACE_RAISED, MinRatio::Body),
@@ -243,33 +179,73 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
     (("Semantic", "focus-ring"), SURFACE, MinRatio::NonText),
     (("Theme", "border"), BACKGROUND, MinRatio::NonText),
     (("Theme", "border"), SURFACE, MinRatio::NonText),
-    // The raised/hover legs (#1414): the border renders around cards
-    // and lifted controls. Measured 2.75:1 on raised and 2.34:1 on
-    // hover today — below the 3.0 non-text floor (tooltip.slint:134
-    // et al. mark up these pairs). Waived debt; #1450 owns the
-    // remediation (raise the border luminance or split a
-    // control-boundary token).
-    (
-        ("Theme", "border"),
-        SURFACE_RAISED,
-        MinRatio::Waived {
-            issue: "#1450",
-            recorded_floor: 2.74,
-            owed: Owed::NonText,
-        },
-    ),
-    (
-        ("Theme", "border"),
-        SURFACE_HOVER,
-        MinRatio::Waived {
-            issue: "#1450",
-            recorded_floor: 2.33,
-            owed: Owed::NonText,
-        },
-    ),
+    // The raised/hover legs (#1414; #1450's remediation raised the
+    // dark border token to 0x7b8297): the border renders around cards
+    // and lifted controls, so every surface it can render on is
+    // paired at the real non-text floor — no waiver.
+    (("Theme", "border"), SURFACE_RAISED, MinRatio::NonText),
+    (("Theme", "border"), SURFACE_HOVER, MinRatio::NonText),
     (("Semantic", "sync-active"), BACKGROUND, MinRatio::NonText),
     (("Semantic", "sync-active"), SURFACE, MinRatio::NonText),
 ];
+
+/// The chip ink (plan 2026-11-28 D3, #1458): chip text is the theme's
+/// primary text colour over every tone-fill — the one ink that clears
+/// the Body floor over every fill in both palettes (dark worst
+/// 6.54:1, light worst 7.53:1).
+const CHIP_INK: TokenName = ("Theme", "text-primary");
+
+/// The chip fill pairs (plan 2026-11-28 D4, #1458): `(declared Tone
+/// name, the tone's colour token, the surface under the fill)` —
+/// every declared tone × every surface the 0.2-alpha `tone-fill`
+/// composite can sit on, explicit per tone so a future fill or tone
+/// change cannot silently shrink the class. `neutral`/`info` map to
+/// `text-secondary`/`text-primary` in `Semantic.tone-color` (the
+/// ladder, not dedicated tokens).
+const CHIP_FILL_PAIRS: &[(&str, TokenName, TokenName)] = &[
+    ("neutral", ("Theme", "text-secondary"), SURFACE),
+    ("neutral", ("Theme", "text-secondary"), SURFACE_RAISED),
+    ("neutral", ("Theme", "text-secondary"), SURFACE_HOVER),
+    ("info", ("Theme", "text-primary"), SURFACE),
+    ("info", ("Theme", "text-primary"), SURFACE_RAISED),
+    ("info", ("Theme", "text-primary"), SURFACE_HOVER),
+    ("success", ("Semantic", "success"), SURFACE),
+    ("success", ("Semantic", "success"), SURFACE_RAISED),
+    ("success", ("Semantic", "success"), SURFACE_HOVER),
+    ("warning", ("Semantic", "warning"), SURFACE),
+    ("warning", ("Semantic", "warning"), SURFACE_RAISED),
+    ("warning", ("Semantic", "warning"), SURFACE_HOVER),
+    ("danger", ("Semantic", "danger"), SURFACE),
+    ("danger", ("Semantic", "danger"), SURFACE_RAISED),
+    ("danger", ("Semantic", "danger"), SURFACE_HOVER),
+    ("overdue", ("Semantic", "overdue"), SURFACE),
+    ("overdue", ("Semantic", "overdue"), SURFACE_RAISED),
+    ("overdue", ("Semantic", "overdue"), SURFACE_HOVER),
+    ("sync-active", ("Semantic", "sync-active"), SURFACE),
+    ("sync-active", ("Semantic", "sync-active"), SURFACE_RAISED),
+    ("sync-active", ("Semantic", "sync-active"), SURFACE_HOVER),
+    ("offline", ("Semantic", "offline"), SURFACE),
+    ("offline", ("Semantic", "offline"), SURFACE_RAISED),
+    ("offline", ("Semantic", "offline"), SURFACE_HOVER),
+];
+
+/// The `Tone` variant names as declared in the theme file's `Tone`
+/// enum — the same vocabulary the chip markup dispatches on.
+fn declared_tones() -> Vec<String> {
+    let mut tones = Vec::new();
+    let mut in_enum = false;
+    for line in THEME_SOURCE.lines() {
+        let line = line.split("//").next().unwrap_or(line).trim();
+        if line.starts_with("export enum Tone") {
+            in_enum = true;
+        } else if in_enum && line == "}" {
+            break;
+        } else if in_enum && let Some(name) = line.strip_suffix(',') {
+            tones.push(name.to_owned());
+        }
+    }
+    tones
+}
 
 /// The palette under test (#1437 design §2.3): the `.slint` defaults
 /// are a real palette (dark — the boot-time pre-push fallback), and
@@ -281,21 +257,6 @@ enum PaletteTag {
     SlintDefaults,
     /// The Rust light palette (`crate::palette::Palette::LIGHT`).
     Light,
-}
-
-impl PaletteTag {
-    /// The effective minimum a pair owes under this palette. The
-    /// waiver debt (#1450's pinned floors) is a *dark-measured*
-    /// record: the light palette carries no waivers — the floors are
-    /// the contract (the round law: fix or cite, never carry a dark
-    /// exemption forward to light), so a waived pair's effective
-    /// minimum under light is the class it owes.
-    const fn effective_minimum(self, class: &MinRatio) -> f64 {
-        match (self, class) {
-            (Self::Light, MinRatio::Waived { owed, .. }) => owed.minimum(),
-            (_, class) => class.minimum(),
-        }
-    }
 }
 
 /// The per-palette token lookup: `(global, name)` → 6-digit hex, the
@@ -529,60 +490,63 @@ fn every_pair_meets_its_role_class_minimum() {
                 "{tag:?}: pair references an undeclared token: {foreground:?} × {surface:?} (completeness rule 3)"
             );
             let ratio = contrast_ratio(&fg, &bg);
-            let minimum = tag.effective_minimum(class);
             assert!(
-                ratio >= minimum,
-                "{tag:?}: {foreground:?} on {surface:?} is {ratio:.2}:1, below the {:?} minimum {}:1{}",
+                ratio >= class.minimum(),
+                "{tag:?}: {foreground:?} on {surface:?} is {ratio:.2}:1, below the {:?} minimum {}:1",
                 class.label(),
-                minimum,
-                if class.debt_issue().is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        " (waived debt pinned at {:.2}:1, owes {:?} {}:1 when {} lands)",
-                        class.minimum(),
-                        match class {
-                            MinRatio::Waived { owed, .. } => owed.label(),
-                            _ => "",
-                        },
-                        class.owed_minimum(),
-                        class.debt_issue()
-                    )
-                }
+                class.minimum(),
             );
         }
     }
 }
 
-/// The waiver pins are honest: every waived pair must still be below
-/// the class it owes — a waiver that passes its real minimum is dead
-/// debt and must be deleted (the entry flips to the real floor).
+/// The chip fill class (plan 2026-11-28 D4, #1458): `CHIP_INK` over
+/// every tone's 0.2-alpha fill composite on every surface, in both
+/// palettes, at the Body floor. Blend model: slint composites straight
+/// (non-premultiplied) alpha over 8-bit sRGB, so
+/// `tone-color(t).with-alpha(0.2)` over a surface is per-channel
+/// `round(0.2 × tone + 0.8 × surface)`.
 #[test]
-fn every_waived_pair_is_still_below_its_owed_minimum() {
-    // The tripwire runs over the dark palette only (`SlintDefaults`):
-    // the waiver floors are dark-measured debt; the light palette
-    // carries no waivers (its `effective_minimum` is the owed class
-    // — asserted by the pair test above).
-    let tag = PaletteTag::SlintDefaults;
-    let lookup = |name: TokenName| palette_lookup(tag, name);
-    for (foreground, surface, class) in PAIRS {
-        let MinRatio::Waived { issue, owed, .. } = class else {
-            continue;
+fn every_chip_fill_pair_meets_body_minimum() {
+    let blend = |tone: &str, surface: &str| -> String {
+        let channel = |t: usize, s: usize| {
+            let tone = u16::from(u8::from_str_radix(&tone[t..t + 2], 16).unwrap());
+            let surface = u16::from(u8::from_str_radix(&surface[s..s + 2], 16).unwrap());
+            // round(0.2 × tone + 0.8 × surface) in exact integer
+            // arithmetic — n/5's fraction is never 0.5, so
+            // (n + 2) / 5 is the round for every byte pair.
+            format!("{:02x}", (tone + 4 * surface + 2) / 5)
         };
-        let fg = lookup(*foreground);
-        let bg = lookup(*surface);
+        format!("{}{}{}", channel(0, 0), channel(2, 2), channel(4, 4))
+    };
+    // Completeness: every `Tone` the markup vocabulary declares appears
+    // in the table (and the table names no undeclared tone) — a new
+    // tone fails here until it is paired.
+    let declared = declared_tones();
+    assert!(!declared.is_empty(), "tone extraction found the Tone enum");
+    for tone in &declared {
         assert!(
-            !fg.is_empty() && !bg.is_empty(),
-            "undeclared token pair: {foreground:?} × {surface:?}"
+            CHIP_FILL_PAIRS.iter().any(|(name, _, _)| name == tone),
+            "declared Tone `{tone}` has no chip-fill pair (plan D4 completeness)"
         );
-        let ratio = contrast_ratio(&fg, &bg);
+    }
+    for (tone, tone_token, surface_token) in CHIP_FILL_PAIRS {
         assert!(
-            ratio < owed.minimum(),
-            "{foreground:?} on {surface:?} now measures {ratio:.2}:1, at or above the owed {:?} minimum {}:1 — the {} waiver is dead debt: delete it and flip the entry to the real floor",
-            owed.label(),
-            owed.minimum(),
-            issue
+            declared.iter().any(|name| name == tone),
+            "chip-fill pair names undeclared Tone `{tone}`"
         );
+        for tag in [PaletteTag::SlintDefaults, PaletteTag::Light] {
+            let ink = palette_lookup(tag, CHIP_INK);
+            let fill = blend(
+                &palette_lookup(tag, *tone_token),
+                &palette_lookup(tag, *surface_token),
+            );
+            let ratio = contrast_ratio(&ink, &fill);
+            assert!(
+                ratio >= 4.5,
+                "{tag:?}: chip ink {ink:?} on tone `{tone}` fill (0.2 over {surface_token:?}) is {ratio:.2}:1, below the Body minimum 4.5:1"
+            );
+        }
     }
 }
 

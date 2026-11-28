@@ -131,7 +131,12 @@ export component HabitHistoryView inherits Rectangle {
                     RoleText {
                         role: Typography.badge;
                         text: cell.label;
-                        text-color: Semantic.tone-color(root.state-tone(cell.state));
+                        // Chip-ink rule (#1458, chunk plan 2026-11-28
+                        // D3): text over the cell's own 0.2-alpha
+                        // `tone-fill` must hold ≥ 4.5:1 in both
+                        // palettes — `text-primary` is the one ink
+                        // that clears it over every fill.
+                        text-color: Theme.text-primary;
                         horizontal-alignment: center;
                     }
                     if (cell.count > 0): Rectangle {
