@@ -30,11 +30,16 @@ pub(in crate::adapter) fn habit_undo_target(
         habit_row.target.kind(),
         adapter.calendar().today(now),
     );
-    let count = state
-        .habits
-        .log
-        .get(&taskboard_domain::HabitLogKey { habit, window })
-        .map_or(0, |e| e.count);
+    // The chunk-5 re-key (#1519 D-1): the −1 reads the derived count
+    // of the current canonical window.
+    let count = taskboard_domain::habit_event::derive_window_counts(
+        habit_row,
+        state.habits.events.values(),
+        adapter.calendar(),
+    )
+    .get(&window)
+    .copied()
+    .unwrap_or(0);
     (count >= 1).then_some((habit, window, count))
 }
 
