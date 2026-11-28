@@ -105,3 +105,16 @@ and notes the supersession on the issue at PR time.
   this inventory was already tracked (#1314, #769, #1360, #1257).
 - Gate: the full nextest run is the dispatcher's between-stage gate;
   stage 1 landed no production code (docs-only commit).
+
+## 5. Journey amendment (2026-11-28, the UI-clip-fixes chunk, plan D5)
+
+R-x (2026-11-28): the task-detail composition gains the workspace's
+outer page scroll (ScrollPage substrate) so the flexible description
+section is no longer the only vertical absorber; the #1435 vertical
+inset legs stay. New affordance: the detail page scrolls when content
+exceeds the viewport; the description viewport's internal scroll
+remains the nested surface. Journey impact: no story step changes —
+the detail's verbs, badges and fields are untouched; S-steps that
+assert on-screen presence of below-fold content now assert
+scroll-then-visible. Coverage: no W-row changes; the geometry probe
+T2 is the wiring evidence.
