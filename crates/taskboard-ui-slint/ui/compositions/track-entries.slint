@@ -151,21 +151,26 @@ export component TrackEntriesPanel inherits Rectangle {
     property <length> form-layout-height: Theme.space-1;
     min-width: Theme.menu-max-width;
 
-    // The walk order (blanket rule b): rows → (the footer's add, when
-    // visible). Enter on a row activates (edit); the row's tip names
-    // the span.
+    // The walk order (blanket rule b, #1259's proven inventory): the
+    // entry rows in pushed order (stop i = row i) → the footer's add
+    // affordance (stop `rows.length`). The extent is the mount
+    // host's `walk-stops` push; the stops consume their own
+    // `focus-index` landings, and each stop re-publishes the cursor
+    // when it gains focus (the adapter's next step reads it).
     panel-scope := FocusScope {
     // The walk clamp's host half (US-2/W-2, D-W2): the mask holds
-    // this scope — the degenerate extent keeps the walk on it; the
-    // consumption edge rides the `mask-focus` seam's nonce.
-    init => {
-        MaskWalkFacts.extent = 1;
-        MaskWalkFacts.cursor = 0;
-    }
+    // this scope; the consumption edge rides the `mask-focus` seam's
+    // nonce. The stops grab their own indices; the root takes only
+    // the unaddressed landing (no stop mounted at the index — the
+    // form surface keeps the degenerate clamp), so the walk never
+    // yanks focus out of a mounted stop or a form field.
+    init => { MaskWalkFacts.cursor = 0; }
     property <int> watch-mask-nonce: MaskWalkFacts.nonce;
     changed watch-mask-nonce => {
-        if (MaskWalkFacts.armed) {
-                    panel-scope.focus();
+        if (MaskWalkFacts.armed
+                && (MaskWalkFacts.focus-index < 0
+                    || MaskWalkFacts.focus-index >= MaskWalkFacts.extent)) {
+            panel-scope.focus();
             MaskWalkFacts.cursor = 0;
         }
     }
@@ -355,11 +360,24 @@ export component TrackEntriesPanel inherits Rectangle {
                             tooltip-text: "Edits the time entry.";
                             tooltip-title: row.date + " " + row.start + " – " + row.end;
                             hover-tint: false;
+                            // The stop's own consumption half (#1259):
+                            // the mask landing at this row's index
+                            // grabs the row; the P2 wrap (see the
+                            // panel root) re-publishes the cursor so
+                            // the adapter's next step reads it.
+                            property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+                            changed watch-mask-nonce => {
+                                if (MaskWalkFacts.armed
+                                        && MaskWalkFacts.focus-index == row-index) {
+                                    row-entry.grab-walk-stop();
+                                }
+                            }
                             // The P2 wrap (see the panel root).
                             changed focused => {
                                 if (self.focused) {
                                     TrackPanelWalkFacts.focused-row-stop =
                                         200 + row-index;
+                                    MaskWalkFacts.cursor = row-index;
                                 }
                             }
                             activated => { root.row-activated(row-index); }
@@ -429,10 +447,22 @@ export component TrackEntriesPanel inherits Rectangle {
                         label: "Add time entry";
                         description: "Opens the entry form to log a block of work.";
                         tooltip-text: "Opens the entry form to log a block of work.";
+                        // The stop's consumption half (#1259): the
+                        // mask landing at `rows.length` grabs the
+                        // affordance; the P2 wrap's stop-300 push
+                        // re-publishes the cursor with it.
+                        property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+                        changed watch-mask-nonce => {
+                            if (MaskWalkFacts.armed
+                                    && MaskWalkFacts.focus-index == root.rows.length) {
+                                add-touch.grab-walk-stop();
+                            }
+                        }
                         // The walk-facts push (the P2 wrap's stop 300).
                         changed focused => {
                             if (self.focused) {
                                 TrackPanelWalkFacts.focused-row-stop = 300;
+                                MaskWalkFacts.cursor = root.rows.length;
                             }
                         }
                         activated => {

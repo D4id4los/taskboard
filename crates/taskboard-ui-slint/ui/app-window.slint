@@ -1317,7 +1317,13 @@ export component AppWindow inherits Window {
         viewport-width: root.width;
         viewport-floor: status.y;
         panel-preferred-width: Theme.menu-max-width;
-        walk-stops: 1;
+        // The declared stop inventory (#1259): the entries rows in
+        // pushed order plus the footer's add affordance. The form
+        // surface keeps the degenerate clamp — its fields own the
+        // walk and the list stops are unmounted there.
+        walk-stops: root.track-form-open
+            ? 1
+            : root.task-model.track-entries.length + 1;
         dismissed => root.track-entries-dismiss-requested();
         TrackEntriesPanel {
         rows: root.task-model.track-entries;
