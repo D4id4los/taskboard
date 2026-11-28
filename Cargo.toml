@@ -87,7 +87,7 @@ figment = { version = "0.10", features = ["toml", "env"] }
 
 # Time & identifiers
 chrono = { version = "0.4", features = ["serde", "clock"] }
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 
 # CLI surface (taskboard-app)
 clap = { version = "4", features = ["derive"] }
