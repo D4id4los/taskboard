@@ -978,20 +978,14 @@ pub fn period_end(kind: PeriodKind, start: NaiveDate, day: DayCalendar) -> DateT
 #[must_use]
 pub fn log_window(
     habit: &Habit,
-    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    counts: &BTreeMap<WindowStart, u32>,
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> WindowStart {
     attribute_window(
         habit.target.kind(),
         habit.target.quota().get(),
-        |window| {
-            log.get(&HabitLogKey {
-                habit: habit.id,
-                window,
-            })
-            .map_or(0, |entry| entry.count)
-        },
+        |window| counts.get(&window).copied().unwrap_or(0),
         now,
         day,
     )
@@ -1067,11 +1061,12 @@ pub(crate) fn attribute_window(
 #[must_use]
 pub fn streak(
     habit: &Habit,
-    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    counts: &BTreeMap<WindowStart, u32>,
+    posture: &BTreeMap<WindowStart, bool>,
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> u32 {
-    streak_with_break(habit, log, now, day).0
+    streak_with_break(habit, counts, posture, now, day).0
 }
 
 /// The walk of [`streak`], additionally naming the period where the
@@ -1079,26 +1074,15 @@ pub fn streak(
 /// `None` means the walk terminated by saturation — no break, no seam.
 fn streak_with_break(
     habit: &Habit,
-    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    counts: &BTreeMap<WindowStart, u32>,
+    posture: &BTreeMap<WindowStart, bool>,
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> (u32, Option<NaiveDate>) {
     let kind = habit.target.kind();
     let quota = habit.target.quota().get();
-    let count = |window: WindowStart| {
-        log.get(&HabitLogKey {
-            habit: habit.id,
-            window,
-        })
-        .map_or(0, |entry| entry.count)
-    };
-    let skipped = |window: WindowStart| {
-        log.get(&HabitLogKey {
-            habit: habit.id,
-            window,
-        })
-        .is_some_and(|entry| entry.skip)
-    };
+    let count = |window: WindowStart| counts.get(&window).copied().unwrap_or(0);
+    let skipped = |window: WindowStart| posture.get(&window).is_some_and(|skip| *skip);
     let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
     let mut streak = 0_u32;
     let today = day.today(now);
@@ -1342,12 +1326,13 @@ pub fn tracker_arm(
 #[must_use]
 pub fn habit_streak_unioned(
     habit: &Habit,
-    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    counts: &BTreeMap<WindowStart, u32>,
+    posture: &BTreeMap<WindowStart, bool>,
     tasks: &BTreeMap<crate::ids::TaskId, crate::entities::Task>,
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> u32 {
-    let (own, break_period) = streak_with_break(habit, log, now, day);
+    let (own, break_period) = streak_with_break(habit, counts, posture, now, day);
     let Some(series) = habit.continued_from else {
         return own;
     };
@@ -1484,21 +1469,12 @@ impl AdherenceRatio {
 #[must_use]
 pub fn statistics_horizon(
     habit: &Habit,
-    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    counts: &BTreeMap<WindowStart, u32>,
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> Vec<NaiveDate> {
     let kind = habit.target.kind();
-    let mut rows: Vec<NaiveDate> = log
-        .keys()
-        .filter(|key| {
-            key.habit == habit.id
-                && key.window.as_date() == period_start(kind, key.window.as_date())
-        })
-        .map(|key| key.window.as_date())
-        .collect();
-    rows.sort_unstable();
-    let Some(earliest) = rows.first().copied() else {
+    let Some(earliest) = counts.keys().next().map(|window| window.as_date()) else {
         return Vec::new();
     };
     let natural = WindowStart::of_period(kind, day.today(now)).as_date();
@@ -1540,7 +1516,8 @@ pub fn statistics_horizon(
 #[must_use]
 pub fn adherence(
     habit: &Habit,
-    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    counts: &BTreeMap<WindowStart, u32>,
+    posture: &BTreeMap<WindowStart, bool>,
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> AdherenceRatio {
@@ -1548,18 +1525,14 @@ pub fn adherence(
     let quota = habit.target.quota().get();
     let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
     let today = day.today(now);
-    let horizon = statistics_horizon(habit, log, now, day);
+    let horizon = statistics_horizon(habit, counts, now, day);
     if horizon.is_empty() {
         return AdherenceRatio::empty();
     }
     let mut met = 0_u32;
     let mut scheduled = 0_u32;
     for window in horizon {
-        let entry = log.get(&HabitLogKey {
-            habit: habit.id,
-            window: WindowStart(window),
-        });
-        let count = entry.map_or(0, |row| row.count);
+        let count = counts.get(&WindowStart(window)).copied().unwrap_or(0);
         if habit
             .paused_until
             .is_some_and(|until| pause_covers_window(kind, window, until))
@@ -1569,7 +1542,7 @@ pub fn adherence(
         } else if count >= quota {
             met += 1;
             scheduled += 1;
-        } else if entry.is_some_and(|row| row.skip) {
+        } else if posture.get(&WindowStart(window)).is_some_and(|skip| *skip) {
             // Typed planned skip: transparent — leaves both (US-9
             // AC-2); consulted only under quota, the walk's order.
         } else if window_joins_denominator(habit, WindowStart(window), today) {
@@ -1601,7 +1574,8 @@ pub fn adherence(
 #[must_use]
 pub fn best_streak(
     habit: &Habit,
-    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    counts: &BTreeMap<WindowStart, u32>,
+    posture: &BTreeMap<WindowStart, bool>,
     now: DateTime<Utc>,
     day: DayCalendar,
 ) -> u32 {
@@ -1611,12 +1585,8 @@ pub fn best_streak(
     let today = day.today(now);
     let mut best = 0_u32;
     let mut run = 0_u32;
-    for window in statistics_horizon(habit, log, now, day) {
-        let entry = log.get(&HabitLogKey {
-            habit: habit.id,
-            window: WindowStart(window),
-        });
-        let count = entry.map_or(0, |row| row.count);
+    for window in statistics_horizon(habit, counts, now, day) {
+        let count = counts.get(&WindowStart(window)).copied().unwrap_or(0);
         if habit
             .paused_until
             .is_some_and(|until| pause_covers_window(kind, window, until))
@@ -1626,7 +1596,7 @@ pub fn best_streak(
         } else if count >= quota {
             run += 1;
             best = best.max(run);
-        } else if entry.is_some_and(|row| row.skip) {
+        } else if posture.get(&WindowStart(window)).is_some_and(|skip| *skip) {
             // Typed planned skip: transparent — neither extends nor
             // breaks (the walk's order: consulted only under quota).
         } else if window_joins_denominator(habit, WindowStart(window), today) {
@@ -1642,23 +1612,42 @@ pub fn best_streak(
 }
 
 /// The per-window totals (US-9 AC-1): the count column of the history
-/// grid — every current-kind canonical log row, keyed by window,
-/// counts as stored (a 0 row stays, honestly — an audited correction
-/// may empty a window). Former-kind and non-canonical rows are inert
-/// (D-H12): they simply do not appear.
+/// grid — the derived counts map itself (already habit-scoped and
+/// canonical; a count-0 window does not exist in the event grammar).
 #[must_use]
-pub fn per_period_totals(
+pub fn per_period_totals(counts: &BTreeMap<WindowStart, u32>) -> BTreeMap<WindowStart, u32> {
+    counts.clone()
+}
+
+/// The chunk-5 C1 test bridge: the fixtures still seed the
+/// (still-alive, keystone-pinned) mirror map, but the re-keyed
+/// projections consume the derived views — so tests convert
+/// mechanically. Canonical windows of the habit's current kind only;
+/// count-0 rows dropped (the event grammar has no 0 rows); skip marks
+/// carried into the posture view. The keystone proptest
+/// (`legacy_mirror_equals_event_derivations`) is the law that makes
+/// this conversion derivation-exact while the mirror lives.
+#[cfg(test)]
+pub(crate) fn derived_views_from_log(
     habit: &Habit,
     log: &BTreeMap<HabitLogKey, HabitLogEntry>,
-) -> BTreeMap<WindowStart, u32> {
+) -> (BTreeMap<WindowStart, u32>, BTreeMap<WindowStart, bool>) {
     let kind = habit.target.kind();
-    log.iter()
-        .filter(|(key, _)| {
-            key.habit == habit.id
-                && key.window.as_date() == period_start(kind, key.window.as_date())
-        })
-        .map(|(key, entry)| (key.window, entry.count))
-        .collect()
+    let mut counts = BTreeMap::new();
+    let mut posture = BTreeMap::new();
+    for (key, entry) in log {
+        if key.habit != habit.id || key.window.as_date() != period_start(kind, key.window.as_date())
+        {
+            continue;
+        }
+        if entry.count > 0 {
+            counts.insert(key.window, entry.count);
+        }
+        if entry.skip {
+            posture.insert(key.window, true);
+        }
+    }
+    (counts, posture)
 }
 
 #[cfg(test)]
@@ -1977,6 +1966,7 @@ mod tests {
     fn log_plan(
         fixture: &HabitFixture,
         command: &StateCommand,
+        ids: &CountingIds,
         at: DateTime<Utc>,
     ) -> Result<crate::command::CommandPlan, CommandError> {
         let app = AppState {
@@ -1987,7 +1977,7 @@ mod tests {
             &app,
             &[],
             command,
-            &CountingIds::new(),
+            ids,
             &ReminderDefaults::default(),
             fixture.day,
             at,
@@ -1996,13 +1986,8 @@ mod tests {
     }
 
     fn stored_count(fixture: &HabitFixture, window: WindowStart) -> u32 {
-        fixture
-            .log
-            .get(&HabitLogKey {
-                habit: fixture.habit.id,
-                window,
-            })
-            .map_or(0, |entry| entry.count)
+        let (counts, _) = derived_views_from_log(&fixture.habit, &fixture.log);
+        counts.get(&window).copied().unwrap_or(0)
     }
 
     /// The hand model of D-H6, implemented plainly: returns the streak
@@ -2042,6 +2027,14 @@ mod tests {
         chrono::TimeDelta::try_hours(24).expect("representable")
     }
 
+    /// The fixture-local spelling of the C1 bridge.
+    fn views_of(
+        habit: &Habit,
+        log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    ) -> (BTreeMap<WindowStart, u32>, BTreeMap<WindowStart, bool>) {
+        derived_views_from_log(habit, log)
+    }
+
     fn ts(secs: i64) -> DateTime<Utc> {
         chrono::TimeZone::timestamp_opt(&Utc, secs, 0).unwrap()
     }
@@ -2074,6 +2067,10 @@ mod tests {
             }),
         ) {
             let mut fixture = fixture;
+            // One shared id seam across the sequence (production mints
+            // distinct ids; a fresh counter per plan would collide the
+            // minted events).
+            let ids = CountingIds::new();
             let mut now = fixture.now;
             let initial_sum: u64 = fixture.log.values().map(|e| u64::from(e.count)).sum();
             let mut logs = 0_u64;
@@ -2099,7 +2096,7 @@ mod tests {
                         count,
                     }
                 };
-                let plan = log_plan(&fixture, &command, now).expect("fixture is commandable");
+                let plan = log_plan(&fixture, &command, &ids, now).expect("fixture is commandable");
                 if is_log {
                     logs += 1;
                     // (With interleaved corrections the Σ invariant is
@@ -2157,6 +2154,7 @@ mod tests {
                 };
                 apply_actions(&mut persisted, &plan.actions);
                 fixture.log = persisted.habits.log;
+                fixture.events = persisted.habits.events;
             }
             // When no correction ran, each +1 lands in exactly one
             // window: the partition invariant (pinned constructively
@@ -2185,7 +2183,11 @@ mod tests {
                 + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
             let (expected, pendings) = reference_walk(&fixture, now);
             prop_assert!(pendings <= 2, "at most two transparent periods");
-            prop_assert_eq!(streak(&fixture.habit, &fixture.log, now, fixture.day), expected);
+            let (counts, posture) = derived_views_from_log(&fixture.habit, &fixture.log);
+            prop_assert_eq!(
+                streak(&fixture.habit, &counts, &posture, now, fixture.day),
+                expected
+            );
         }
 
         /// §5.1 item 4 (the negative pin): two habit sets differing only
@@ -2234,8 +2236,18 @@ mod tests {
             perturbed.habit.anchor_day = anchor_day;
             let now = fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
             prop_assert_eq!(
-                log_window(&perturbed.habit, &perturbed.log, now, perturbed.day),
-                log_window(&fixture.habit, &fixture.log, now, fixture.day),
+                log_window(
+                    &perturbed.habit,
+                    &derived_views_from_log(&perturbed.habit, &perturbed.log).0,
+                    now,
+                    perturbed.day,
+                ),
+                log_window(
+                    &fixture.habit,
+                    &derived_views_from_log(&fixture.habit, &fixture.log).0,
+                    now,
+                    fixture.day,
+                ),
             );
         }
 
@@ -2254,21 +2266,26 @@ mod tests {
             perturbed.habit.description = description;
             perturbed.habit.anchor_day = anchor_day;
             let now = fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
+            let (counts, posture) = derived_views_from_log(&fixture.habit, &fixture.log);
+            let (p_counts, p_posture) =
+                derived_views_from_log(&perturbed.habit, &perturbed.log);
             prop_assert_eq!(
-                streak(&perturbed.habit, &perturbed.log, now, perturbed.day),
-                streak(&fixture.habit, &fixture.log, now, fixture.day),
+                streak(&perturbed.habit, &p_counts, &p_posture, now, perturbed.day),
+                streak(&fixture.habit, &counts, &posture, now, fixture.day),
             );
             prop_assert_eq!(
                 habit_streak_unioned(
                     &perturbed.habit,
-                    &perturbed.log,
+                    &p_counts,
+                    &p_posture,
                     &std::collections::BTreeMap::new(),
                     now,
                     perturbed.day,
                 ),
                 habit_streak_unioned(
                     &fixture.habit,
-                    &fixture.log,
+                    &counts,
+                    &posture,
                     &std::collections::BTreeMap::new(),
                     now,
                     fixture.day,
@@ -2358,16 +2375,13 @@ mod tests {
     fn hf1_reference_walk(fixture: &HabitFixture, now: DateTime<Utc>) -> (u32, usize) {
         let kind = fixture.habit.target.kind();
         let quota = fixture.habit.target.quota().get();
+        let (counts, posture) = derived_views_from_log(&fixture.habit, &fixture.log);
         let mut cursor = WindowStart::of_period(kind, fixture.day.today(now)).as_date();
         let mut streak = 0_u32;
         let mut pendings = 0_usize;
         loop {
-            let row = fixture.log.get(&HabitLogKey {
-                habit: fixture.habit.id,
-                window: WindowStart(cursor),
-            });
-            let count = row.map_or(0, |e| e.count);
-            let skipped = row.is_some_and(|e| e.skip);
+            let count = counts.get(&WindowStart(cursor)).copied().unwrap_or(0);
+            let skipped = posture.get(&WindowStart(cursor)).is_some_and(|skip| *skip);
             let covered = fixture
                 .habit
                 .paused_until
@@ -2418,13 +2432,15 @@ mod tests {
             }),
         ) {
             let now = fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
-            let baseline = streak(&fixture.habit, &fixture.log, now, fixture.day);
+            let (counts, posture) = derived_views_from_log(&fixture.habit, &fixture.log);
+            let baseline = streak(&fixture.habit, &counts, &posture, now, fixture.day);
             // (b) transparency never breaks: marking and pausing can
             // only extend the walk, never truncate a run the baseline
             // counted.
             let mut marked = fixture.clone();
             mark_skips(&mut marked, &mask);
-            let with_marks = streak(&marked.habit, &marked.log, now, marked.day);
+            let (m_counts, m_posture) = derived_views_from_log(&marked.habit, &marked.log);
+            let with_marks = streak(&marked.habit, &m_counts, &m_posture, now, marked.day);
             prop_assert!(with_marks >= baseline, "skips never break a run");
             // (a) transparency never counts: the walk stops at the
             // first pause-covered window (the monotone termination law)
@@ -2451,19 +2467,23 @@ mod tests {
                         .pred_opt()
                         .unwrap_or(first.window.as_date()),
                 );
-                let with_pause = streak(&paused.habit, &paused.log, now, paused.day);
+                let (p_counts, p_posture) = derived_views_from_log(&paused.habit, &paused.log);
+                let with_pause = streak(&paused.habit, &p_counts, &p_posture, now, paused.day);
                 let mut both = paused.clone();
                 if let Some(entry) = both.log.get_mut(&first) {
                     entry.skip = true;
                 }
+                let (b_counts, b_posture) = derived_views_from_log(&both.habit, &both.log);
                 prop_assert_eq!(
-                    streak(&both.habit, &both.log, now, both.day),
+                    streak(&both.habit, &b_counts, &b_posture, now, both.day),
                     with_pause,
                     "skip ∧ pause = one transparent outcome"
                 );
                 let mut marks_only = paused.clone();
                 marks_only.habit.paused_until = None;
-                let _ = streak(&marks_only.habit, &marks_only.log, now, marks_only.day);
+                let (mo_counts, mo_posture) =
+                    derived_views_from_log(&marks_only.habit, &marks_only.log);
+                let _ = streak(&marks_only.habit, &mo_counts, &mo_posture, now, marks_only.day);
             }
         }
 
@@ -2491,7 +2511,11 @@ mod tests {
             }
             let (expected, pendings) = hf1_reference_walk(&marked, now);
             prop_assert!(pendings <= 2, "at most two grace-pending windows");
-            prop_assert_eq!(streak(&marked.habit, &marked.log, now, marked.day), expected);
+            let (m_counts, m_posture) = derived_views_from_log(&marked.habit, &marked.log);
+            prop_assert_eq!(
+                streak(&marked.habit, &m_counts, &m_posture, now, marked.day),
+                expected
+            );
         }
     }
 
@@ -2508,29 +2532,34 @@ mod tests {
         let mut fixture = HabitFixture {
             habit: habit(1, HabitTarget::PerWeek(NonZeroCount::new(1).expect("1"))),
             log: std::collections::BTreeMap::new(),
+            events: std::collections::BTreeMap::new(),
             now: ts(1_000),
             day: DayCalendar {
                 day_start_time: chrono::NaiveTime::MIN,
                 offset: chrono::FixedOffset::east_opt(0).expect("utc"),
             },
         };
+        let ids = CountingIds::new();
         let plan1 = log_plan(
             &fixture,
             &StateCommand::LogHabit {
                 habit: fixture.habit.id,
             },
+            &ids,
             fixture.now,
         )
         .expect("commandable");
         // The second log plans against the post-first-log state (the
         // mint is a pure function of the pre-state; real replays
-        // execute commands in order, so this mirrors the engine).
+        // execute commands in order, so this mirrors the engine — and
+        // the shared id seam mints the second event a DISTINCT id).
         advance_fixture(&mut fixture, &plan1);
         let plan2 = log_plan(
             &fixture,
             &StateCommand::LogHabit {
                 habit: fixture.habit.id,
             },
+            &ids,
             fixture.now,
         )
         .expect("commandable");
@@ -2582,11 +2611,13 @@ mod tests {
     #[test]
     fn same_instant_double_log_mints_strictly_increasing_clocks() {
         let mut fixture = habit_fixture(ts(1_000));
+        let ids = CountingIds::new();
         let plan1 = log_plan(
             &fixture,
             &StateCommand::LogHabit {
                 habit: fixture.habit.id,
             },
+            &ids,
             fixture.now,
         )
         .expect("commandable");
@@ -2596,6 +2627,7 @@ mod tests {
             &StateCommand::LogHabit {
                 habit: fixture.habit.id,
             },
+            &ids,
             fixture.now,
         )
         .expect("commandable");
@@ -2616,6 +2648,7 @@ mod tests {
     #[test]
     fn adjust_after_a_same_instant_burst_stamps_past_the_burst_row() {
         let mut fixture = habit_fixture(ts(1_000));
+        let ids = CountingIds::new();
         let mut burst_clock = None;
         for _ in 0..3 {
             let plan = log_plan(
@@ -2623,6 +2656,7 @@ mod tests {
                 &StateCommand::LogHabit {
                     habit: fixture.habit.id,
                 },
+                &ids,
                 fixture.now,
             )
             .expect("commandable");
@@ -2634,9 +2668,15 @@ mod tests {
             &fixture,
             &StateCommand::AdjustHabitLog {
                 habit: fixture.habit.id,
-                window: log_window(&fixture.habit, &fixture.log, fixture.now, fixture.day),
+                window: log_window(
+                    &fixture.habit,
+                    &derived_views_from_log(&fixture.habit, &fixture.log).0,
+                    fixture.now,
+                    fixture.day,
+                ),
                 count: 7,
             },
+            &ids,
             fixture.now + one_second(),
         )
         .expect("commandable");
@@ -2655,7 +2695,12 @@ mod tests {
             ..PersistedState::default()
         };
         apply_actions(&mut final_state, &plan.actions);
-        let window = log_window(&fixture.habit, &fixture.log, fixture.now, fixture.day);
+        let window = log_window(
+            &fixture.habit,
+            &derived_views_from_log(&fixture.habit, &fixture.log).0,
+            fixture.now,
+            fixture.day,
+        );
         assert_eq!(
             final_state
                 .habits
@@ -2674,6 +2719,7 @@ mod tests {
         HabitFixture {
             habit: habit(1, HabitTarget::PerWeek(NonZeroCount::new(1).expect("1"))),
             log: std::collections::BTreeMap::new(),
+            events: std::collections::BTreeMap::new(),
             now,
             day: DayCalendar {
                 day_start_time: chrono::NaiveTime::MIN,
@@ -2692,6 +2738,7 @@ mod tests {
         };
         apply_actions(&mut persisted, &plan.actions);
         fixture.log = persisted.habits.log;
+        fixture.events = persisted.habits.events;
     }
 
     fn minted_clock(plan: &crate::command::CommandPlan) -> DateTime<Utc> {
@@ -2758,9 +2805,9 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let now = crate::days::window_start(today, day.day_start_time, day.offset)
             + chrono::TimeDelta::try_hours(9).expect("9 h");
-        let empty: BTreeMap<HabitLogKey, HabitLogEntry> = BTreeMap::new();
+        let empty = (BTreeMap::new(), BTreeMap::<WindowStart, bool>::new());
         assert_eq!(
-            streak(&habit, &empty, now, day),
+            streak(&habit, &empty.0, &empty.1, now, day),
             0,
             "today pending, everything earlier missed"
         );
@@ -2796,11 +2843,13 @@ mod tests {
         let yesterday = WindowStart(period_before(PeriodKind::Day, today));
         let mut log = BTreeMap::new();
         met(&mut log, &habit, yesterday, ts(100));
+        let (counts, posture) = views_of(&habit, &log);
         // Today unmet but its grace is open: pending — yesterday counts.
-        assert_eq!(streak(&habit, &log, now, day), 1);
+        assert_eq!(streak(&habit, &counts, &posture, now, day), 1);
         // And the day before yesterday unmet breaks it exactly there.
+        let none = (BTreeMap::new(), BTreeMap::<WindowStart, bool>::new());
         assert_eq!(
-            streak(&habit, &BTreeMap::new(), now, day),
+            streak(&habit, &none.0, &none.1, now, day),
             0,
             "no rows, no run"
         );
@@ -2848,8 +2897,9 @@ mod tests {
         let grace_end = period_end(PeriodKind::Day, miss, day) + grace_offset();
         let inside = grace_end - chrono::TimeDelta::try_hours(1).expect("1 h");
         let past = grace_end + chrono::TimeDelta::try_hours(1).expect("1 h");
-        let inside_streak = streak(&habit, &log, inside, day);
-        let past_streak = streak(&habit, &log, past, day);
+        let (counts, posture) = views_of(&habit, &log);
+        let inside_streak = streak(&habit, &counts, &posture, inside, day);
+        let past_streak = streak(&habit, &counts, &posture, past, day);
         assert_eq!(past_streak, 2, "the chain breaks at the closed miss");
         assert!(
             inside_streak > past_streak,
@@ -2859,8 +2909,9 @@ mod tests {
         // healed period itself joins the chain (the walk counts it).
         let mut repaired = log.clone();
         met(&mut repaired, &habit, w(miss), ts(100));
+        let (r_counts, r_posture) = views_of(&habit, &repaired);
         assert_eq!(
-            streak(&habit, &repaired, inside, day),
+            streak(&habit, &r_counts, &r_posture, inside, day),
             inside_streak + 1,
             "the repaired miss counts on top of the spanned neighbors"
         );
@@ -2905,13 +2956,15 @@ mod tests {
             WindowStart::of_period(PeriodKind::Week, period_before(PeriodKind::Week, today));
         let mut log = BTreeMap::new();
         met(&mut log, &habit, this_week, ts(100));
+        let (counts, posture) = views_of(&habit, &log);
         // Without the mark, the unmet closed last week is the break.
-        assert_eq!(streak(&habit, &log, now, day), 1);
+        assert_eq!(streak(&habit, &counts, &posture, now, day), 1);
         // With the mark, the walk walks on (older empty windows miss).
         let mut marked = log.clone();
         skipped(&mut marked, &habit, last_week, ts(90));
+        let (m_counts, m_posture) = views_of(&habit, &marked);
         assert_eq!(
-            streak(&habit, &marked, now, day),
+            streak(&habit, &m_counts, &m_posture, now, day),
             1,
             "the skip is transparent"
         );
@@ -2950,8 +3003,9 @@ mod tests {
             w(period_before(PeriodKind::Day, today)),
             ts(90),
         );
+        let (counts, posture) = views_of(&habit, &log);
         assert_eq!(
-            streak(&habit, &log, now, day),
+            streak(&habit, &counts, &posture, now, day),
             2,
             "the skipped-but-met window counts"
         );
@@ -2974,18 +3028,24 @@ mod tests {
         let mut log = BTreeMap::new();
         met(&mut log, &habit, w(today), ts(100));
         met(&mut log, &habit, w(yesterday), ts(90));
-        assert_eq!(streak(&habit, &log, now, day), 2);
+        let (counts, posture) = views_of(&habit, &log);
+        assert_eq!(streak(&habit, &counts, &posture, now, day), 2);
         // Pause through yesterday: the covered window gives no credit...
         habit.paused_until = Some(yesterday);
-        assert_eq!(streak(&habit, &log, now, day), 1, "no credit while covered");
+        assert_eq!(
+            streak(&habit, &counts, &posture, now, day),
+            1,
+            "no credit while covered"
+        );
         // ...and an unmet covered window gives no miss either.
         let mut unmet = log.clone();
         unmet.remove(&HabitLogKey {
             habit: habit.id,
             window: w(yesterday),
         });
+        let (u_counts, u_posture) = views_of(&habit, &unmet);
         assert_eq!(
-            streak(&habit, &unmet, now, day),
+            streak(&habit, &u_counts, &u_posture, now, day),
             1,
             "no miss while covered — the walk walks on"
         );
@@ -3108,8 +3168,9 @@ mod tests {
                 ts(100),
             );
         }
+        let (counts, posture) = views_of(&habit, &log);
         assert_eq!(
-            streak(&habit, &log, now, day),
+            streak(&habit, &counts, &posture, now, day),
             0,
             "non-canonical dates never count for a weekly target"
         );
@@ -3122,7 +3183,8 @@ mod tests {
             WindowStart::of_period(PeriodKind::Week, today),
             ts(100),
         );
-        assert_eq!(streak(&habit, &log, now, day), 1);
+        let (counts, posture) = views_of(&habit, &log);
+        assert_eq!(streak(&habit, &counts, &posture, now, day), 1);
         let _ = &mut habit;
     }
 }
@@ -3220,6 +3282,13 @@ mod seam_tests {
         }
     }
 
+    fn views(
+        habit: &Habit,
+        log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    ) -> (BTreeMap<WindowStart, u32>, BTreeMap<WindowStart, bool>) {
+        derived_views_from_log(habit, log)
+    }
+
     fn met_on(log: &mut BTreeMap<HabitLogKey, HabitLogEntry>, habit: &Habit, d: NaiveDate) {
         log.insert(
             HabitLogKey {
@@ -3258,9 +3327,10 @@ mod seam_tests {
         met_on(&mut log, &unlinked, period_before(PeriodKind::Day, TODAY));
         let tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
         let at = now();
+        let (counts, posture) = views(&unlinked, &log);
         assert_eq!(
-            habit_streak_unioned(&unlinked, &log, &tasks, at, day()),
-            streak(&unlinked, &log, at, day()),
+            habit_streak_unioned(&unlinked, &counts, &posture, &tasks, at, day()),
+            streak(&unlinked, &counts, &posture, at, day()),
         );
         // Linked, but the walk never breaks (both days met, yesterday's
         // grace long closed for today? No — today is met, yesterday met,
@@ -3269,10 +3339,10 @@ mod seam_tests {
         // pin the no-break arm through the saturation rule instead:
         // streak == 0 with an empty log breaks immediately — equals the
         // plain walk with no series to join.
-        let empty: BTreeMap<HabitLogKey, HabitLogEntry> = BTreeMap::new();
+        let empty = (BTreeMap::new(), BTreeMap::<WindowStart, bool>::new());
         assert_eq!(
-            habit_streak_unioned(&linked, &empty, &tasks, at, day()),
-            streak(&linked, &empty, at, day()),
+            habit_streak_unioned(&linked, &empty.0, &empty.1, &tasks, at, day()),
+            streak(&linked, &empty.0, &empty.1, at, day()),
         );
     }
 
@@ -3292,14 +3362,15 @@ mod seam_tests {
         met_on(&mut log, &habit, TODAY);
         met_on(&mut log, &habit, yesterday);
         // miss (two days back) unmet → break there.
-        let plain = streak(&habit, &log, at, day());
+        let (counts, posture) = views(&habit, &log);
+        let plain = streak(&habit, &counts, &posture, at, day());
         assert_eq!(plain, 2, "today and yesterday count; the miss breaks");
         // The series completed the miss's member: the streak extends by one.
         let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
         let done = series_task(10, 7, miss, true);
         tasks.insert(done.id, done);
         assert_eq!(
-            habit_streak_unioned(&habit, &log, &tasks, at, day()),
+            habit_streak_unioned(&habit, &counts, &posture, &tasks, at, day()),
             plain + 1,
         );
         // An open (not-done) member at the same date contributes nothing.
@@ -3307,7 +3378,7 @@ mod seam_tests {
         let open = series_task(11, 7, miss, false);
         open_tasks.insert(open.id, open);
         assert_eq!(
-            habit_streak_unioned(&habit, &log, &open_tasks, at, day()),
+            habit_streak_unioned(&habit, &counts, &posture, &open_tasks, at, day()),
             plain
         );
         // A gap breaks the join: complete only the member before the miss.
@@ -3315,7 +3386,7 @@ mod seam_tests {
         let older = series_task(12, 7, period_before(PeriodKind::Day, miss), true);
         gapped.insert(older.id, older);
         assert_eq!(
-            habit_streak_unioned(&habit, &log, &gapped, at, day()),
+            habit_streak_unioned(&habit, &counts, &posture, &gapped, at, day()),
             plain
         );
     }
@@ -3335,6 +3406,7 @@ mod seam_tests {
         ) + chrono::TimeDelta::try_hours(30).expect("30 h");
         let a = series_task(10, 7, miss, true);
         let b = series_task(11, 7, period_before(PeriodKind::Day, miss), true);
+        let (counts, posture) = views(&habit, &log);
         let mut one = BTreeMap::new();
         one.insert(a.id, a.clone());
         one.insert(b.id, b.clone());
@@ -3342,8 +3414,8 @@ mod seam_tests {
         two.insert(b.id, b);
         two.insert(a.id, a);
         assert_eq!(
-            habit_streak_unioned(&habit, &log, &one, at, day()),
-            habit_streak_unioned(&habit, &log, &two, at, day()),
+            habit_streak_unioned(&habit, &counts, &posture, &one, at, day()),
+            habit_streak_unioned(&habit, &counts, &posture, &two, at, day()),
         );
     }
 
@@ -3360,13 +3432,14 @@ mod seam_tests {
             chrono::NaiveTime::MIN,
             chrono::FixedOffset::east_opt(0).unwrap(),
         ) + chrono::TimeDelta::try_hours(30).expect("30 h");
+        let (counts, posture) = views(&habit, &log);
         let mut tasks = BTreeMap::new();
         let mut done = series_task(10, 7, miss, true);
         done.deleted = true;
         tasks.insert(done.id, done);
         assert_eq!(
-            habit_streak_unioned(&habit, &log, &tasks, at, day()),
-            streak(&habit, &log, at, day()),
+            habit_streak_unioned(&habit, &counts, &posture, &tasks, at, day()),
+            streak(&habit, &counts, &posture, at, day()),
         );
     }
 
@@ -3389,7 +3462,8 @@ mod seam_tests {
         let mut log = BTreeMap::new();
         met_on(&mut log, &habit, TODAY);
         met_on(&mut log, &habit, yesterday);
-        let plain = streak(&habit, &log, at, day());
+        let (counts, posture) = views(&habit, &log);
+        let plain = streak(&habit, &counts, &posture, at, day());
         assert_eq!(plain, 2, "today and yesterday count; the miss breaks");
         // The pause rides every carried rule copy (the chain copies the
         // rule verbatim; the union reads it from the most recent done
@@ -3405,7 +3479,7 @@ mod seam_tests {
             tasks.insert(task.id, task);
         }
         assert_eq!(
-            habit_streak_unioned(&habit, &log, &tasks, at, day()),
+            habit_streak_unioned(&habit, &counts, &posture, &tasks, at, day()),
             plain + 1,
         );
     }
@@ -3715,15 +3789,17 @@ mod hf4_schedule_tests {
         // The current window is transparent (pending): yesterday's met
         // week still shows through.
         let log = BTreeMap::from([row(1, date(2026, 11, 9), 1), row(1, date(2026, 11, 16), 0)]);
+        let (counts, posture) = derived_views_from_log(&weekly, &log);
         assert_eq!(
-            streak(&weekly, &log, now, day),
+            streak(&weekly, &counts, &posture, now, day),
             1,
             "unmet pre-schedule week does not break"
         );
         // Same log with the current row deleted: identical (the window
         // is transparent, not a miss).
         let log_prev_only = BTreeMap::from([row(1, date(2026, 11, 9), 1)]);
-        assert_eq!(streak(&weekly, &log_prev_only, now, day), 1);
+        let (counts, posture) = derived_views_from_log(&weekly, &log_prev_only);
+        assert_eq!(streak(&weekly, &counts, &posture, now, day), 1);
         // Monthly: scheduled {3rd, 20th}; today the 1st → transparent.
         let mut monthly = habit(
             2,
@@ -3735,8 +3811,9 @@ mod hf4_schedule_tests {
         // on the 1st the month window is pre-schedule.
         let now_month = at(2026, 11, 1, 12);
         let mlog = BTreeMap::from([row(2, date(2026, 10, 1), 1), row(2, date(2026, 11, 1), 0)]);
+        let (mcounts, mposture) = derived_views_from_log(&monthly, &mlog);
         assert_eq!(
-            streak(&monthly, &mlog, now_month, day),
+            streak(&monthly, &mcounts, &mposture, now_month, day),
             1,
             "unmet pre-schedule month does not break"
         );
@@ -3746,13 +3823,13 @@ mod hf4_schedule_tests {
         // grace closes it is a miss that breaks the run.
         let now_pending = at(2026, 11, 30, 12);
         assert_eq!(
-            streak(&monthly, &mlog, now_pending, day),
+            streak(&monthly, &mcounts, &mposture, now_pending, day),
             1,
             "pending within grace"
         );
         let now_missed = at(2026, 12, 2, 12);
         assert_eq!(
-            streak(&monthly, &mlog, now_missed, day),
+            streak(&monthly, &mcounts, &mposture, now_missed, day),
             0,
             "grace closed: the elapsed scheduled window misses"
         );
@@ -3805,7 +3882,8 @@ mod hf4_schedule_tests {
             f.habit.scheduled_days = WeekdaySet::new(days).ok();
         }
         let today = f.day.today(now);
-        let clean = streak(&f.habit, &f.log, now, f.day);
+        let (counts, posture) = derived_views_from_log(&f.habit, &f.log);
+        let clean = streak(&f.habit, &counts, &posture, now, f.day);
         // (a) arbitrary skip marks never break a run.
         let mut marked = f.clone();
         for (i, key) in marked.log.keys().copied().collect::<Vec<_>>()
@@ -3819,7 +3897,8 @@ mod hf4_schedule_tests {
                 entry.skip = true;
             }
         }
-        let with_marks = streak(&marked.habit, &marked.log, now, marked.day);
+        let (mcounts, mposture) = derived_views_from_log(&marked.habit, &marked.log);
+        let with_marks = streak(&marked.habit, &mcounts, &mposture, now, marked.day);
         prop_assert!(with_marks >= clean, "skips never break a run");
         // (b) marks confined to pre-schedule windows are invisible.
         let mut presched = f.clone();
@@ -3835,8 +3914,9 @@ mod hf4_schedule_tests {
                 entry.skip = true;
             }
         }
+        let (pcounts, pposture) = derived_views_from_log(&presched.habit, &presched.log);
         prop_assert_eq!(
-            streak(&presched.habit, &presched.log, now, presched.day),
+            streak(&presched.habit, &pcounts, &pposture, now, presched.day),
             clean,
             "a pre-schedule window's skip mark is invisible (one transparent outcome)"
         );
@@ -3847,8 +3927,20 @@ mod hf4_schedule_tests {
         let mut paused_marked = presched.clone();
         paused_marked.habit.paused_until = Some(until);
         prop_assert_eq!(
-            streak(&paused_marked.habit, &paused_marked.log, now, paused_marked.day),
-            streak(&paused_clean.habit, &paused_clean.log, now, paused_clean.day),
+            streak(
+                &paused_marked.habit,
+                &derived_views_from_log(&paused_marked.habit, &paused_marked.log).0,
+                &derived_views_from_log(&paused_marked.habit, &paused_marked.log).1,
+                now,
+                paused_marked.day,
+            ),
+            streak(
+                &paused_clean.habit,
+                &derived_views_from_log(&paused_clean.habit, &paused_clean.log).0,
+                &derived_views_from_log(&paused_clean.habit, &paused_clean.log).1,
+                now,
+                paused_clean.day,
+            ),
             "pre-schedule marks are invisible under a pause too"
         );
         }
@@ -4164,14 +4256,16 @@ mod hf4_schedule_tests {
         };
         let mut perturbed = fixture.clone();
         perturbed.habit.reminder = Some(ovr);
+        let (counts, posture) = derived_views_from_log(&fixture.habit, &fixture.log);
+        let (p_counts, p_posture) = derived_views_from_log(&perturbed.habit, &perturbed.log);
         prop_assert_eq!(
-            streak(&perturbed.habit, &perturbed.log, now, perturbed.day),
-            streak(&fixture.habit, &fixture.log, now, fixture.day),
+            streak(&perturbed.habit, &p_counts, &p_posture, now, perturbed.day),
+            streak(&fixture.habit, &counts, &posture, now, fixture.day),
             "nudge parameters are WHEN-only"
         );
         prop_assert_eq!(
-            log_window(&perturbed.habit, &perturbed.log, now, perturbed.day),
-            log_window(&fixture.habit, &fixture.log, now, fixture.day),
+            log_window(&perturbed.habit, &p_counts, now, perturbed.day),
+            log_window(&fixture.habit, &counts, now, fixture.day),
             "attribution never reads the override"
         );
     }
@@ -4199,6 +4293,13 @@ mod statistics_tests {
             by: None,
             skip: false,
         }
+    }
+
+    fn views(
+        habit: &Habit,
+        log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    ) -> (BTreeMap<WindowStart, u32>, BTreeMap<WindowStart, bool>) {
+        derived_views_from_log(habit, log)
     }
 
     fn put(
@@ -4261,7 +4362,8 @@ mod statistics_tests {
         // 6 elapsed days: 3 met, 2 missed, 1 met → denominator 6,
         // numerator 4. Today is pending, never in either side.
         let (habit, log, now, day) = daily_habit(1, 2, &[true, false, true, false, true, true]);
-        let ratio = adherence(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log);
+        let ratio = adherence(&habit, &counts, &posture, now, day);
         assert_eq!(ratio.met(), 4);
         assert_eq!(ratio.scheduled(), 6);
         assert_eq!(ratio.ratio(), Some(4.0 / 6.0));
@@ -4278,14 +4380,16 @@ mod statistics_tests {
         // the typed empty state, not 100 % and not 0 %.
         let (habit, mut log, now, day) = daily_habit(2, 1, &[]);
         put(&mut log, habit.id, day.today(now), 0);
-        let ratio = adherence(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log);
+        let ratio = adherence(&habit, &counts, &posture, now, day);
         assert!(ratio.is_empty());
         assert_eq!(ratio.ratio(), None);
         // And a *met* pending window does count (done is done): met 1,
         // scheduled 1 — the current window's own completion joins the
         // ratio even while its grace is open.
         put(&mut log, habit.id, day.today(now), 1);
-        let ratio = adherence(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log);
+        let ratio = adherence(&habit, &counts, &posture, now, day);
         assert_eq!(ratio.met(), 1);
         assert_eq!(ratio.scheduled(), 1);
     }
@@ -4309,7 +4413,8 @@ mod statistics_tests {
                 skip: true,
             },
         );
-        let ratio = adherence(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log);
+        let ratio = adherence(&habit, &counts, &posture, now, day);
         assert!(ratio.is_empty(), "a lone skipped window is transparent");
         // Met rows on skipped windows count: done is done.
         log.insert(
@@ -4324,7 +4429,8 @@ mod statistics_tests {
                 skip: true,
             },
         );
-        let ratio = adherence(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log);
+        let ratio = adherence(&habit, &counts, &posture, now, day);
         assert_eq!(ratio.met(), 1);
         assert_eq!(ratio.scheduled(), 1);
     }
@@ -4342,16 +4448,18 @@ mod statistics_tests {
         for back in [1_i64, 2] {
             put(&mut log, habit.id, today - chrono::Duration::days(back), 0);
         }
-        let ratio = adherence(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log);
+        let ratio = adherence(&habit, &counts, &posture, now, day);
         assert!(
             ratio.is_empty(),
             "pause-covered misses never join the ratio"
         );
-        assert_eq!(best_streak(&habit, &log, now, day), 0);
+        assert_eq!(best_streak(&habit, &counts, &posture, now, day), 0);
         // Coverage composes over rows: a met window under the pause
         // stays transparent too (the walk's first arm).
         put(&mut log, habit.id, today - chrono::Duration::days(3), 1);
-        let ratio = adherence(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log);
+        let ratio = adherence(&habit, &counts, &posture, now, day);
         assert!(ratio.is_empty(), "a met row under the pause is transparent");
     }
 
@@ -4383,7 +4491,8 @@ mod statistics_tests {
             NaiveDate::from_ymd_opt(2026, 11, 16).expect("Monday"),
             0,
         );
-        let ratio = adherence(&weekly, &log, now, day);
+        let (counts, posture) = views(&weekly, &log);
+        let ratio = adherence(&weekly, &counts, &posture, now, day);
         assert!(
             ratio.is_empty(),
             "a pre-schedule window never joins numerator or denominator"
@@ -4401,10 +4510,11 @@ mod statistics_tests {
             1,
             &[true, true, false, true, false, true, true, true, true, true],
         );
-        assert_eq!(best_streak(&habit, &log, now, day), 5);
+        let (counts, posture) = views(&habit, &log);
+        assert_eq!(best_streak(&habit, &counts, &posture, now, day), 5);
         // And the current streak (the newest run's tail, bounded by
         // the newest miss) is smaller.
-        assert!(streak(&habit, &log, now, day) <= 5);
+        assert!(streak(&habit, &counts, &posture, now, day) <= 5);
     }
 
     // US-9 AC-3: empty history is the typed empty state — no 0 % of
@@ -4412,12 +4522,13 @@ mod statistics_tests {
     #[test]
     fn empty_history_is_the_typed_empty_state() {
         let (habit, log, now, day) = daily_habit(4, 1, &[]);
-        let ratio = adherence(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log);
+        let ratio = adherence(&habit, &counts, &posture, now, day);
         assert_eq!(ratio, AdherenceRatio::empty());
         assert!(ratio.is_empty());
         assert_eq!(ratio.ratio(), None);
-        assert_eq!(best_streak(&habit, &log, now, day), 0);
-        assert!(per_period_totals(&habit, &log).is_empty());
+        assert_eq!(best_streak(&habit, &counts, &posture, now, day), 0);
+        assert!(per_period_totals(&counts).is_empty());
     }
 
     // D-H12: former-kind (non-canonical) rows are inert — they never
@@ -4448,9 +4559,10 @@ mod statistics_tests {
             NaiveDate::from_ymd_opt(2026, 11, 17).expect("Tuesday"),
             5,
         );
-        let ratio = adherence(&weekly, &log, now, day);
+        let (counts, posture) = views(&weekly, &log);
+        let ratio = adherence(&weekly, &counts, &posture, now, day);
         assert!(ratio.is_empty(), "former-kind rows never become misses");
-        assert!(per_period_totals(&weekly, &log).is_empty());
+        assert!(per_period_totals(&counts).is_empty());
         // And another habit's rows are equally invisible (id-scoped).
         let (other, _, _, _) = daily_habit(6, 1, &[true, true]);
         let mut cross = BTreeMap::new();
@@ -4458,7 +4570,8 @@ mod statistics_tests {
             cross.insert(key, value);
         }
         let (subject, empty_log, now2, day2) = daily_habit(7, 1, &[]);
-        assert!(adherence(&subject, &cross, now2, day2).is_empty());
+        let (s_counts, s_posture) = views(&subject, &cross);
+        assert!(adherence(&subject, &s_counts, &s_posture, now2, day2).is_empty());
         drop(empty_log);
         let _ = weekly.target;
     }
@@ -4491,17 +4604,20 @@ mod statistics_tests {
         fn stats_invariants_hold_over_generated_histories(
             fixture in habit_fixture_strategy(),
         ) {
-            let ratio = adherence(&fixture.habit, &fixture.log, fixture.now, fixture.day);
+            let (counts, posture) = derived_views_from_log(&fixture.habit, &fixture.log);
+            let ratio = adherence(&fixture.habit, &counts, &posture, fixture.now, fixture.day);
             prop_assert!(ratio.met() <= ratio.scheduled());
             if let Some(r) = ratio.ratio() {
                 prop_assert!((0.0..=1.0).contains(&r));
             } else {
                 prop_assert!(ratio.is_empty());
             }
-            prop_assert!(best_streak(&fixture.habit, &fixture.log, fixture.now, fixture.day)
-                >= streak(&fixture.habit, &fixture.log, fixture.now, fixture.day));
+            prop_assert!(
+                best_streak(&fixture.habit, &counts, &posture, fixture.now, fixture.day)
+                    >= streak(&fixture.habit, &counts, &posture, fixture.now, fixture.day)
+            );
             let kind = fixture.habit.target.kind();
-            for (window, _) in per_period_totals(&fixture.habit, &fixture.log) {
+            for (window, _) in per_period_totals(&counts) {
                 prop_assert_eq!(window.as_date(), period_start(kind, window.as_date()));
             }
         }

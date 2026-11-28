@@ -18,7 +18,7 @@ use support::harness::Harness;
 
 use slint::ComponentHandle as _;
 use slint::Model as _;
-use taskboard_domain::{AppState, HabitLogEntry, HabitLogKey, StateCommand};
+use taskboard_domain::{AppState, StateCommand};
 use taskboard_ui_slint::KeyboardState;
 use taskboard_ui_slint::UiSettings;
 use taskboard_ui_slint::actions::ActionId;
@@ -151,21 +151,14 @@ fn us1_s3_row_shows_the_typed_skip_state() {
     // Mark the current window skipped in the seed (the engine's
     // typed mark, read back through the projection).
     let habit = *state.habits.habits.keys().next().expect("one habit");
-    let mut log = std::collections::BTreeMap::new();
-    let window = taskboard_domain::WindowStart::of_period(
-        taskboard_domain::PeriodKind::Day,
-        chrono::Utc::now().date_naive(),
+    let calendar = fixture::harness_calendar();
+    let today = calendar.today(chrono::Utc::now());
+    fixture::seed_skip(
+        &mut state,
+        habit,
+        fixture::at_in_window(&calendar, today),
+        today,
     );
-    log.insert(
-        taskboard_domain::HabitLogKey { habit, window },
-        taskboard_domain::HabitLogEntry {
-            count: 0,
-            clock: chrono::Utc::now(),
-            by: None,
-            skip: true,
-        },
-    );
-    state.habits.log = log;
     support::harness::run_journey_no_escape(state, move |harness| {
         harness.driver.advance_time(0);
         let row = harness
@@ -700,38 +693,31 @@ fn state_habit_with_history(state: &mut AppState) -> taskboard_domain::HabitId {
         by: None,
     };
     let id = habit.id;
+    let calendar = fixture::harness_calendar();
     let today = fixture::PINNED_NOW.date_naive();
-    let put = |log: &mut std::collections::BTreeMap<HabitLogKey, HabitLogEntry>,
-               window: chrono::NaiveDate,
-               count: u32| {
-        log.insert(
-            HabitLogKey {
-                habit: id,
-                window: taskboard_domain::habit::WindowStart::of_period(
-                    taskboard_domain::PeriodKind::Day,
-                    window,
-                ),
-            },
-            HabitLogEntry {
+    let put = |state: &mut AppState, window: chrono::NaiveDate, count: u32| {
+        // A 0-count window has no events in the event grammar — only
+        // met windows seed.
+        if count > 0 {
+            fixture::seed_completions(
+                state,
+                id,
+                fixture::at_in_window(&calendar, window),
+                window,
                 count,
-                clock: fixture::PINNED_NOW,
-                by: None,
-                skip: false,
-            },
-        );
+            );
+        }
     };
-    let mut log = std::collections::BTreeMap::new();
     let met = today - chrono::Duration::days(2);
     let missed = today - chrono::Duration::days(3);
-    put(&mut log, met, 2);
-    put(&mut log, missed, 0);
+    put(state, met, 2);
+    put(state, missed, 0);
     // An October row: the pager's back edge lives in a prior month.
     put(
-        &mut log,
+        state,
         chrono::NaiveDate::from_ymd_opt(2026, 10, 30).expect("date"),
         2,
     );
-    state.habits.log = log;
     state.habits.habits.insert(id, habit);
     id
 }
@@ -920,21 +906,14 @@ fn us8_s1_row_renders_the_streak_badge() {
     let (_fx, mut state) = fixture::golden_state();
     let id = state_habit_with_history(&mut state);
     // Give the current window a met count so the streak is >= 1.
+    let calendar = fixture::harness_calendar();
     let today = fixture::PINNED_NOW.date_naive();
-    state.habits.log.insert(
-        HabitLogKey {
-            habit: id,
-            window: taskboard_domain::habit::WindowStart::of_period(
-                taskboard_domain::PeriodKind::Day,
-                today,
-            ),
-        },
-        HabitLogEntry {
-            count: 2,
-            clock: fixture::PINNED_NOW,
-            by: None,
-            skip: false,
-        },
+    fixture::seed_completions(
+        &mut state,
+        id,
+        fixture::at_in_window(&calendar, today),
+        today,
+        2,
     );
     support::harness::run_journey_no_escape_with_settings(
         state,

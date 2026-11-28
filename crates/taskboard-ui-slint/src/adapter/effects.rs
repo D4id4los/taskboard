@@ -863,9 +863,14 @@ impl Adapter {
             .get(&habit)
             .is_some_and(taskboard_domain::habit::Habit::is_live)
             && state.habits.habits.get(&habit).is_some_and(|row| {
+                let (counts, _) = taskboard_domain::habit_event::derived_window_views(
+                    row,
+                    state.habits.events.values(),
+                    self.calendar(),
+                );
                 crate::presentation::habit_repair_target(
                     row,
-                    &state.habits.log,
+                    &counts,
                     self.day_ctx().now,
                     self.calendar(),
                 )

@@ -324,15 +324,16 @@ pub async fn skip_on(app: &crate::App, selector: &str) -> Result<HabitSkipReceip
         CommandOutcome::HabitSkipped { habit, window, .. } => {
             let state = app.engine.shared_state().load_full();
             let row = state.habits.habits[&habit].clone();
+            let day = app.config.resolved_day_calendar();
+            let (counts, posture) = taskboard_domain::habit_event::derived_window_views(
+                &row,
+                state.habits.events.values(),
+                day,
+            );
             Ok(HabitSkipReceipt {
                 habit_id: habit.as_uuid().to_string(),
                 window: window.as_date(),
-                streak: taskboard_domain::habit::streak(
-                    &row,
-                    &state.habits.log,
-                    Utc::now(),
-                    app.config.resolved_day_calendar(),
-                ),
+                streak: taskboard_domain::habit::streak(&row, &counts, &posture, Utc::now(), day),
             })
         }
         _ => Err(outcome_mismatch()),
@@ -998,6 +999,11 @@ pub fn habit_rows(
                 window,
             };
             let count = state.habits.log.get(&key).map_or(0, |e| e.count);
+            let (counts, posture) = taskboard_domain::habit_event::derived_window_views(
+                habit,
+                state.habits.events.values(),
+                day,
+            );
             let quota = habit.target.quota().get();
             HabitRow {
                 habit_id: habit.id.as_uuid().to_string(),
@@ -1006,7 +1012,7 @@ pub fn habit_rows(
                 target_phrase: target_phrase(habit.target),
                 count,
                 quota,
-                streak: habit_streak_unioned(habit, &state.habits.log, &state.tasks, now, day),
+                streak: habit_streak_unioned(habit, &counts, &posture, &state.tasks, now, day),
                 chip: habit.anchor_time,
                 met: count >= quota,
             }
@@ -1335,8 +1341,13 @@ pub fn history_on(app: &crate::App, selector: &str) -> Result<HabitHistoryView, 
     let day = app.config.resolved_day_calendar();
     let now = Utc::now();
     let kind = habit.target.kind();
+    let (counts, _) = taskboard_domain::habit_event::derived_window_views(
+        habit,
+        state.habits.events.values(),
+        day,
+    );
     let windows: Vec<HabitWindowRow> =
-        taskboard_domain::habit::statistics_horizon(habit, &state.habits.log, now, day)
+        taskboard_domain::habit::statistics_horizon(habit, &counts, now, day)
             .into_iter()
             .map(|window| {
                 let key = taskboard_domain::HabitLogKey {
@@ -1389,9 +1400,14 @@ pub fn stats_projection(
         .ok_or(CommandError::UnknownHabit {
             selector: id.as_uuid().to_string(),
         })?;
-    let ratio = taskboard_domain::habit::adherence(habit, &state.habits.log, now, day);
-    let best = taskboard_domain::habit::best_streak(habit, &state.habits.log, now, day);
-    let totals = taskboard_domain::habit::per_period_totals(habit, &state.habits.log);
+    let (counts, posture) = taskboard_domain::habit_event::derived_window_views(
+        habit,
+        state.habits.events.values(),
+        day,
+    );
+    let ratio = taskboard_domain::habit::adherence(habit, &counts, &posture, now, day);
+    let best = taskboard_domain::habit::best_streak(habit, &counts, &posture, now, day);
+    let totals = taskboard_domain::habit::per_period_totals(&counts);
     Ok(HabitStatsView {
         habit_id: id.as_uuid().to_string(),
         title: habit.title.clone(),

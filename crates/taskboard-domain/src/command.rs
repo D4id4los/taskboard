@@ -3419,7 +3419,12 @@ pub fn plan_command(
             // minted event (#1519): one `Completion`, `at = now`, id
             // from the seam — same-second logs mint distinct ids and
             // both count (no clock bump, no twin arbitration).
-            let window = log_window(habit, &app.habits.log, now, day);
+            let window = log_window(
+                habit,
+                &crate::habit_event::derive_window_counts(habit, app.habits.events.values(), day),
+                now,
+                day,
+            );
             let event = crate::habit_event::HabitEvent {
                 id: ids.new_habit_event_id(),
                 habit: *id,
@@ -3453,12 +3458,18 @@ pub fn plan_command(
             // *undo* role dies with the event inverse; `mint_log_clock`'s
             // deletion is the final chunk, with the mirror).
             let key = HabitLogKey { habit: *id, window };
-            let count = app.habits.log.get(&key).map_or(0, |entry| entry.count) + 1;
             let clock = crate::habit::mint_log_clock(
                 now,
                 app.habits.log.get(&key).map(|entry| entry.clock),
             );
             let after = events_after_writes(app, &[event]);
+            // The count is the post-mint derived value (the chunk-5
+            // re-key: the increment reads the derivation, never the
+            // stored map — identical under the keystone mirror law).
+            let count = crate::habit_event::derive_window_counts(habit, after.iter(), day)
+                .get(&window)
+                .copied()
+                .unwrap_or(0);
             let skip_after = crate::habit_event::derive_skip_posture(habit, after.iter(), day)
                 .get(&window)
                 .copied()
@@ -12513,21 +12524,32 @@ mod tests {
         assert_eq!(window.as_date(), ymd(1969, 12, 31));
     }
 
+    /// Seeds `count` completions on `date` at noon UTC (the event
+    /// fixture shape: the derived truth the attribution reads).
+    fn seed_met(app: &mut AppState, date: chrono::NaiveDate, count: u32) {
+        use crate::habit_event::{HabitEvent, HabitEventKind};
+        let at = date.and_hms_opt(12, 0, 0).expect("noon").and_utc();
+        let habit = super::tests::habit_id();
+        for ordinal in 0..count {
+            let id = crate::habit_event::legacy_habit_event_id(habit, date, at, Some(ordinal));
+            let event = HabitEvent {
+                id,
+                habit,
+                kind: HabitEventKind::Completion,
+                at,
+                by: None,
+                deleted: None,
+            };
+            app.habits.events.insert(id, event);
+        }
+    }
+
     #[test]
     fn log_habit_surplus_repairs_only_under_the_full_rule() {
         let quota = crate::habit::NonZeroCount::new(3).unwrap();
         // Case 1 — the repair: yesterday unmet, today met, in grace.
         let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(quota));
-        app.habits.log.insert(
-            HabitLogKey {
-                habit: super::tests::habit_id(),
-                window: crate::habit::WindowStart::of_period(
-                    crate::habit::PeriodKind::Day,
-                    ymd(1970, 1, 1),
-                ),
-            },
-            day_log(3),
-        );
+        seed_met(&mut app, ymd(1970, 1, 1), 3);
         let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
         let CommandOutcome::HabitLogged { window, count, .. } = plan.outcome else {
             panic!("wrong receipt");
@@ -12543,26 +12565,8 @@ mod tests {
         assert_eq!(window.as_date(), ymd(1970, 1, 1));
         // Case 3 — yesterday already met: no repair either.
         let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(quota));
-        app.habits.log.insert(
-            HabitLogKey {
-                habit: super::tests::habit_id(),
-                window: crate::habit::WindowStart::of_period(
-                    crate::habit::PeriodKind::Day,
-                    ymd(1970, 1, 1),
-                ),
-            },
-            day_log(3),
-        );
-        app.habits.log.insert(
-            HabitLogKey {
-                habit: super::tests::habit_id(),
-                window: crate::habit::WindowStart::of_period(
-                    crate::habit::PeriodKind::Day,
-                    ymd(1969, 12, 31),
-                ),
-            },
-            day_log(3),
-        );
+        seed_met(&mut app, ymd(1970, 1, 1), 3);
+        seed_met(&mut app, ymd(1969, 12, 31), 3);
         let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
         let CommandOutcome::HabitLogged { window, .. } = plan.outcome else {
             panic!("wrong receipt");
@@ -12575,12 +12579,18 @@ mod tests {
         let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
             crate::habit::NonZeroCount::new(5).unwrap(),
         ));
+        // One shared id seam across the sequence: production mints
+        // through a stateful generator, so consecutive logs mint
+        // DISTINCT event ids (the event grammar's identity law) — a
+        // fresh counter per plan would collide them.
+        let ids = crate::test_support::CountingIds::default();
         for n in 1..=3_u32 {
             let at = ts(T0 + i64::from(n) * 60);
-            let plan = run_at(
+            let plan = run_seq(
                 &app,
                 &outbox,
                 &StateCommand::LogHabit { habit: habit_id() },
+                &ids,
                 at,
             )
             .unwrap();

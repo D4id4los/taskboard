@@ -233,6 +233,10 @@ pub struct HabitFixture {
     pub habit: Habit,
     /// The count log over the anchor's canonical windows.
     pub log: BTreeMap<HabitLogKey, HabitLogEntry>,
+    /// The habit's event log (the #1519 grammar): command-driving
+    /// fixtures accumulate the minted events here so a sequential
+    /// plan reads the previous plans' derived truth.
+    pub events: BTreeMap<crate::habit_event::HabitEventId, crate::habit_event::HabitEvent>,
     /// The fixture's `now`: inside the anchor window's day.
     pub now: DateTime<Utc>,
     /// The UTC-midnight day calendar.
@@ -264,7 +268,7 @@ impl HabitFixture {
             log: self.log.clone(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
-            events: std::collections::BTreeMap::default(),
+            events: self.events.clone(),
         }
     }
 }
@@ -294,33 +298,67 @@ pub fn habit_fixture_strategy() -> impl Strategy<Value = HabitFixture> {
             let natural_date = period_start(habit.target.kind(), anchor);
             let now = crate::days::window_start(natural_date, day.day_start_time, day.offset)
                 + chrono::TimeDelta::try_seconds(i64::from(secs_into_day)).expect("in-day offset");
-            // Walk backward from the anchor so its window is the newest
-            // row and `depth` covers its predecessors.
-            let mut log = BTreeMap::new();
+            // The event-grammar fixture (the #1519 chunk-5 re-key):
+            // the count log IS the derivation of the seeded events, so
+            // the keystone mirror law holds by construction and the
+            // command-driving properties read one truth. Events are
+            // minted oldest-window-first, spaced inside their windows;
+            // the fold's counts (computed below) become the log rows.
+            let mut events = BTreeMap::new();
             let mut cursor = natural_date;
-            for (i, count) in counts.into_iter().take(depth as usize).enumerate() {
+            let mut draft: Vec<(crate::habit::WindowStart, u32)> = Vec::new();
+            for count in counts.into_iter().take(depth as usize) {
+                draft.push((crate::habit::WindowStart::of_period(kind, cursor), count));
+                cursor = crate::habit::period_before(habit.target.kind(), cursor);
+            }
+            draft.reverse(); // oldest window first
+            for (window, count) in draft {
+                let open =
+                    crate::days::window_start(window.as_date(), day.day_start_time, day.offset);
+                for ordinal in 0..count {
+                    let at = open
+                        + chrono::TimeDelta::try_seconds(i64::from(ordinal) + 1)
+                            .expect("bounded spacing");
+                    let id = crate::habit_event::legacy_habit_event_id(
+                        habit.id,
+                        window.as_date(),
+                        at,
+                        Some(ordinal),
+                    );
+                    let event = crate::habit_event::HabitEvent {
+                        id,
+                        habit: habit.id,
+                        kind: crate::habit_event::HabitEventKind::Completion,
+                        at,
+                        by: None,
+                        deleted: None,
+                    };
+                    events.insert(id, event);
+                }
+            }
+            // The log is the fold of the seeded events (the keystone
+            // law, by construction).
+            let derived = crate::habit_event::derive_window_counts(&habit, events.values(), day);
+            let mut log = BTreeMap::new();
+            for (window, count) in derived {
                 log.insert(
                     HabitLogKey {
                         habit: habit.id,
-                        window: crate::habit::WindowStart::of_period(kind, cursor),
+                        window,
                     },
                     HabitLogEntry {
                         count,
-                        clock: now
-                            - chrono::TimeDelta::try_hours(i64::try_from(i).unwrap() * 24 + 48)
-                                .expect("bounded offsets"),
-                        by: Some(crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(
-                            u128::from(count) * 7 + 1,
-                        ))),
+                        clock: now,
+                        by: None,
 
                         skip: false,
                     },
                 );
-                cursor = crate::habit::period_before(habit.target.kind(), cursor);
             }
             HabitFixture {
                 habit,
                 log,
+                events,
                 now,
                 day,
             }

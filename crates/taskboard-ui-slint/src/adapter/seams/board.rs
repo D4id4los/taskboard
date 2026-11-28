@@ -532,9 +532,17 @@ pub(in crate::adapter) fn install_stack_seams(window: &AppWindow, adapter: &Rc<R
                         // facts: a flip is legal exactly when the side
                         // being paged toward has room (US-7/S3 — no
                         // wrap, the ends hold).
+                        let habit_row = state.habits.habits.get(&habit).expect("open target");
+                        let (counts, posture) =
+                            taskboard_domain::habit_event::derived_window_views(
+                                habit_row,
+                                state.habits.events.values(),
+                                day,
+                            );
                         let visible = crate::presentation::habit_history_month(
-                            state.habits.habits.get(&habit).expect("open target"),
-                            &state.habits.log,
+                            habit_row,
+                            &counts,
+                            &posture,
                             month,
                             now,
                             day,

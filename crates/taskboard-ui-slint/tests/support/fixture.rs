@@ -457,6 +457,75 @@ pub fn journey_state_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppStat
 /// instant — the review-ledger template's capture class. Seeds derive
 /// from it; the mount freezes `day_ctx` at it. Never read the wall
 /// clock next to it.
+/// The event-grammar fixture shape (chunk 5): seeds `count` live
+/// completion events for `habit` at `at`, with the chunk-3
+/// deterministic legacy ids over `(habit, window_date, at, ordinal)` —
+/// distinct individuals by construction, deterministic across runs.
+pub fn seed_completions(
+    state: &mut taskboard_domain::AppState,
+    habit: taskboard_domain::HabitId,
+    at: chrono::DateTime<chrono::Utc>,
+    window_date: chrono::NaiveDate,
+    count: u32,
+) {
+    use taskboard_domain::habit_event::{HabitEvent, HabitEventKind};
+    for ordinal in 0..count {
+        let id = taskboard_domain::habit_event::legacy_habit_event_id(
+            habit,
+            window_date,
+            at,
+            Some(ordinal),
+        );
+        let event = HabitEvent {
+            id,
+            habit,
+            kind: HabitEventKind::Completion,
+            at,
+            by: None,
+            deleted: None,
+        };
+        state.habits.events.insert(id, event);
+    }
+}
+
+/// Seeds one skip mark for `habit` at `at` (the stored window is
+/// mint-time provenance — the derivation re-attributes `at`).
+pub fn seed_skip(
+    state: &mut taskboard_domain::AppState,
+    habit: taskboard_domain::HabitId,
+    at: chrono::DateTime<chrono::Utc>,
+    window_date: chrono::NaiveDate,
+) {
+    use taskboard_domain::habit_event::{HabitEvent, HabitEventKind};
+    let id = taskboard_domain::habit_event::legacy_habit_event_id(habit, window_date, at, None);
+    let event = HabitEvent {
+        id,
+        habit,
+        kind: HabitEventKind::Skip {
+            window: taskboard_domain::WindowStart::of_period(
+                taskboard_domain::PeriodKind::Day,
+                window_date,
+            ),
+        },
+        at,
+        by: None,
+        deleted: None,
+    };
+    state.habits.events.insert(id, event);
+}
+
+/// An instant strictly inside `date`'s day window under `calendar`
+/// (the window opening plus one hour) — the event fixture's `at` for
+/// "a completion on this calendar day".
+#[must_use]
+pub fn at_in_window(
+    calendar: &taskboard_domain::DayCalendar,
+    date: chrono::NaiveDate,
+) -> chrono::DateTime<chrono::Utc> {
+    taskboard_domain::days::window_start(date, calendar.day_start_time, calendar.offset)
+        + chrono::TimeDelta::try_hours(1).expect("1 h is representable")
+}
+
 pub const PINNED_NOW: chrono::DateTime<chrono::Utc> = {
     let Some(date) = chrono::NaiveDate::from_ymd_opt(2026, 11, 6) else {
         panic!("2026-11-06 is a calendar date");

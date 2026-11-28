@@ -406,6 +406,22 @@ pub fn derive_skip_posture<'a>(
         .collect()
 }
 
+/// The derived (counts, posture) pair for one habit — the two views
+/// every window-grain projection consumes (the #1519 chunk-5 re-key
+/// contract). Day-grain callers call [`derive_day_counts`] directly.
+#[must_use]
+pub fn derived_window_views<'a>(
+    habit: &Habit,
+    events: impl Iterator<Item = &'a HabitEvent>,
+    day: DayCalendar,
+) -> (BTreeMap<WindowStart, u32>, BTreeMap<WindowStart, bool>) {
+    let collected: Vec<&HabitEvent> = events.collect();
+    (
+        derive_window_counts(habit, collected.iter().copied(), day),
+        derive_skip_posture(habit, collected.iter().copied(), day),
+    )
+}
+
 /// The derived per-calendar-day completion counts (#1519 §2.2, the
 /// heatmap row): every live completion attributes to the plain
 /// calendar day of its instant under the device's day calendar —
@@ -823,8 +839,10 @@ mod derivation_tests {
 
         /// The equivalence oracle (T1): the fold reproduces the
         /// legacy log-time attribution exactly — the oracle is the
-        /// untouched `log_window` driven with the legacy map shape,
-        /// so the test fails if either leg changed the rule.
+        /// untouched `log_window` driven over the incrementally built
+        /// counts view (the pre-event-log write semantics; clocks/by
+        /// never influence attribution), so the test fails if either
+        /// leg changed the rule.
         #[test]
         fn derive_window_counts_matches_legacy_log_time_attribution(
             habit in bounded_habit_strategy(),
@@ -832,32 +850,14 @@ mod derivation_tests {
             day in day_calendar_strategy(),
         ) {
             let events = habit_for(&events, &habit);
-            // Simulate legacy logging: for each event in (at, id)
-            // order, attribute via log_window over the stored map and
-            // upsert count+1 (the pre-event-log write semantics;
-            // clocks/by never influence attribution).
-            let mut legacy: std::collections::BTreeMap<
-                crate::habit::HabitLogKey,
-                crate::habit::HabitLogEntry,
-            > = std::collections::BTreeMap::new();
+            let mut legacy: BTreeMap<WindowStart, u32> = BTreeMap::new();
             let mut ordered = events.clone();
             ordered.sort_by_key(|e| (e.at, e.id));
             for event in &ordered {
                 let window = crate::habit::log_window(&habit, &legacy, event.at, day);
-                let key = crate::habit::HabitLogKey { habit: habit.id, window };
-                let entry = legacy.entry(key).or_insert_with(|| crate::habit::HabitLogEntry {
-                    count: 0,
-                    clock: event.at,
-                    by: None,
-                    skip: false,
-                });
-                entry.count += 1;
+                *legacy.entry(window).or_default() += 1;
             }
-            let expected: BTreeMap<WindowStart, u32> = legacy
-                .into_iter()
-                .filter(|(key, entry)| key.habit == habit.id && entry.count > 0)
-                .map(|(key, entry)| (key.window, entry.count))
-                .collect();
+            let expected = legacy;
 
             let derived = derive_window_counts(&habit, events.iter(), day);
             prop_assert_eq!(derived, expected);

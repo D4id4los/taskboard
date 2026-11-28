@@ -731,20 +731,12 @@ fn us8_s2_repair_no_window_typed_refusal() {
         let calendar = fixture::harness_calendar();
         let today = calendar.today(chrono::Utc::now());
         let prev = taskboard_domain::habit::period_before(taskboard_domain::PeriodKind::Day, today);
-        state.habits.log.insert(
-            taskboard_domain::HabitLogKey {
-                habit,
-                window: taskboard_domain::WindowStart::of_period(
-                    taskboard_domain::PeriodKind::Day,
-                    prev,
-                ),
-            },
-            taskboard_domain::habit::HabitLogEntry {
-                count: 1,
-                clock: chrono::Utc::now(),
-                by: None,
-                skip: false,
-            },
+        fixture::seed_completions(
+            &mut state,
+            habit,
+            fixture::at_in_window(&calendar, prev),
+            prev,
+            1,
         );
     }
     support::harness::run_journey_no_escape(state, move |harness| {
