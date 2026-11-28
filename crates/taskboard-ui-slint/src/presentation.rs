@@ -8110,17 +8110,19 @@ pub struct HabitRow {
     /// `habit_repair_target` answered `Some` — the button mounts (in
     /// the edit cluster's gate), the dispatch carries the tuple.
     pub repair: bool,
-    /// Which side of the invert condition the repair is on (T-23,
-    /// #806): true exactly when the target window already holds a log
-    /// row — the `AdjustHabitLog` undo predicate (`undo.rs`'s
-    /// `PreImages` arm); false when the repair CREATES the window's
-    /// row (`NotUndoable(HabitSurface)` — the lossy-inverse
-    /// rationale is the engine's). Meaningless when `repair` is
-    /// false (no affordance renders).
+    /// The repair's invertibility bit (#1555, the #1519 chunk-5 D-6
+    /// rewrite): trivially true whenever the affordance mounts —
+    /// under the event grammar every repair dispatches an
+    /// `AdjustHabitLog` whose journal entry carries a
+    /// `PreImage::HabitEventWindow` snapshot, so the inverse always
+    /// exists. The legacy mirror-row heuristic is deleted with the
+    /// mirror (#1542). Meaningless when `repair` is false (no
+    /// affordance renders).
     pub repair_undoable: bool,
     /// The typed planned-skip bit (HF1, W-2): the current canonical
-    /// window's log row carries `skip == true` — the row renders the
-    /// typed skip chip instead of the miss posture (display only).
+    /// window derives skipped (the mark grammar, Ruling B) — the row
+    /// renders the typed skip chip instead of the miss posture
+    /// (display only).
     pub skip: bool,
     /// The paused bit (HF1, W-4): the habit's pause stands (`today <=
     /// paused_until`, the nudge disarm law's read-side mirror) — the
@@ -8177,7 +8179,9 @@ pub(crate) fn live_habits_in_order(
 /// this is the board-scoped INNER reader — the Today view's row
 /// source is [`today_habit_rows`], which folds it over the live
 /// boards; the board view (if any surface scopes again) and the
-/// reorder mint's arithmetic keep this reader.
+/// reorder mint's arithmetic keep this reader. The rows derive from
+/// the event grammar (the #1519 chunk-5 re-key): counts, streak and
+/// skip posture all read the derived window views.
 #[must_use]
 pub fn habit_rows(
     state: &taskboard_domain::AppState,
@@ -8220,19 +8224,11 @@ pub fn habit_rows(
                 chip: habit.anchor_time,
                 anchor_day: habit.anchor_day,
                 repair: repair_target.is_some(),
-                // The typed invert-condition bit (T-23, #806): the
-                // target window's own log row — present ⇒ the exact
-                // inverse (`PreImages`), absent ⇒ the repair creates
-                // the row (`NotUndoable(HabitSurface)`).
-                repair_undoable: repair_target.is_some_and(|(window, _)| {
-                    state
-                        .habits
-                        .log
-                        .contains_key(&taskboard_domain::HabitLogKey {
-                            habit: habit.id,
-                            window,
-                        })
-                }),
+                // The repair is always invertible under the event
+                // grammar (#1555, plan D-6): every repair's journal
+                // entry snapshots `PreImage::HabitEventWindow`, so the
+                // mount flag IS the invertibility fact.
+                repair_undoable: repair_target.is_some(),
                 met: count >= quota,
                 skip: posture.get(&window).is_some_and(|skip| *skip),
                 paused: habit.paused_until.is_some_and(|until| until >= today),
@@ -8550,8 +8546,8 @@ pub enum HabitWindowState {
     /// Under quota, grace still open (the walk's transparent
     /// pending window).
     Pending,
-    /// A typed planned skip (HF1): the log row carries the skip
-    /// mark, under quota.
+    /// A typed planned skip (HF1): the window derives skipped (the
+    /// mark grammar's newest-mark law), under quota.
     Skipped,
     /// Covered by a pause-through span (HF1): transparent whatever
     /// the row says (the walk's first arm).
@@ -8578,8 +8574,8 @@ pub struct HabitWindowCell {
     pub count: u32,
 }
 
-/// One visible month of the history grid (pure projection over
-/// `HabitState.log` — W-8's no-command reason per US-7/S2–S4).
+/// One visible month of the history grid (pure projection over the
+/// derived window views — W-8's no-command reason per US-7/S2–S4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HabitHistoryMonth {
     /// The visible month's anchor (its 1st).
@@ -9300,10 +9296,7 @@ mod translate_for_subject_tests {
 #[cfg(test)]
 mod habit_section_tests {
     use super::*;
-    use taskboard_domain::{
-        AppState, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitTarget, NonZeroCount,
-        PeriodKind, WindowStart,
-    };
+    use taskboard_domain::{AppState, Habit, HabitClocks, HabitTarget, NonZeroCount};
 
     fn ts(secs: i64) -> DateTime<Utc> {
         chrono::Utc.timestamp_opt(secs, 0).unwrap()
@@ -9408,19 +9401,24 @@ mod habit_section_tests {
     /// T-23 (#806) — the repair's typed undo side: the row model's
     /// `repair_undoable` bit carries the `AdjustHabitLog` invert
     /// condition verbatim — the target window holding a log row is
-    /// the `PreImages` side; an empty target window is the
-    /// `NotUndoable(HabitSurface)` side (the repair CREATES the row).
-    /// The caption splits on the bit; the tests are typed per side.
+    /// #1555 (the #1519 chunk-5 D-6 rewrite): the repair bit derives
+    /// from the event grammar — every repair's `AdjustHabitLog`
+    /// journals a `PreImage::HabitEventWindow` snapshot, so a mounted
+    /// repair is ALWAYS invertible. The legacy mirror-row heuristic
+    /// (row present ⇒ invertible) is deleted with the mirror (#1542);
+    /// the old test pinned that deleted fence and is replaced, not
+    /// re-named as debt.
     #[test]
-    fn the_habit_repair_row_signals_its_undo_side() {
+    fn the_mounted_repair_is_always_invertible_under_the_event_grammar() {
         let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
         let now = ts(1_700_000_000);
         let day_ctx = day();
         // Inside yesterday's overflow grace (the repair arm's window):
         // `now` early in today's day window keeps yesterday in grace.
         let grace_now = day_ctx.instant(day_ctx.today(now), chrono::NaiveTime::MIN);
-        // A daily habit, quota 3, yesterday EMPTY: the repair targets
-        // the empty window — the not-undoable side.
+        // A daily habit, quota 3, an EMPTY history: the repair mounts
+        // against the empty previous window and is invertible — the
+        // snapshot rides the journal entry, not a stored row.
         let mut state = AppState::default();
         let a = habit(1, 2, 0, None);
         state.habits.habits.insert(a.id, a.clone());
@@ -9428,33 +9426,8 @@ mod habit_section_tests {
         let row = rows.iter().find(|r| r.habit == a.id).expect("the row");
         assert!(row.repair, "yesterday under quota mounts the repair");
         assert!(
-            !row.repair_undoable,
-            "an empty target window is the NotUndoable(HabitSurface) side"
-        );
-        // Give yesterday a log row: the same repair now sits on the
-        // PreImages side — the exact invert.
-        state.habits.log.insert(
-            HabitLogKey {
-                habit: a.id,
-                window: WindowStart::of_period(
-                    PeriodKind::Day,
-                    day_ctx.today(grace_now).pred_opt().expect("yesterday"),
-                ),
-            },
-            HabitLogEntry {
-                count: 1,
-                clock: ts(100),
-                by: None,
-
-                skip: false,
-            },
-        );
-        let rows = habit_rows(&state, board, grace_now, day_ctx);
-        let row = rows.iter().find(|r| r.habit == a.id).expect("the row");
-        assert!(row.repair);
-        assert!(
             row.repair_undoable,
-            "a held target window is the exact-invert (PreImages) side"
+            "a mounted repair is always the exact-invert side"
         );
     }
 
