@@ -1481,6 +1481,23 @@ fn tty_repl_history_recalls_the_previous_sessions_line() {
 
 use std::sync::mpsc as std_mpsc;
 
+/// A plain delayed responder: every GET is answered with the boards
+/// payload after the designed window — no notify half (#1583). The
+/// stalled-line ^C test gates on the session's own dispatch log
+/// (#697), so it has no in-flight seam to observe; the tests that
+/// still need the arrival notification use `NotifyThenDelay` below.
+struct DelayedBoards {
+    delay: Duration,
+}
+
+impl wiremock::Respond for DelayedBoards {
+    fn respond(&self, _request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        wiremock::ResponseTemplate::new(200)
+            .set_body_string(common::boards_json())
+            .set_delay(self.delay)
+    }
+}
+
 /// A wiremock responder that notifies a channel when the request
 /// arrives, then delays — the deterministic gate for "the dispatch is
 /// in flight" (blocking recv, no sleeps) before a real signal is
@@ -1720,13 +1737,12 @@ fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
         .expect("runtime")
         .block_on(async {
             let server = wiremock::MockServer::start().await;
-            let (tx, _rx) = std_mpsc::channel();
             // The stalled route: every GET is answered after the
-            // designed silent window. The notify half is deliberately
-            // unused — see the test doc (#697).
+            // designed silent window. No notify half — the ^C gate is
+            // the session's own dispatch log, not the mock's arrival
+            // (see the test doc, #697/#1583).
             wiremock::Mock::given(wiremock::matchers::method("GET"))
-                .respond_with(NotifyThenDelay {
-                    notify: tx,
+                .respond_with(DelayedBoards {
                     delay: DESIGNED_SILENT_WINDOW,
                 })
                 .mount(&server)
