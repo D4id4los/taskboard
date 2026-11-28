@@ -133,8 +133,19 @@ jobs:
         # root — the output dir name is fixed; do not pass -d/-o here.
         run: |
           set +e
+          # --test-tool nextest: the baseline builds and runs the whole
+          # workspace test closure, which reaches taskboard-ui-slint's
+          # journey binaries; those share one process-global test driver
+          # and cannot run under plain `cargo test` (one process, many
+          # threads: the first job's panic/worker loss cascades into
+          # SendError/RecvError for its siblings — #1016's class).
+          # nextest runs the identical test set one process per test and
+          # is the workspace's CI runner; the ui-pure-modules shard
+          # already uses it for the same reason. Found in the fourth
+          # scheduled-lanes triage (run 46097761647: every matrix shard's
+          # baseline died in an unmutated tree on display-row renders).
           cargo mutants ${{ matrix.shard.args }} \
-            --in-place --timeout-multiplier 2.0
+            --in-place --timeout-multiplier 2.0 --test-tool nextest
           code=$?
           set -e
           if (( code != 0 )); then
@@ -291,7 +302,7 @@ jobs:
             --file 'crates/taskboard-app/src/commands/mod.rs' \
             --file 'crates/taskboard-app/src/commands/output.rs' \
             --features pdf-export \
-            --in-place --timeout-multiplier 2.0
+            --in-place --timeout-multiplier 2.0 --test-tool nextest
           code=$?
           set -e
           if (( code != 0 )); then
