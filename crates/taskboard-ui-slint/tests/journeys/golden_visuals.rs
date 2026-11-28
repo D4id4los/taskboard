@@ -2781,8 +2781,8 @@ fn the_labels_overlay_golden_holds() {
 /// (the streak chip's complete reading), one unlogged — so both
 /// affordance postures render.
 fn wave2_habits_state() -> taskboard_domain::AppState {
-    use taskboard_domain::habit::{Habit, HabitClocks, HabitLogEntry, HabitLogKey, WindowStart};
-    use taskboard_domain::{HabitId, NonZeroCount, PeriodKind};
+    use taskboard_domain::habit::{Habit, HabitClocks};
+    use taskboard_domain::{HabitId, NonZeroCount};
 
     let (fixture, mut state) = fixture::golden_state_enriched_at(fixture::PINNED_NOW);
     let board = state
@@ -2818,19 +2818,14 @@ fn wave2_habits_state() -> taskboard_domain::AppState {
         ids.push((id, quota));
     }
     // The logged habit: the first habit carried to its quota (the
-    // streak chip's complete reading; the log row fixture shape).
+    // streak chip's complete reading; the event fixture shape).
     let (first, quota) = ids[0];
-    state.habits.log.insert(
-        HabitLogKey {
-            habit: first,
-            window: WindowStart::of_period(PeriodKind::Day, fixture::PINNED_NOW.date_naive()),
-        },
-        HabitLogEntry {
-            count: quota,
-            clock: fixture::PINNED_NOW,
-            by: None,
-            skip: false,
-        },
+    fixture::seed_completions(
+        &mut state,
+        first,
+        fixture::PINNED_NOW,
+        fixture::PINNED_NOW.date_naive(),
+        quota,
     );
     state
 }

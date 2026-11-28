@@ -32,9 +32,14 @@ pub(in crate::adapter) fn install_recur_seams(window: &AppWindow, adapter: &Rc<R
     let Some(habit_row) = state.habits.habits.get(&habit) else {
         return;
     };
+    let (counts, _) = taskboard_domain::habit_event::derived_window_views(
+        habit_row,
+        state.habits.events.values(),
+        a.calendar(),
+    );
     let Some((target_window, count)) = crate::presentation::habit_repair_target(
         habit_row,
-        &state.habits.log,
+        &counts,
         a.day_ctx().now,
         a.calendar(),
     ) else {

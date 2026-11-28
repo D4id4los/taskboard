@@ -7563,9 +7563,16 @@ fn push_habit_history(
         }
         return 0;
     };
+    // The chunk-5 re-key (#1519 D-1): the feed derives the window
+    // views once per pass and hands them to the presentation fns.
+    let (counts, posture) = taskboard_domain::habit_event::derived_window_views(
+        habit,
+        state.habits.events.values(),
+        calendar,
+    );
     let shown =
-        crate::presentation::habit_history_month(habit, &state.habits.log, month, now, calendar);
-    let numbers = crate::presentation::habit_statistics(habit, &state.habits.log, now, calendar);
+        crate::presentation::habit_history_month(habit, &counts, &posture, month, now, calendar);
+    let numbers = crate::presentation::habit_statistics(habit, &counts, &posture, now, calendar);
     // US-8 (#1144, W-11): a Week/Month habit's month grid renders one
     // cell per calendar DAY from the per-day overlay facts (the D-H12
     // amendment; the stats section stays window-canonical — R-2). A

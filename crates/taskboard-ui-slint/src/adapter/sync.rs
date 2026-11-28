@@ -946,9 +946,14 @@ impl Adapter {
                 ActionId::HabitRepair if self.habit_repair.is_none() => {
                     let state = self.state.load_full();
                     let target = state.habits.habits.get(&habit).and_then(|row| {
+                        let (counts, _) = taskboard_domain::habit_event::derived_window_views(
+                            row,
+                            state.habits.events.values(),
+                            self.calendar(),
+                        );
                         crate::presentation::habit_repair_target(
                             row,
-                            &state.habits.log,
+                            &counts,
                             self.day_ctx().now,
                             self.calendar(),
                         )

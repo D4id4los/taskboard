@@ -19,7 +19,7 @@ use thiserror::Error;
 
 use crate::days::DayCalendar;
 use crate::entities::Task;
-use crate::habit::{Habit, HabitLogKey, HabitState, WindowStart};
+use crate::habit::{Habit, HabitState, WindowStart};
 use crate::ids::{AdhocAlarmId, BreakRuleId, HabitId, ReminderRuleId, TaskId};
 use crate::tracking::{TrackingState, WorkThreshold, break_crossing};
 
@@ -1449,13 +1449,12 @@ fn tracker_eligible(
         return false;
     }
     let window = WindowStart::of_period(habit.target.kind(), today);
-    let count = habits
-        .log
-        .get(&HabitLogKey {
-            habit: habit.id,
-            window,
-        })
-        .map_or(0, |entry| entry.count);
+    // The chunk-5 re-key (#1519): the quota gate reads the derived
+    // count of the current canonical window, never the stored mirror.
+    let count = crate::habit_event::derive_window_counts(habit, habits.events.values(), day)
+        .get(&window)
+        .copied()
+        .unwrap_or(0);
     count < habit.target.quota().get()
 }
 
@@ -5000,7 +4999,7 @@ mod tests {
 
     // ---- The tracker nudge family (#504, plan D-1..D-4) ----------------
 
-    use crate::habit::{HabitClocks, HabitLogEntry, HabitTarget, NonZeroCount};
+    use crate::habit::{HabitClocks, HabitTarget, NonZeroCount};
 
     fn day5() -> crate::days::DayCalendar {
         crate::days::DayCalendar {
@@ -5055,26 +5054,43 @@ mod tests {
         state
     }
 
+    /// Seeds the habit's derived count for `window_date` (the event
+    /// fixture shape; replace semantics — the day's prior completions
+    /// are dropped first, so a correction back below quota re-derives).
     fn log_count(
         habits: &mut HabitState,
         habit: &crate::habit::Habit,
         window_date: chrono::NaiveDate,
         count: u32,
     ) {
-        let window = WindowStart::of_period(habit.target.kind(), window_date);
-        habits.log.insert(
-            HabitLogKey {
+        use crate::habit_event::{HabitEvent, HabitEventKind};
+        let cal = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
+        };
+        let stale: Vec<_> = habits
+            .events
+            .values()
+            .filter(|event| event.habit == habit.id && cal.today(event.at) == window_date)
+            .map(|event| event.id)
+            .collect();
+        for id in stale {
+            habits.events.remove(&id);
+        }
+        let at = window_date.and_hms_opt(12, 0, 0).expect("noon").and_utc();
+        for ordinal in 0..count {
+            let id =
+                crate::habit_event::legacy_habit_event_id(habit.id, window_date, at, Some(ordinal));
+            let event = HabitEvent {
+                id,
                 habit: habit.id,
-                window,
-            },
-            HabitLogEntry {
-                count,
-                clock: ts(500),
+                kind: HabitEventKind::Completion,
+                at,
                 by: None,
-
-                skip: false,
-            },
-        );
+                deleted: None,
+            };
+            habits.events.insert(id, event);
+        }
     }
 
     fn tracker_ref(raw: u128) -> ReminderRef {

@@ -7891,30 +7891,18 @@ mod recur_badge_tests {
 
             paused_until: None,
         };
-        let mut log = std::collections::BTreeMap::new();
+        let mut counts = std::collections::BTreeMap::new();
         // Under quota, in grace: the make-up points at yesterday's
         // window with its count plus one.
-        let target = habit_repair_target(&h, &log, now, day).expect("under quota, in grace");
+        let target = habit_repair_target(&h, &counts, now, day).expect("under quota, in grace");
         assert_eq!(
             target.0.as_date(),
             taskboard_domain::habit::period_before(taskboard_domain::PeriodKind::Day, today)
         );
         assert_eq!(target.1, 1);
         // At quota: no repair (surplus logs are the +1's own business).
-        log.insert(
-            taskboard_domain::HabitLogKey {
-                habit: h.id,
-                window: target.0,
-            },
-            taskboard_domain::HabitLogEntry {
-                count: 2,
-                clock: now,
-                by: None,
-
-                skip: false,
-            },
-        );
-        assert_eq!(habit_repair_target(&h, &log, now, day), None);
+        counts.insert(target.0, 2);
+        assert_eq!(habit_repair_target(&h, &counts, now, day), None);
         // Under quota but past the overflow grace: no repair. For a
         // daily habit the grace covers the whole day (the D-C8
         // arithmetic), so the out-of-grace leg rides a weekly habit
@@ -8202,13 +8190,14 @@ pub fn habit_rows(
     live.iter()
         .map(|habit| {
             let window = taskboard_domain::WindowStart::of_period(habit.target.kind(), today);
-            let key = taskboard_domain::HabitLogKey {
-                habit: habit.id,
-                window,
-            };
-            let count = state.habits.log.get(&key).map_or(0, |e| e.count);
+            let (counts, posture) = taskboard_domain::habit_event::derived_window_views(
+                habit,
+                state.habits.events.values(),
+                day,
+            );
+            let count = counts.get(&window).copied().unwrap_or(0);
             let quota = habit.target.quota().get();
-            let repair_target = habit_repair_target(habit, &state.habits.log, now, day);
+            let repair_target = habit_repair_target(habit, &counts, now, day);
             let open_habit_entry = state
                 .habits
                 .time_log
@@ -8222,7 +8211,8 @@ pub fn habit_rows(
                 quota,
                 streak: taskboard_domain::habit_streak_unioned(
                     habit,
-                    &state.habits.log,
+                    &counts,
+                    &posture,
                     &state.tasks,
                     now,
                     day,
@@ -8244,7 +8234,7 @@ pub fn habit_rows(
                         })
                 }),
                 met: count >= quota,
-                skip: state.habits.log.get(&key).is_some_and(|entry| entry.skip),
+                skip: posture.get(&window).is_some_and(|skip| *skip),
                 paused: habit.paused_until.is_some_and(|until| until >= today),
                 paused_until: habit.paused_until,
 
@@ -8290,10 +8280,7 @@ pub fn habit_target_phrase(target: taskboard_domain::HabitTarget) -> String {
 #[must_use]
 pub fn habit_repair_target(
     habit: &taskboard_domain::habit::Habit,
-    log: &std::collections::BTreeMap<
-        taskboard_domain::HabitLogKey,
-        taskboard_domain::HabitLogEntry,
-    >,
+    counts: &std::collections::BTreeMap<taskboard_domain::WindowStart, u32>,
     now: DateTime<Utc>,
     day: taskboard_domain::days::DayCalendar,
 ) -> Option<(taskboard_domain::WindowStart, u32)> {
@@ -8307,12 +8294,7 @@ pub fn habit_repair_target(
         return None;
     }
     let prev = taskboard_domain::WindowStart::of_period(kind, prev_date);
-    let count = log
-        .get(&taskboard_domain::HabitLogKey {
-            habit: habit.id,
-            window: prev,
-        })
-        .map_or(0, |entry| entry.count);
+    let count = counts.get(&prev).copied().unwrap_or(0);
     (count < quota).then_some((prev, count + 1))
 }
 
@@ -8630,17 +8612,15 @@ pub struct HabitStatistics {
 #[must_use]
 pub fn habit_statistics(
     habit: &taskboard_domain::habit::Habit,
-    log: &std::collections::BTreeMap<
-        taskboard_domain::HabitLogKey,
-        taskboard_domain::HabitLogEntry,
-    >,
+    counts: &std::collections::BTreeMap<taskboard_domain::WindowStart, u32>,
+    posture: &std::collections::BTreeMap<taskboard_domain::WindowStart, bool>,
     now: chrono::DateTime<chrono::Utc>,
     day: taskboard_domain::DayCalendar,
 ) -> HabitStatistics {
     HabitStatistics {
-        adherence: taskboard_domain::habit::adherence(habit, log, now, day),
-        best_streak: taskboard_domain::habit::best_streak(habit, log, now, day),
-        totals: taskboard_domain::habit::per_period_totals(habit, log),
+        adherence: taskboard_domain::habit::adherence(habit, counts, posture, now, day),
+        best_streak: taskboard_domain::habit::best_streak(habit, counts, posture, now, day),
+        totals: taskboard_domain::habit::per_period_totals(counts),
     }
 }
 
@@ -8657,10 +8637,8 @@ pub fn habit_statistics(
 #[must_use]
 pub fn habit_history_month(
     habit: &taskboard_domain::habit::Habit,
-    log: &std::collections::BTreeMap<
-        taskboard_domain::HabitLogKey,
-        taskboard_domain::HabitLogEntry,
-    >,
+    counts: &std::collections::BTreeMap<taskboard_domain::WindowStart, u32>,
+    posture: &std::collections::BTreeMap<taskboard_domain::WindowStart, bool>,
     month: chrono::NaiveDate,
     now: chrono::DateTime<chrono::Utc>,
     day: taskboard_domain::DayCalendar,
@@ -8707,12 +8685,8 @@ pub fn habit_history_month(
     let cells = windows
         .iter()
         .map(|window| {
-            let key = taskboard_domain::HabitLogKey {
-                habit: habit.id,
-                window: taskboard_domain::WindowStart::of_period(kind, *window),
-            };
-            let entry = log.get(&key);
-            let count = entry.map_or(0, |row| row.count);
+            let window_start = taskboard_domain::WindowStart::of_period(kind, *window);
+            let count = counts.get(&window_start).copied().unwrap_or(0);
             let state = if habit.paused_until.is_some_and(|until| {
                 taskboard_domain::habit::pause_covers_window(kind, *window, until)
             }) {
@@ -8720,7 +8694,7 @@ pub fn habit_history_month(
                 HabitWindowState::Paused
             } else if count >= quota {
                 HabitWindowState::Met
-            } else if entry.is_some_and(|row| row.skip) {
+            } else if posture.get(&window_start).is_some_and(|skip| *skip) {
                 HabitWindowState::Skipped
             } else if taskboard_domain::habit::preschedule_window(
                 habit,
@@ -8746,15 +8720,7 @@ pub fn habit_history_month(
     // The pager's clamp edges: the earliest current-kind canonical
     // row's month (below it there is no data — the horizon's floor)
     // and the current month.
-    let earliest = log
-        .keys()
-        .filter(|key| {
-            key.habit == habit.id
-                && key.window.as_date()
-                    == taskboard_domain::habit::period_start(kind, key.window.as_date())
-        })
-        .map(|key| key.window.as_date())
-        .min();
+    let earliest = counts.keys().map(|window| window.as_date()).min();
     let current_month =
         taskboard_domain::habit::period_start(taskboard_domain::PeriodKind::Month, day.today(now));
     let can_page_back = earliest.is_some_and(|earliest| {
@@ -8879,12 +8845,18 @@ mod habit_history_tests {
     use super::*;
     use chrono::TimeZone;
 
+    /// The C1 test fixture shape: the habit plus its EVENT map (the
+    /// re-keyed fixtures seed completions; the views derive through
+    /// the domain derivation at the call sites).
     fn daily_habit(
         raw: u128,
         quota: u32,
     ) -> (
         taskboard_domain::habit::Habit,
-        std::collections::BTreeMap<taskboard_domain::HabitLogKey, taskboard_domain::HabitLogEntry>,
+        std::collections::BTreeMap<
+            taskboard_domain::habit_event::HabitEventId,
+            taskboard_domain::habit_event::HabitEvent,
+        >,
         taskboard_domain::DayCalendar,
     ) {
         let habit = taskboard_domain::Habit {
@@ -8921,30 +8893,51 @@ mod habit_history_tests {
         )
     }
 
+    /// Seeds `count` completions at noon of `window` (the event-grammar
+    /// fixture shape; the day calendar is UTC-midnight so noon lands in
+    /// that date's window).
     fn put(
-        log: &mut std::collections::BTreeMap<
-            taskboard_domain::HabitLogKey,
-            taskboard_domain::HabitLogEntry,
+        events: &mut std::collections::BTreeMap<
+            taskboard_domain::habit_event::HabitEventId,
+            taskboard_domain::habit_event::HabitEvent,
         >,
         habit: &taskboard_domain::habit::Habit,
         window: chrono::NaiveDate,
         count: u32,
     ) {
-        log.insert(
-            taskboard_domain::HabitLogKey {
+        use chrono::{Datelike, TimeZone};
+        let at = chrono::Utc
+            .with_ymd_and_hms(window.year(), window.month(), window.day(), 12, 0, 0)
+            .single()
+            .expect("noon");
+        for i in 0..count {
+            let id = taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(
+                u128::try_from(window.num_days_from_ce()).unwrap_or(0) * 8 + u128::from(i),
+            ));
+            let event = taskboard_domain::habit_event::HabitEvent {
+                id,
                 habit: habit.id,
-                window: taskboard_domain::WindowStart::from_stored(window),
-            },
-            taskboard_domain::HabitLogEntry {
-                count,
-                clock: chrono::Utc
-                    .with_ymd_and_hms(2026, 11, 1, 0, 0, 0)
-                    .single()
-                    .expect("stamp"),
+                kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+                at,
                 by: None,
-                skip: false,
-            },
-        );
+                deleted: None,
+            };
+            events.insert(event.id, event);
+        }
+    }
+
+    fn views(
+        habit: &taskboard_domain::habit::Habit,
+        events: &std::collections::BTreeMap<
+            taskboard_domain::habit_event::HabitEventId,
+            taskboard_domain::habit_event::HabitEvent,
+        >,
+        day: taskboard_domain::DayCalendar,
+    ) -> (
+        std::collections::BTreeMap<taskboard_domain::WindowStart, u32>,
+        std::collections::BTreeMap<taskboard_domain::WindowStart, bool>,
+    ) {
+        taskboard_domain::habit_event::derived_window_views(habit, events.values(), day)
     }
 
     // US-7/S2 (AC-1): the grid enumerates the visible month's
@@ -8977,9 +8970,11 @@ mod habit_history_tests {
             chrono::NaiveDate::from_ymd_opt(2026, 11, 20).expect("d"),
             0,
         );
+        let (counts, posture) = views(&habit, &log, day);
         let month = habit_history_month(
             &habit,
-            &log,
+            &counts,
+            &posture,
             chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("month"),
             now,
             day,
@@ -9030,9 +9025,11 @@ mod habit_history_tests {
             chrono::NaiveDate::from_ymd_opt(2026, 10, 5).expect("d"),
             1,
         );
+        let (counts, posture) = views(&habit, &log, day);
         let october = habit_history_month(
             &habit,
-            &log,
+            &counts,
+            &posture,
             chrono::NaiveDate::from_ymd_opt(2026, 10, 15).expect("month"),
             now,
             day,
@@ -9044,7 +9041,8 @@ mod habit_history_tests {
         assert!(october.can_page_forward);
         let november = habit_history_month(
             &habit,
-            &log,
+            &counts,
+            &posture,
             chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("month"),
             now,
             day,
@@ -9071,7 +9069,8 @@ mod habit_history_tests {
             .with_ymd_and_hms(2026, 11, 20, 12, 0, 0)
             .single()
             .expect("now");
-        let empty = habit_statistics(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log, day);
+        let empty = habit_statistics(&habit, &counts, &posture, now, day);
         assert!(
             empty.adherence.is_empty() && empty.adherence.ratio().is_none(),
             "the typed empty state, never 0 % of nothing"
@@ -9089,7 +9088,8 @@ mod habit_history_tests {
             chrono::NaiveDate::from_ymd_opt(2026, 11, 6).expect("d"),
             0,
         );
-        let stats = habit_statistics(&habit, &log, now, day);
+        let (counts, posture) = views(&habit, &log, day);
+        let stats = habit_statistics(&habit, &counts, &posture, now, day);
         assert_eq!(stats.adherence.met(), 1);
         // Scheduled = elapsed windows Nov 5..18 (the walk's 24 h
         // overflow grace keeps Nov 19 pending at this `now`): the met
@@ -9465,24 +9465,27 @@ mod habit_section_tests {
     /// functions — a logged window moves the count and `met`.
     #[test]
     fn habit_rows_derive_progress_from_the_domain_row() {
+        use taskboard_domain::habit_event::{HabitEvent, HabitEventId, HabitEventKind};
         let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
         let mut state = AppState::default();
         let a = habit(1, 2, 0, None);
         let today = day().today(ts(1_700_000_000));
         state.habits.habits.insert(a.id, a.clone());
-        state.habits.log.insert(
-            HabitLogKey {
+        // The event-grammar fixture: three same-window completions
+        // mint distinct events; the row derives count/streak from them.
+        let at = taskboard_domain::days::window_start(today, day().day_start_time, day().offset)
+            + chrono::TimeDelta::try_hours(9).expect("9 h");
+        for i in 0..3_u128 {
+            let event = HabitEvent {
+                id: HabitEventId::from(uuid::Uuid::from_u128(0xA000 + i)),
                 habit: a.id,
-                window: WindowStart::of_period(PeriodKind::Day, today),
-            },
-            HabitLogEntry {
-                count: 3,
-                clock: ts(200),
+                kind: HabitEventKind::Completion,
+                at,
                 by: None,
-
-                skip: false,
-            },
-        );
+                deleted: None,
+            };
+            state.habits.events.insert(event.id, event);
+        }
         let rows = habit_rows(&state, board, ts(1_700_000_000), day());
         assert_eq!(rows[0].count, 3);
         assert_eq!(rows[0].quota, 3);

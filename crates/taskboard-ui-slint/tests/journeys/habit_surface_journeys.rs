@@ -15,8 +15,8 @@ use support::harness::Harness;
 
 use slint::ComponentHandle as _;
 use slint::Model as _;
-use taskboard_domain::habit::{HabitClocks, HabitLogEntry, HabitLogKey, WindowStart};
-use taskboard_domain::{AppState, HabitId, NonZeroCount, PeriodKind, StateCommand};
+use taskboard_domain::habit::HabitClocks;
+use taskboard_domain::{AppState, HabitId, NonZeroCount, StateCommand};
 use taskboard_ui_slint::actions::ActionId;
 use taskboard_ui_slint::keymap::stroke::{self, Stroke};
 use taskboard_ui_slint::{UiSettings, View};
@@ -56,21 +56,18 @@ fn state_habit(state: &mut AppState, board: taskboard_domain::BoardId) -> HabitI
     state_habit_at(state, board, 0, "water", 2)
 }
 
-/// Writes `count` into the habit's current day window (the log-row
-/// fixture shape: the whole-second clock, the LWW guard's law).
+/// Seeds `count` completions into the habit's current day window
+/// (the event-grammar fixture shape; the ids are the deterministic
+/// legacy recipe, distinct per habit and ordinal).
 fn log_today(state: &mut AppState, habit: HabitId, count: u32) {
-    let today = fixture::PINNED_NOW.date_naive();
-    state.habits.log.insert(
-        HabitLogKey {
-            habit,
-            window: WindowStart::of_period(PeriodKind::Day, today),
-        },
-        HabitLogEntry {
-            count,
-            clock: fixture::PINNED_NOW,
-            by: None,
-            skip: false,
-        },
+    let calendar = fixture::harness_calendar();
+    let today = calendar.today(fixture::PINNED_NOW);
+    fixture::seed_completions(
+        state,
+        habit,
+        fixture::at_in_window(&calendar, today),
+        today,
+        count,
     );
 }
 

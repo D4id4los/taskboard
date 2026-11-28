@@ -208,19 +208,19 @@ mod tests {
         let now = fixture.now;
         let day = fixture.day;
         let habit = state.habits.values().next().expect("fixture habit");
-        let streak = crate::habit::streak(habit, &state.log, now, day);
-        let adherence = crate::habit::adherence(habit, &state.log, now, day);
-        let horizon = crate::habit::statistics_horizon(habit, &state.log, now, day)
+        let (counts, posture) = crate::habit::derived_views_from_log(habit, &state.log);
+        let streak = crate::habit::streak(habit, &counts, &posture, now, day);
+        let adherence = crate::habit::adherence(habit, &counts, &posture, now, day);
+        let horizon = crate::habit::statistics_horizon(habit, &counts, now, day)
             .iter()
             .map(|date| {
-                let window = crate::habit::WindowStart::of_period(habit.target.kind(), *date);
-                state
-                    .log
-                    .get(&crate::habit::HabitLogKey {
-                        habit: habit.id,
-                        window,
-                    })
-                    .map_or(0, |entry| entry.count)
+                counts
+                    .get(&crate::habit::WindowStart::of_period(
+                        habit.target.kind(),
+                        *date,
+                    ))
+                    .copied()
+                    .unwrap_or(0)
             })
             .collect::<Vec<_>>();
         (streak, adherence, horizon)
@@ -265,22 +265,13 @@ mod tests {
             // Byte-identical through the serde face: the projections'
             // values — not just their equality — are unchanged.
             let habit = perturbed.habits.values().next().expect("fixture habit");
-            let streak = crate::habit::streak(habit, &perturbed.log, fixture.now, fixture.day);
+            let (counts, posture) = crate::habit::derived_views_from_log(habit, &perturbed.log);
+            let streak = crate::habit::streak(habit, &counts, &posture, fixture.now, fixture.day);
             let adherence =
-                crate::habit::adherence(habit, &perturbed.log, fixture.now, fixture.day);
-            let horizon = crate::habit::statistics_horizon(habit, &perturbed.log, fixture.now, fixture.day)
+                crate::habit::adherence(habit, &counts, &posture, fixture.now, fixture.day);
+            let horizon = crate::habit::statistics_horizon(habit, &counts, fixture.now, fixture.day)
                 .iter()
-                .map(|date| {
-                    let window =
-                        crate::habit::WindowStart::of_period(habit.target.kind(), *date);
-                    perturbed
-                        .log
-                        .get(&crate::habit::HabitLogKey {
-                            habit: habit.id,
-                            window,
-                        })
-                        .map_or(0, |entry| entry.count)
-                })
+                .map(|date| counts.get(&crate::habit::WindowStart::of_period(habit.target.kind(), *date)).copied().unwrap_or(0))
                 .collect::<Vec<_>>();
             prop_assert_eq!((streak, adherence, horizon), before);
         }
