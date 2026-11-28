@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The timers creation-row probe (#1491): the real `TimersSection`
+// with the creation form live (the kiosk-scale overflow's regression
+// host). The theme scale and the pushed breakpoint fact are
+// probe-set so the tests drive both fact arms at the kiosk scale;
+// the assertions read the row's realized geometry from Rust
+// (`probes/timers_row_probe_tests.rs`) — the probe only carries the
+// mount and the global exports.
+
+import { Theme } from "../ui/theme.slint";
+import { Responsive } from "../ui/responsive.slint";
+import { TimersSection } from "../ui/compositions/timers.slint";
+
+export { Theme, Responsive }
+
+export component TimersRowProbe inherits Window {
+    in property <bool> absence-hint: false;
+
+    timers-instance := TimersSection {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        absence-hint: root.absence-hint;
+    }
+}
