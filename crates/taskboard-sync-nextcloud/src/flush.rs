@@ -438,8 +438,9 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     let overlay_habits = habits_for(&ctx.habits.habits, ctx.board, ctx.author);
     // The events cut-over (D-7 / Ruling D1's writer half): this build
     // never emits the legacy `habit-log` section — the overlay's
-    // `habit_log` slot stays `None` (the field itself survives until
-    // chunk 5 deletes it) and the event rows emit under
+    // `habit_log` slot stays `None` (the legacy write builder is
+    // deleted; the read-side shim's retirement is backlog #1571's
+    // fleet-upgrade gate) and the event rows emit under
     // `habit-events`.
     let overlay_events = habit_events_for(
         &ctx.habits.events,
@@ -488,7 +489,8 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             time_entries: (!overlay_time.is_empty()).then_some(overlay_time),
             habits: (!overlay_habits.is_empty()).then_some(overlay_habits),
             // The legacy slot stays None — never emitted since the
-            // D-7 cut-over; the field survives until chunk 5 (#1542).
+            // D-7 cut-over; the field survives until the shim's
+            // retirement (backlog #1571).
             habit_log: None,
             habit_events: (!overlay_events.is_empty()).then_some(overlay_events),
             break_rules: (!overlay_break_rules.is_empty()).then_some(overlay_break_rules),
