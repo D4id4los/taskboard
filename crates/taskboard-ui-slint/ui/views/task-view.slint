@@ -474,6 +474,12 @@ export component TaskView inherits FocusScope {
         DatePickerFacts.anchor-height = scheduled-column.value-height;
     }
 
+    // The T2 probe seams (#1504): the page scroll's realized extents
+    // (the scroll affordance exists exactly when the content's
+    // preferred height exceeds the viewport).
+    out property <length> detail-page-height: page.height;
+    out property <length> detail-page-content-height: content.height;
+
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
     accessible-label: "Task: \{root.task.title}";
@@ -507,7 +513,17 @@ export component TaskView inherits FocusScope {
         // the window-level `AnchoredOverlayHost`, whose dismissal
         // layer routes `priority-dismiss-requested` (D-6).
 
-        VerticalLayout {
+        // #1504's outer page scroll (the today page's Flickable
+        // idiom — the viewport auto-tracks the content's preferred
+        // size): the flexible description section is no longer the
+        // only vertical absorber. At tight fits (the 1.5x/900 px
+        // cell) the content's preferred height exceeds the viewport
+        // and the page scrolls, so no row's clip boundary can land
+        // flush at the window floor; at loose fits the viewport is
+        // the absorber and nothing scrolls. The #1435 vertical inset
+        // legs below stay load-bearing.
+        page := Flickable {
+        content := VerticalLayout {
             spacing: Theme.space-3;
             // The detail-editor severing inset (the C1 fix-now class,
             // round 8 L1 — the E-editor/E-recur signature): the
@@ -1563,6 +1579,7 @@ export component TaskView inherits FocusScope {
                     }
                 }
             }
+        }
         }
     }
 }

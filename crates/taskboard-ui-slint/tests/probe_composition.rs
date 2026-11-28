@@ -74,6 +74,8 @@ mod settings_window_max_probe_tests;
 mod slider_grab_probe_tests;
 #[path = "probes/stack_window_max_probe_tests.rs"]
 mod stack_window_max_probe_tests;
+#[path = "probes/task_detail_fit_probe_tests.rs"]
+mod task_detail_fit_probe_tests;
 #[path = "probes/task_window_max_probe_tests.rs"]
 mod task_window_max_probe_tests;
 #[path = "probes/timers_row_probe_tests.rs"]
