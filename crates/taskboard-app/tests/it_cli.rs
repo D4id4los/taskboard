@@ -44,6 +44,7 @@ fn strip_taskboard_env(command: &mut std::process::Command) {
     for key in keys {
         command.env_remove(&key);
     }
+    common::plant_sandbox_sentinel(command);
 }
 
 /// Runs the real binary once and waits for it.
