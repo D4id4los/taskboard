@@ -262,9 +262,9 @@ flowchart TD
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | src/keymap/presets.rs | the emacs motion rows | — | — (preset rows; the contract suite is the oracle; the row's ids: NavNextItem / NavPrevItem / NavNextControl / NavPrevControl — the gate's one-token cell cites the first) | ActionId::NavNextItem | — | the walk ids' contexts | US-1/S1 (commands —: navigation) | keymap contract tests + journeys.rs::us1_s1_emacs_motion_rows_step_the_walks |
-| W-2 | src/keymap/ (the parser), src/router.rs | the keysym normalization + the menu-invocation item resolution | — | the parser's normalization map; the menu invoke path's item resolution (the no-op fix; the row's ids: NavFirstItem / NavLastItem — the gate's one-token cell cites the first) | ActionId::NavFirstItem | — | the context's item table | US-2/S1–S2 (commands —: navigation) | parser unit tests (the punctuation cases) + journeys.rs::us2_s1_menu_first_last_matches_the_key_route |
-| W-3 | src/actions.rs, src/keymap/presets.rs, src/adapter.rs | the detail shortcut ids + rows | — | the routes into the existing funnels (`begin_date_edit`, the description arm, the tracking/rule routes; `// slint:` where a seam is touched; the row's ids: TaskDueEdit / TaskScheduledEdit / TaskDescriptionEdit / ReminderRuleAdd / TaskTrackStart / TaskTrackStop — the gate's one-token cell cites the first) | ActionId::TaskDueEdit | StateCommand::StartTracking; StateCommand::StopTracking; StateCommand::AddReminderRule | the subject task | US-3/S1–S4 | journeys.rs::us3_s1_due_shortcut_arms_the_editor_like_the_row |
+| W-1 | src/keymap/presets.rs | the emacs motion rows | — | — (preset rows; the contract suite is the oracle; the row's ids: NavNextItem / NavPrevItem / NavNextControl / NavPrevControl — the gate's one-token cell cites the first) | ActionId::NavNextItem | — | the walk ids' contexts | US-1/S1 (commands —: navigation) | keymap contract tests + crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs::us1_s1_taskdetail_directional_rows_walk_the_ladder_subject_pinned + journeys.rs::us1_ac2_settings_control_walk_rows_step |
+| W-2 | src/keymap/ (the parser), src/router.rs | the keysym normalization + the menu-invocation item resolution | — | the parser's normalization map; the menu invoke path's item resolution (the no-op fix; the row's ids: NavFirstItem / NavLastItem — the gate's one-token cell cites the first) | ActionId::NavFirstItem | — | the context's item table | US-2/S1–S2 (commands —: navigation) | parser unit tests (the punctuation cases) + journeys.rs::the_punctuation_partner_matches_only_the_held_shift + journeys.rs::the_first_last_jumps_land_on_the_far_ends_and_stay |
+| W-3 | src/actions.rs, src/keymap/presets.rs, src/adapter.rs | the detail shortcut ids + rows | — | the routes into the existing funnels (`begin_date_edit`, the description arm, the tracking/rule routes; `// slint:` where a seam is touched; the row's ids: TaskDueEdit / TaskScheduledEdit / TaskDescriptionEdit / ReminderRuleAdd / TaskTrackStart / TaskTrackStop — the gate's one-token cell cites the first) | ActionId::TaskDueEdit | StateCommand::StartTracking; StateCommand::StopTracking; StateCommand::AddReminderRule | the subject task | US-3/S1–S4 | journeys.rs::us3_s1_due_shortcut_arms_the_editor_like_the_row + journeys.rs::us3_s2_description_shortcut_arms_the_editor + journeys.rs::us3_s3_clock_shortcuts_route_the_exact_commands + journeys.rs::us3_s4_rule_add_shortcut_arms_the_funnel |
 | W-4 (AMENDMENT 2026-11-28) | src/keymap/presets.rs | the plan-window box family rows (D1) | — | — (preset rows; the plan-family arms route today — the router's `PlanBoxEarlier/Later/RemoveBox` + the swap/unplace/placement funnel) | ActionId::PlanBoxEarlier | StateCommand::UpdateTask | the planner's placed-box rows | US-4/S1 | journeys.rs::us4_s1_box_family_keyboard_journey |
 | W-5 (AMENDMENT 2026-11-28) | src/keymap/presets.rs | the review-walk stage-verb rows (D2) | — | — (preset rows; the walk intents route today — the `WalkIntent` arms) | ActionId::ReviewFileTargetPrev | — | the walk's stage/cursor state | US-5/S1 | journeys.rs::us5_s1_walk_stage_verbs_journey |
 | W-6 (AMENDMENT 2026-11-28) | src/keymap/presets.rs | the Alt departure axis — view contexts + the insert-chain `ViInsert` half (D3) | — | — (preset rows; nav.focus routes today — the directional table) | ActionId::NavFocusRight | — | the six view contexts' walk | US-6/S1–S2 | journeys.rs::us6_s1_alt_axis_departs_the_field_and_caret_keys_stay_caret + journeys.rs::us6_s2_emacs_alt_f_quartet_departs_the_field |
@@ -283,14 +283,23 @@ No new `StateCommand`, no new `UiRequest`.
 
 ## 8. Verification plan
 
-- **Journey tests** (step-ID-named):
-  `us1_s1_emacs_motion_rows_step_the_walks`,
+- **Journey tests** (step-ID-named; re-pointed 2026-11-28, #1575 —
+  round 9's test-suite reorganisation renamed/superseded the
+  originals, each successor verified against the live test body):
+  `us1_s1_taskdetail_directional_rows_walk_the_ladder_subject_pinned`
+  (supersedes `us1_s1_emacs_motion_rows_step_the_walks` — the
+  directional-focus retune retired the detail item walk, J3 R-2/R-3),
   `us1_ac2_settings_control_walk_rows_step`,
-  `us2_s1_menu_first_last_matches_the_key_route`,
+  `the_first_last_jumps_land_on_the_far_ends_and_stay` (supersedes
+  `us2_s1_menu_first_last_matches_the_key_route`),
+  `the_punctuation_partner_matches_only_the_held_shift` (the US-2/S2
+  normalization + fall-through oracle),
   `us3_s1_due_shortcut_arms_the_editor_like_the_row`,
   `us3_s2_description_shortcut_arms_the_editor`,
   `us3_s3_clock_shortcuts_route_the_exact_commands`,
   `us3_s4_rule_add_shortcut_arms_the_funnel`.
+  bound-test: US-2/S1 -> journeys.rs::the_first_last_jumps_land_on_the_far_ends_and_stay
+  bound-test: US-2/S2 -> journeys.rs::the_punctuation_partner_matches_only_the_held_shift
 - **Parser unit tests**: the normalization map's cases (Alt+Shift+
   punctuation across layout spellings; the additive fall-through).
 - **Keymap totality**: the contract suite covers every new/changed
