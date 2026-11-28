@@ -286,25 +286,27 @@ tok_match() { # tok_match <token> <file>...
   return 1
 }
 
+ere_sep_widen() { # ere_sep_widen <token> -> stdout: ERE-safe pattern
+  # (#1577) escape every ERE metacharacter first — a plan cell is
+  # plan prose, not a validated identifier, and an unescaped `.` (or
+  # `+`, `(`) would match a seam whose name differs by more than
+  # separator drift (self-test 31) — then widen every `_`/`-`
+  # separator to the `[-_]` class: a kebab-authored cell
+  # (`habits-undo-log-clicked`, the template §6 spelling) must resolve
+  # the snake adapter seam (`on_habits_undo_log_clicked`) and vice
+  # versa (#1282). Letters stay load-bearing — only separator drift
+  # normalizes. Two passes through a sentinel: replacing `-` after `_`
+  # would otherwise corrupt the `[-_]` class the first pass inserted.
+  local esc
+  esc=$(printf '%s' "$1" | sed -e 's/[^A-Za-z0-9_-]/\\&/g')
+  esc=${esc//_/§}
+  printf '%s' "${esc//-/[-_]}" | sed -e 's/§/[-_]/g'
+}
+
 adapter_match() { # adapter_match <callback> <adapter-file>...
-  local cb=$1 f out
+  local cb=$1 f out re
   shift
-  # (#1282/#1577) the same snake/kebab separator tolerance tok_match
-  # applies to the .slint universe widens the adapter lookups too: a
-  # kebab-authored plan cell (`habits-undo-log-clicked`, the template
-  # §6 spelling) must resolve the snake adapter seam
-  # (`on_habits_undo_log_clicked`) and the snake-keyed seam_inventory
-  # manifest entry — in BOTH directions (the #1282 cell was snake vs
-  # kebab; #1577's W-8 is kebab vs snake), so every `_`/`-` separator
-  # widens to the `[-_]` class. Letters stay load-bearing — only
-  # separator drift normalizes, boundary-anchored and first-hit, so a
-  # seam whose normalised name genuinely differs never matches
-  # (self-test 30).
-  # (two passes through a sentinel: replacing `-` after `_` would
-  # otherwise corrupt the `[-_]` class the first pass inserted)
-  local re=${cb//_/§}
-  re=${re//-/[-_]}
-  re=${re//§/[-_]}
+  re=$(ere_sep_widen "$cb")
   for f in "$@"; do
     [[ -f $f ]] || continue
     if out=$(grep -nE -- "on_${re}([^A-Za-z0-9_]|$)" "$f" 2>/dev/null | head -n 1); then
@@ -1003,6 +1005,23 @@ self_test() {
     rc=1
   fi
 
+  # 31. #1577 metacharacter honesty: a cell carrying an ERE
+  #     metacharacter (`habit-edit.asked`) whose kebab slint callback
+  #     exists and whose snake seam `on_habit_edit_asked` is installed
+  #     stays MISSING — the widening escapes metacharacters first, so
+  #     `.` never becomes the any-char wildcard (the unescaped
+  #     widening matched this fixture; stage-3 review finding).
+  bash "${BASH_SOURCE[0]}" "$fx/plan-metachar.md" --gate --root "$fx/tree" \
+    >"$tmp/metachar.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'W-K callback habit-edit\.asked → MISSING$' "$tmp/metachar.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 ]]; then
+    echo "self-test 31 (#1577 ERE metacharacters in a cell never widen into a match): PASS"
+  else
+    echo "self-test 31 (#1577 ERE metacharacters in a cell never widen into a match): FAIL (exit $code, $c MISSING rows)"
+    sed 's/^/    /' "$tmp/metachar.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -1405,9 +1424,8 @@ main() {
           # Callbacks that already MISS keep MISSING — this is an
           # additional honesty pass on resolved wiring, not a
           # substitute.
-          local inv_re=${w_cb//_/§}
-          inv_re=${inv_re//-/[-_]}
-          inv_re=${inv_re//§/[-_]}
+          local inv_re
+          inv_re=$(ere_sep_widen "$w_cb")
           if [[ -n $inv_file ]] \
              && ! grep -qE -- "\"${inv_re}\"" "$inv_file"; then
             emit_inventory_miss "${w_id} callback ${w_cb}" "$slint_ev" "$adapter_ev"
