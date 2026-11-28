@@ -1271,6 +1271,7 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
         sections: AppDataSections {
             habits: None,
             habit_log: None,
+            habit_events: None,
             tasks: Some(
                 [(
                     "56".to_owned(),

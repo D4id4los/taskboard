@@ -114,6 +114,18 @@ pub struct AppDataSections {
     /// with row-clock LWW, under the 180-day wire retention (D-H14).
     #[serde(rename = "habit-log", default, skip_serializing_if = "Option::is_none")]
     pub habit_log: Option<BTreeMap<String, HabitLogRecord>>,
+    /// Board-level habit completion/skip facts (the event-log design
+    /// §4.1, #1519 chunk 4), keyed by the event UUID string; the habit
+    /// id rides the row (D-3). Additive: documents without the key
+    /// decode unchanged (the default-absent law); old readers file it
+    /// under `unknown` verbatim and never fold it. **Never bumps
+    /// `APPDATA_FORMAT`** — the envelope's own law.
+    #[serde(
+        rename = "habit-events",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub habit_events: Option<BTreeMap<String, HabitEventRecord>>,
     /// Board-level break-rule definitions, keyed by the `BreakRuleId`
     /// UUID string — the rule's remote identity (D-S9's device, #588
     /// D-4). Like `time_entries`/`habits`, the keys are not card ids:
@@ -1310,6 +1322,161 @@ impl Serialize for HabitLogRecord {
     }
 }
 
+/// One habit event row's document shape (the `habit-events` section,
+/// the event-log design §4.1, #1519 chunk 4), or a shape this version
+/// does not model (preserved verbatim, never folded — the
+/// [`HabitLogRecord`] posture verbatim). Identity (the map key) is the
+/// event UUID; the habit id rides the row (D-3).
+///
+/// The decoder fence (D-2) is the **exact modeled key set**: a row
+/// decodes as [`HabitEventRecord::Event`] only if its key set is
+/// exactly `habit`, `kind`, `at` (plus `window` iff the kind is a
+/// mark, plus the optional `by`/`deleted`), every value parses, and
+/// no unmodeled key is present — an `id` key included (identity is
+/// the map key; a row carrying one is a foreign shape). Anything else
+/// demotes to `Verbatim`, never a document failure. Unlike
+/// [`HabitLogRecord`], `deleted` is *modeled* here: the tombstone
+/// rides the event row (Ruling C2's wire half).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HabitEventRecord {
+    /// The modeled row.
+    Event {
+        /// The counted habit's UUID (wire form).
+        habit: crate::ids::HabitId,
+        /// What happened — the domain enum's own serde (tagged
+        /// `kind`), so one grammar for the kind, not two (D-2).
+        kind: crate::habit_event::HabitEventKind,
+        /// The fact instant.
+        at: DateTime<Utc>,
+        /// The row's author: default-absent (the F1 `by` leg).
+        by: Option<crate::ids::AuthorId>,
+        /// The deletion tombstone: default-absent (Ruling C2).
+        deleted: Option<crate::habit_event::HabitEventTombstone>,
+    },
+    /// A shape this version does not model: preserved verbatim —
+    /// relayed through union and GC untouched, never folded.
+    Verbatim(Value),
+}
+
+/// The modeled key set of a [`HabitEventRecord::Event`] row and
+/// whether the row's kind requires the `window` key (D-2's fence
+/// grammar). `None` for an unmodelable `kind` tag.
+fn habit_event_row_shape(tag: &str) -> Option<(std::collections::BTreeSet<&'static str>, bool)> {
+    let (with_window, window_required) = match tag {
+        "completion" => (false, false),
+        "skip" | "unskip" => (true, true),
+        _ => return None,
+    };
+    let mut keys: std::collections::BTreeSet<&'static str> =
+        ["habit", "kind", "at", "by", "deleted"]
+            .into_iter()
+            .collect();
+    if with_window {
+        keys.insert("window");
+    }
+    Some((keys, window_required))
+}
+
+impl<'de> Deserialize<'de> for HabitEventRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The tolerant boundary: any shape outside the fence — a
+        // future `{"retracted": ...}` row included — decodes as
+        // `Verbatim`, never a document failure.
+        let raw = Value::deserialize(deserializer)?;
+        if let Value::Object(map) = &raw {
+            let tag = map.get("kind").and_then(Value::as_str);
+            if let Some((modeled_keys, window_required)) = tag.and_then(habit_event_row_shape)
+                && map.keys().all(|key| modeled_keys.contains(key.as_str()))
+                && map.contains_key("window") == window_required
+            {
+                // The kind value is the domain enum's own serde face
+                // rebuilt from the flat row: the tag plus its `window`
+                // payload when present.
+                let Some(tag) = tag else {
+                    return Ok(Self::Verbatim(raw));
+                };
+                let mut kind_value = serde_json::Map::new();
+                kind_value.insert("kind".into(), Value::String(tag.to_owned()));
+                if window_required {
+                    kind_value.insert("window".into(), map["window"].clone());
+                }
+                if let (Ok(kind), Some(habit), Some(at), Ok(by)) = (
+                    serde_json::from_value::<crate::habit_event::HabitEventKind>(Value::Object(
+                        kind_value,
+                    )),
+                    map.get("habit").and_then(|v| {
+                        serde_json::from_value::<crate::ids::HabitId>(v.clone()).ok()
+                    }),
+                    map.get("at")
+                        .and_then(|v| serde_json::from_value::<DateTime<Utc>>(v.clone()).ok()),
+                    decode_by(map),
+                ) {
+                    let deleted = match map.get("deleted") {
+                        None | Some(Value::Null) => Some(None),
+                        Some(raw) => serde_json::from_value::<
+                            crate::habit_event::HabitEventTombstone,
+                        >(raw.clone())
+                        .ok()
+                        .map(Some),
+                    };
+                    if let Some(deleted) = deleted {
+                        return Ok(Self::Event {
+                            habit,
+                            kind,
+                            at,
+                            by,
+                            deleted,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(Self::Verbatim(raw))
+    }
+}
+
+impl Serialize for HabitEventRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Event {
+                habit,
+                kind,
+                at,
+                by,
+                deleted,
+            } => {
+                // Emit-only-when-set: `by`/`deleted` serialize only
+                // when `Some` (the additive emit law). The kind's own
+                // serde face (tag + window payload) is merged flat
+                // into the row.
+                let mut object = serde_json::Map::new();
+                object.insert(
+                    "habit".into(),
+                    serde_json::to_value(habit).unwrap_or(Value::Null),
+                );
+                if let Value::Object(kind_face) = serde_json::to_value(kind).unwrap_or(Value::Null)
+                {
+                    for (key, value) in kind_face {
+                        object.insert(key, value);
+                    }
+                }
+                object.insert("at".into(), serde_json::to_value(at).unwrap_or(Value::Null));
+                if let Some(by) = by {
+                    object.insert("by".into(), serde_json::to_value(by).unwrap_or(Value::Null));
+                }
+                if let Some(deleted) = deleted {
+                    object.insert(
+                        "deleted".into(),
+                        serde_json::to_value(deleted).unwrap_or(Value::Null),
+                    );
+                }
+                Value::Object(object).serialize(serializer)
+            }
+            Self::Verbatim(value) => value.serialize(serializer),
+        }
+    }
+}
+
 /// One break rule's document shape, or a deletion tombstone, or a shape
 /// this version does not model (preserved verbatim, never folded —
 /// D-S2's materialization rule). Board-level section keyed by the rule
@@ -1638,6 +1805,17 @@ pub fn union(base: &AppDataDocument, overlay: &AppDataDocument) -> AppDataDocume
             (None, Some(o)) => Some(o.clone()),
             (None, None) => None,
         },
+        // The `habit-events` arm beside the `habit_log` one (D-5).
+        habit_events: match (&base.sections.habit_events, &overlay.sections.habit_events) {
+            (Some(b), Some(o)) => {
+                let mut merged = b.clone();
+                union_habit_events(&mut merged, o);
+                Some(merged)
+            }
+            (Some(b), None) => Some(b.clone()),
+            (None, Some(o)) => Some(o.clone()),
+            (None, None) => None,
+        },
         break_rules: match (&base.sections.break_rules, &overlay.sections.break_rules) {
             (Some(b), Some(o)) => {
                 let mut merged = b.clone();
@@ -1826,6 +2004,82 @@ fn union_habit_log(
         if let Some(winner) = winner {
             base.insert(key.clone(), winner);
         }
+    }
+}
+
+/// Per-key union over the `habit-events` section (the event-log
+/// design §4.1, D-5): identity is the event UUID, so identical rows
+/// are the same fact and set-union is the whole law — **no clock
+/// arbitration anywhere** (the `union_habit_log` overlay-tie leniency
+/// has no successor shape: there is nothing to tie). Both present and
+/// differing *only* in the tombstone slot keeps the greater `deleted`
+/// (`Option<HabitEventTombstone>`'s derived `Ord`, `None < Some` —
+/// union and fold state one law). Rows differing in anything else
+/// keep base (structurally impossible on the wire — ids mint once).
+/// `Verbatim` on either side is never ordered against and never
+/// displaced.
+fn union_habit_events(
+    base: &mut BTreeMap<String, HabitEventRecord>,
+    overlay: &BTreeMap<String, HabitEventRecord>,
+) {
+    for (key, overlay_row) in overlay {
+        let winner = match base.get(key) {
+            None => Some(overlay_row.clone()),
+            Some(base_row) => match (base_row, overlay_row) {
+                // Verbatim content is never ordered against: whichever
+                // side holds it keeps the slot.
+                (HabitEventRecord::Verbatim(_), _) | (_, HabitEventRecord::Verbatim(_)) => None,
+                (
+                    HabitEventRecord::Event {
+                        deleted: base_deleted,
+                        ..
+                    },
+                    overlay_row @ HabitEventRecord::Event { deleted, .. },
+                ) => {
+                    if rows_equal_ignoring_deleted(base_row, overlay_row) {
+                        // The only competition is the tombstone slot:
+                        // the greater `deleted` wins (`None < Some`).
+                        if *deleted > *base_deleted {
+                            Some(overlay_row.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Differing facts under one id: structurally
+                        // impossible on the wire (ids mint once);
+                        // base stands.
+                        None
+                    }
+                }
+            },
+        };
+        if let Some(winner) = winner {
+            base.insert(key.clone(), winner);
+        }
+    }
+}
+
+/// True when two `Event` rows are the same fact outside the tombstone
+/// slot (D-5's comparison basis).
+fn rows_equal_ignoring_deleted(base: &HabitEventRecord, overlay: &HabitEventRecord) -> bool {
+    match (base, overlay) {
+        (
+            HabitEventRecord::Event {
+                habit: bh,
+                kind: bk,
+                at: ba,
+                by: bb,
+                deleted: _,
+            },
+            HabitEventRecord::Event {
+                habit: oh,
+                kind: ok,
+                at: oa,
+                by: ob,
+                deleted: _,
+            },
+        ) => bh == oh && bk == ok && ba == oa && bb == ob,
+        _ => false,
     }
 }
 
@@ -6876,6 +7130,397 @@ mod author_by_tests {
                     .habit_time_entries
                     .as_ref()
                     .is_none_or(|s| !s.contains_key("t"))
+        );
+    }
+}
+
+/// The `habit-events` section codec + union tests (#1519 chunk 4, the
+/// stage-1 plan §2 items 15–17). Fixture builders are shared with the
+/// `habit_section_tests` shapes via the module-local helpers below —
+/// table-driven fences, no copied document blocks (the `SonarCloud`
+/// duplication gate).
+#[cfg(test)]
+mod habit_events_codec_tests {
+    use super::*;
+    use crate::habit_event::{HabitEventKind, HabitEventTombstone};
+    use crate::ids::{AuthorId, HabitId};
+    use chrono::TimeZone;
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn habit(raw: u128) -> String {
+        HabitId::from(uuid::Uuid::from_u128(raw))
+            .as_uuid()
+            .to_string()
+    }
+
+    fn author(raw: u128) -> AuthorId {
+        AuthorId::from_uuid(uuid::Uuid::from_u128(raw))
+    }
+
+    fn completion_row(at: i64) -> Value {
+        serde_json::json!({
+            "habit": habit(1),
+            "kind": "completion",
+            "at": serde_json::to_value(ts(at)).unwrap(),
+        })
+    }
+
+    fn skip_row(at: i64) -> Value {
+        serde_json::json!({
+            "habit": habit(1),
+            "kind": "skip",
+            "window": rfc3339(at).get(..10).unwrap().to_owned(),
+            "at": rfc3339(at),
+        })
+    }
+
+    fn rfc3339(secs: i64) -> String {
+        ts(secs).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+    }
+
+    fn document(board: u64, sections: AppDataSections) -> AppDataDocument {
+        AppDataDocument {
+            format: APPDATA_FORMAT,
+            board: RemoteBoardId::deck(board),
+            sections,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// A pre-chunk reader: no `habit-events` field, the `unknown`
+    /// flatten the envelope has always carried.
+    #[derive(serde::Deserialize)]
+    struct OldReaderSections {
+        #[serde(flatten, default)]
+        unknown: BTreeMap<String, Value>,
+    }
+    #[derive(serde::Deserialize)]
+    struct OldReaderDocument {
+        sections: OldReaderSections,
+    }
+
+    /// Test 15 (the D-2 fence, table-driven): each foreign shape
+    /// demotes to `Verbatim`; the modeled set with optional keys
+    /// absent decodes `Event`; null `by`/`deleted` behave as absent.
+    /// The D-2 fence table: each foreign shape demotes to `Verbatim`
+    /// with the typed reason it must.
+    fn fence_rows() -> Vec<(Value, &'static str)> {
+        vec![
+            (
+                serde_json::json!({
+                    "id": uuid::Uuid::from_u128(9).to_string(),
+                    "habit": habit(1),
+                    "kind": "completion",
+                    "at": rfc3339(100),
+                }),
+                "an id key is a foreign shape — identity is the map key",
+            ),
+            (
+                serde_json::json!({
+                    "habit": habit(1),
+                    "kind": "completion",
+                    "at": rfc3339(100),
+                    "retracted": false,
+                }),
+                "any unmodeled key demotes (the future-row relay)",
+            ),
+            (
+                serde_json::json!({
+                    "habit": habit(1),
+                    "kind": "completion",
+                    "window": { "Day": "2026-11-01" },
+                    "at": rfc3339(100),
+                }),
+                "a window on a completion is outside the modeled set",
+            ),
+            (
+                serde_json::json!({
+                    "habit": habit(1),
+                    "kind": "skip",
+                    "at": rfc3339(100),
+                }),
+                "a mark without its window is outside the modeled set",
+            ),
+            (
+                serde_json::json!({
+                    "habit": habit(1),
+                    "kind": "completion",
+                    "at": "not a timestamp",
+                }),
+                "an unparsable at demotes",
+            ),
+            (
+                serde_json::json!({
+                    "habit": "not a uuid",
+                    "kind": "completion",
+                    "at": rfc3339(100),
+                }),
+                "an unparsable habit demotes",
+            ),
+            (
+                serde_json::json!({
+                    "habit": habit(1),
+                    "kind": "vacuumed",
+                    "at": rfc3339(100),
+                }),
+                "an unmodeled kind tag demotes",
+            ),
+        ]
+    }
+
+    #[test]
+    fn habit_event_record_decoder_fences_unmodeled_keys() {
+        for (row, why) in fence_rows() {
+            let decoded: HabitEventRecord = serde_json::from_value(row.clone())
+                .expect("the tolerant decoder never fails the document");
+            assert!(
+                matches!(decoded, HabitEventRecord::Verbatim(_)),
+                "expected a Verbatim demotion: {why}; decoded {decoded:?} from {row}"
+            );
+            // The demotion is value-preserving: re-serialize relay.
+            let relayed = serde_json::to_value(&decoded).unwrap();
+            assert_eq!(relayed, row, "the demoted row relays verbatim: {why}");
+        }
+
+        // The modeled set decodes Event; null optional keys behave as
+        // absent.
+        let decoded: HabitEventRecord = serde_json::from_value(completion_row(100)).unwrap();
+        let HabitEventRecord::Event {
+            habit: h,
+            kind,
+            at,
+            by,
+            deleted,
+        } = &decoded
+        else {
+            panic!("the modeled completion row decodes as Event");
+        };
+        assert_eq!(h.as_uuid(), uuid::Uuid::from_u128(1));
+        assert!(matches!(kind, HabitEventKind::Completion));
+        assert_eq!(*at, ts(100));
+        assert_eq!(*by, None);
+        assert_eq!(*deleted, None);
+
+        let marked: HabitEventRecord = serde_json::from_value(skip_row(200)).unwrap();
+        assert!(
+            matches!(
+                &marked,
+                HabitEventRecord::Event {
+                    kind: HabitEventKind::Skip { .. },
+                    ..
+                }
+            ),
+            "the modeled skip row decodes as Event"
+        );
+
+        let nulled: HabitEventRecord = serde_json::from_value(serde_json::json!({
+            "habit": habit(1),
+            "kind": "completion",
+            "at": rfc3339(100),
+            "by": null,
+            "deleted": null,
+        }))
+        .unwrap();
+        let HabitEventRecord::Event { by, deleted, .. } = nulled else {
+            panic!("null optional keys behave as absent");
+        };
+        assert_eq!(by, None);
+        assert_eq!(deleted, None);
+
+        // Optional keys set: round trip keeps them, absent keys are
+        // never emitted (the additive emit law).
+        let full = HabitEventRecord::Event {
+            habit: HabitId::from(uuid::Uuid::from_u128(1)),
+            kind: HabitEventKind::Skip {
+                window: crate::habit::WindowStart::from_stored(
+                    chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap(),
+                ),
+            },
+            at: ts(100),
+            by: Some(author(7)),
+            deleted: Some(HabitEventTombstone {
+                at: ts(300),
+                by: Some(author(7)),
+            }),
+        };
+        let wire = serde_json::to_value(&full).unwrap();
+        let map = wire.as_object().unwrap();
+        assert!(map.contains_key("by") && map.contains_key("deleted"));
+        assert_eq!(
+            serde_json::from_value::<HabitEventRecord>(wire).unwrap(),
+            full,
+            "the modeled row round-trips"
+        );
+        let bare = serde_json::to_value(completion_row(100)).unwrap();
+        let decoded_bare: HabitEventRecord = serde_json::from_value(bare.clone()).unwrap();
+        let re_emitted = serde_json::to_value(&decoded_bare).unwrap();
+        assert!(
+            !re_emitted.as_object().unwrap().contains_key("by"),
+            "absent by is never emitted"
+        );
+        assert_eq!(bare, re_emitted, "the emit is byte-stable");
+    }
+
+    /// Test 16 (additive D-1): the section is default-absent, the
+    /// format never moves, and an old-reader simulation relays it
+    /// verbatim through `unknown`.
+    #[test]
+    fn habit_events_section_is_additive_default_absent() {
+        // A document without the key decodes unchanged.
+        let legacy_json = serde_json::json!({
+            "format": APPDATA_FORMAT,
+            "board": serde_json::json!(7u64),
+            "sections": {},
+        });
+        let legacy: AppDataDocument = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(legacy.sections.habit_events, None);
+        assert_eq!(APPDATA_FORMAT, 1, "the additive section never bumps");
+
+        // A v1-format document carrying the section round-trips.
+        let sections = AppDataSections {
+            habit_events: Some(
+                [(
+                    uuid::Uuid::from_u128(5).to_string(),
+                    serde_json::from_value::<HabitEventRecord>(completion_row(100)).unwrap(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            ..AppDataSections::default()
+        };
+        let carried = document(7, sections);
+        let json = serde_json::to_value(&carried).unwrap();
+        assert_eq!(json["format"], APPDATA_FORMAT);
+        let back: AppDataDocument = serde_json::from_value(json).unwrap();
+        assert_eq!(back, carried, "v1 + habit-events round-trips");
+
+        // The old-reader simulation (D-1): a reader built before this
+        // chunk has no `habit-events` field, so the key falls through
+        // the sections struct's `unknown` flatten and relays verbatim
+        // (the `OldReader*` pre-chunk structs at module level).
+        let raw = serde_json::json!({
+            "format": APPDATA_FORMAT,
+            "board": serde_json::json!(7u64),
+            "sections": {
+                "habit-events": {
+                    "not-even-a-uuid": {"exotic": [1, {"shape": true}]},
+                },
+            },
+        });
+        let old_view: OldReaderDocument = serde_json::from_value(raw).unwrap();
+        let relayed = old_view
+            .sections
+            .unknown
+            .get("habit-events")
+            .expect("the old reader relays the section under unknown");
+        assert_eq!(
+            relayed["not-even-a-uuid"]["exotic"][1]["shape"],
+            serde_json::json!(true),
+            "the relayed section is value-identical"
+        );
+    }
+
+    /// Test 17 (D-5): the union law — tombstone max, no clock, and
+    /// the Verbatim-never-displaced arm.
+    #[test]
+    fn union_habit_events_tombstone_max_no_clock() {
+        let key = uuid::Uuid::from_u128(5).to_string();
+        let event = |at: i64, deleted: Option<HabitEventTombstone>| HabitEventRecord::Event {
+            habit: HabitId::from(uuid::Uuid::from_u128(1)),
+            kind: HabitEventKind::Completion,
+            at: ts(at),
+            by: None,
+            deleted,
+        };
+        let tombstoned_at = |at: i64| {
+            Some(HabitEventTombstone {
+                at: ts(at),
+                by: None,
+            })
+        };
+
+        // Absent-in-base adopts the overlay.
+        let mut base = BTreeMap::new();
+        let mut overlay = BTreeMap::new();
+        overlay.insert(key.clone(), event(100, None));
+        union_habit_events(&mut base, &overlay);
+        assert!(matches!(&base[&key], HabitEventRecord::Event { at, .. } if *at == ts(100)));
+
+        // Identical rows keep base (idempotent union).
+        let mut base = BTreeMap::new();
+        base.insert(key.clone(), event(100, None));
+        union_habit_events(&mut base, &overlay);
+        assert_eq!(base.len(), 1);
+
+        // Differing only in the tombstone slot: the greater tombstone
+        // wins — and `None` never beats `Some` (no resurrection).
+        let mut overlay_tombstone = BTreeMap::new();
+        overlay_tombstone.insert(key.clone(), event(100, tombstoned_at(500)));
+        union_habit_events(&mut base, &overlay_tombstone);
+        assert!(
+            matches!(
+                &base[&key],
+                HabitEventRecord::Event {
+                    deleted: Some(_),
+                    ..
+                }
+            ),
+            "the overlay's tombstone wins over tombstone-absence"
+        );
+        let mut overlay_older_tombstone = BTreeMap::new();
+        overlay_older_tombstone.insert(key.clone(), event(100, tombstoned_at(400)));
+        union_habit_events(&mut base, &overlay_older_tombstone);
+        let HabitEventRecord::Event {
+            deleted: Some(deleted),
+            ..
+        } = &base[&key]
+        else {
+            panic!("a tombstoned row stays tombstoned");
+        };
+        assert_eq!(deleted.at, ts(500), "the max tombstone stands");
+
+        // Same (at, by)-equal tombstones: base stands (idempotent).
+        union_habit_events(&mut base, &overlay_tombstone);
+        let HabitEventRecord::Event {
+            deleted: Some(deleted),
+            ..
+        } = &base[&key]
+        else {
+            panic!("still tombstoned");
+        };
+        assert_eq!(deleted.at, ts(500));
+
+        // Rows differing in the fact itself (`at` — a structurally
+        // impossible wire): base stands. No clock arbitration.
+        let mut overlay_other_fact = BTreeMap::new();
+        overlay_other_fact.insert(key.clone(), event(900, None));
+        union_habit_events(&mut base, &overlay_other_fact);
+        let HabitEventRecord::Event { at, .. } = &base[&key] else {
+            panic!("event row kept");
+        };
+        assert_eq!(*at, ts(100), "a differing fact never displaces base");
+
+        // Verbatim on either side is never displaced.
+        let verbatim = serde_json::json!({ "future": { "retracted": true } });
+        let mut base_verbatim = BTreeMap::new();
+        base_verbatim.insert(key.clone(), HabitEventRecord::Verbatim(verbatim.clone()));
+        union_habit_events(&mut base_verbatim, &overlay_tombstone);
+        assert_eq!(
+            base_verbatim[&key],
+            HabitEventRecord::Verbatim(verbatim.clone()),
+            "base verbatim is never displaced"
+        );
+        let mut base_event = BTreeMap::new();
+        base_event.insert(key.clone(), event(100, None));
+        let mut overlay_verbatim = BTreeMap::new();
+        overlay_verbatim.insert(key.clone(), HabitEventRecord::Verbatim(verbatim));
+        union_habit_events(&mut base_event, &overlay_verbatim);
+        assert!(
+            matches!(&base_event[&key], HabitEventRecord::Event { .. }),
+            "overlay verbatim never displaces a clocked base row"
         );
     }
 }

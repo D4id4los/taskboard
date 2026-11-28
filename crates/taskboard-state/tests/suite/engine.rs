@@ -2793,6 +2793,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
         sections: AppDataSections {
             habits: None,
             habit_log: None,
+            habit_events: None,
             break_rules: None,
             tasks: None,
             reminder_rules: None,
@@ -3778,6 +3779,7 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
             ),
             habits: None,
             habit_log: None,
+            habit_events: None,
             tasks: None,
             reminder_rules: None,
             time_entries: None,
