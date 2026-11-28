@@ -169,9 +169,6 @@ export struct TodayModel {
 // wide golden), so the whole arm unmounts across the breakpoint.
 component TodaySectionBlock inherits VerticalLayout {
     vertical-stretch: 0;
-    // Empty sections collapse (D7): the header and rows render only
-    // when the group has rows.
-    visible: sec.count > 0;
     spacing: Theme.space-1;
     in property <TodaySectionModel> sec;
     in property <int> sindex;
@@ -203,7 +200,15 @@ component TodaySectionBlock inherits VerticalLayout {
         }
     }
 
-    HorizontalLayout {
+    // Empty sections collapse (D7): the header and rows render only
+    // when the group has rows. The gate is an `if` mount, not
+    // `visible: false` (the gating law, docs/coding_guidelines.org
+    // §5): a hidden header keeps its layout slot and the enclosing
+    // VerticalLayout's spacing gap, so an empty section painted a
+    // dead band; an unmounted one contributes zero height. The row
+    // viewport below stays facts-driven (it settles to zero height
+    // on an empty extent), so the header is the only slot to gate.
+    if (sec.count > 0): section-header := HorizontalLayout {
         spacing: Theme.space-2;
         RoleText {
             role: Typography.caption;
@@ -896,7 +901,7 @@ export component TodayView inherits FocusScope {
                         day-total: root.today.tracked-day-total;
                         row-activated(i) => root.tracked-activated(i);
                     }
-                    for section[sindex] in root.today.sections: TodaySectionBlock {
+                    for section[sindex] in root.today.sections: section-block := TodaySectionBlock {
                         sec: section;
                         sindex: sindex;
                         viewport-height: root.viewport-height;

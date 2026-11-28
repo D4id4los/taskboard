@@ -88,23 +88,26 @@ export component SearchPalette inherits Rectangle {
             }
         }
 
-        RoleText {
+        // The caption gates are `if` mounts, not `visible: false`
+        // (the gating law, docs/coding_guidelines.org §5): a hidden
+        // caption kept its slot band at the palette's foot. The
+        // palette is a transient overlay — position stability across
+        // its own states has no consumer.
+        if (root.overflow > 0): overflow-caption := RoleText {
             vertical-stretch: 0;
             role: Typography.caption;
             text-color: Theme.text-secondary;
             text: "+" + root.overflow + " more";
-            visible: root.overflow > 0;
         }
         // The empty state's cross-reference (cross-surface friction
         // plan D-5, #772): the zero-hit/empty-query palette names its
         // CLI twin — one ranking engine, two fronts. Judged at the
         // walkthrough; never asserted by tests.
-        RoleText {
+        if (root.rows.length == 0): empty-state-caption := RoleText {
             vertical-stretch: 0;
             role: Typography.caption;
             text-color: Theme.text-secondary;
             text: "The same ranking drives the CLI: taskboard find (or: search)";
-            visible: root.rows.length == 0;
         }
     }
 }

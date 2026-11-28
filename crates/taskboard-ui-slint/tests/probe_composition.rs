@@ -52,6 +52,8 @@ mod editor_inset_probe_tests;
 mod editor_viewport_probe_tests;
 #[path = "probes/focus_seam_probe_tests.rs"]
 mod focus_seam_probe_tests;
+#[path = "probes/gating_mount_probe_tests.rs"]
+mod gating_mount_probe_tests;
 #[path = "probes/habit_history_window_max_probe_tests.rs"]
 mod habit_history_window_max_probe_tests;
 #[path = "probes/menu_shell_probe_tests.rs"]
@@ -62,6 +64,8 @@ mod overlay_migration_probe_tests;
 mod plan_next_day_window_max_probe_tests;
 #[path = "probes/plan_seek_probe_tests.rs"]
 mod plan_seek_probe_tests;
+#[path = "probes/quick_bar_gate_probe_tests.rs"]
+mod quick_bar_gate_probe_tests;
 #[path = "probes/review_window_max_probe_tests.rs"]
 mod review_window_max_probe_tests;
 #[path = "probes/settings_window_max_probe_tests.rs"]

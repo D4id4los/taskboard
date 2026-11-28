@@ -159,7 +159,25 @@ export component ActionMenu inherits Rectangle {
             padding-top: Theme.space-2;
             spacing: Theme.space-1;
             for bar-entry[bar-index] in root.quick-bar: Rectangle {
-                visible: bar-entry.visible;
+                // The `if` mount, not `visible: false` (the gating
+                // law, docs/coding_guidelines.org §5): the C-4
+                // contract is "the bar renders only the shown half" —
+                // a hidden entry kept its slot + spacing gap in the
+                // row. The delegate element itself stays the
+                // repeater's child (the index model contract —
+                // resolve by index — is untouched), and the routing
+                // below is verbatim. The delegate's own slot
+                // collapses with the gate: the wrapper is
+                // unconditionally mounted, so its size rides the gate
+                // too — zero when withheld, the IconButton's
+                // canonical square (min/max-width `Theme.space-6`)
+                // when shown; if the widget's square token moves, this
+                // binding moves with it.
+                width: bar-entry.visible ? Theme.space-6 : 0px;
+                height: bar-entry.visible ? Theme.space-6 : 0px;
+                if (bar-entry.visible): Rectangle {
+                    width: 100%;
+                    height: 100%;
                 quick-bar-button := IconButton {
                     icon: bar-entry.icon;
                     enabled: bar-entry.enabled;
@@ -167,6 +185,7 @@ export component ActionMenu inherits Rectangle {
                     hint-keys: bar-entry.hint-keys;
                     // slint: menu-quick-bar-invoked
                     clicked => { root.invoke-quick-bar(bar-index); }
+                }
                 }
             }
         }
