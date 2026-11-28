@@ -1610,6 +1610,54 @@ mod tests {
         }
     }
 
+    /// T1 — the plan-window box family (#1394, D1): the reorder twins
+    /// and removal resolve in every preset over the `[PlanNextDay,
+    /// Global]` chain at exactly the D1 spellings, and the placement
+    /// commit stays chord-free (the armed Return grammar — no preset
+    /// carries a `PlanCommitPlace` row, the no-second-address law).
+    #[test]
+    fn the_plan_box_family_resolves_in_every_preset() {
+        let chain = [ContextId::PlanNextDay, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            let (earlier, later): (&[&str], &[&str]) = match preset {
+                Preset::Standard => (&["Shift+Up"], &["Shift+Down"]),
+                Preset::Emacs => (&["Ctrl+Shift+p"], &["Ctrl+Shift+n"]),
+                Preset::Vi => (&["K"], &["J"]),
+            };
+            let expected = |spellings: &[&str]| -> Vec<String> {
+                spellings.iter().map(ToString::to_string).collect()
+            };
+            assert_eq!(
+                keymap.first_binding_display(ActionId::PlanBoxEarlier, &chain),
+                Some(expected(earlier)),
+                "{preset:?}: the earlier twin's D1 spelling"
+            );
+            assert_eq!(
+                keymap.first_binding_display(ActionId::PlanBoxLater, &chain),
+                Some(expected(later)),
+                "{preset:?}: the later twin's D1 spelling"
+            );
+            assert_eq!(
+                keymap.first_binding_display(ActionId::PlanRemoveBox, &chain),
+                Some(expected(&["Delete"])),
+                "{preset:?}: removal joins the Delete family"
+            );
+            assert!(
+                preset
+                    .rows()
+                    .iter()
+                    .all(|(action, _, _)| *action != ActionId::PlanCommitPlace),
+                "{preset:?}: the placement commit keeps the armed Return only"
+            );
+            assert_eq!(
+                keymap.first_binding_display(ActionId::PlanCommitPlace, &chain),
+                None,
+                "{preset:?}: no chord addresses the placement commit"
+            );
+        }
+    }
+
     /// The R-2 mis-stroke contract (round 9 chunk 11): the emacs bare
     /// second stroke `C-c i` resolves the smart toggle while the
     /// chorded `C-c C-i` resolves the start verb — distinct bindings

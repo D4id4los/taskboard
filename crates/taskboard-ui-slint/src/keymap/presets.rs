@@ -77,6 +77,7 @@ impl Preset {
                 VI_S1,
                 CONTROL_WALK_SETTINGS_ROWS,
                 VI_S2,
+                VI_PLANNER_ROWS,
                 TRACK_ENTRIES_ROWS,
                 REVIEW_WALK_ROWS,
                 VI_S4,
@@ -407,6 +408,23 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // not reach the planner).
     (ActionId::NavFocusLeft, ContextId::PlanNextDay, &["Left"]),
     (ActionId::NavFocusRight, ContextId::PlanNextDay, &["Right"]),
+    // The plan-window box family (#1394, D1): the reorder twins join
+    // the cross-preset "Shift along the walk axis acts on the focused
+    // thing" grammar (the habit pair's spellings); Delete joins the
+    // removal family. PlanCommitPlace gets NO row — the armed Return
+    // stands (no second address for one semantics, the O-8 law). The
+    // rows are PlanNextDay-scoped, free in this preset at the base.
+    (
+        ActionId::PlanBoxEarlier,
+        ContextId::PlanNextDay,
+        &["Shift+Up"],
+    ),
+    (
+        ActionId::PlanBoxLater,
+        ContextId::PlanNextDay,
+        &["Shift+Down"],
+    ),
+    (ActionId::PlanRemoveBox, ContextId::PlanNextDay, &["Delete"]),
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+PageDown"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+PageUp"]),
     (ActionId::NavFocusBoard, ContextId::Global, &["Alt+1"]),
@@ -1377,6 +1395,22 @@ static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     // the palette's isearch shadow does not reach the planner).
     (ActionId::NavFocusRight, ContextId::PlanNextDay, &["Ctrl+f"]),
     (ActionId::NavFocusLeft, ContextId::PlanNextDay, &["Ctrl+b"]),
+    // The plan-window box family (#1394, D1): the Board extend twins'
+    // spellings in their own context (`Ctrl+Shift+n`/`Ctrl+Shift+p`
+    // are Board-scoped chords over there — free here); Delete joins
+    // the removal family. PlanCommitPlace gets NO row — the armed
+    // Return stands.
+    (
+        ActionId::PlanBoxEarlier,
+        ContextId::PlanNextDay,
+        &["Ctrl+Shift+p"],
+    ),
+    (
+        ActionId::PlanBoxLater,
+        ContextId::PlanNextDay,
+        &["Ctrl+Shift+n"],
+    ),
+    (ActionId::PlanRemoveBox, ContextId::PlanNextDay, &["Delete"]),
     // chords carry nav.focus-* in every view context — the
     // horizontal pair reads as the control walk in the non-board
     // view contexts (R-4's first cut; the isearch C-f/C-b
@@ -1473,6 +1507,18 @@ static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     // The alarm window (T-22, #805): the same window-local grammar
     // (the context scopes the single keys away from the emacs
     // chords; nothing collides).
+];
+
+/// The plan-window box family's vi rows (#1394, D1): the Board
+/// uppercase-printable precedent verbatim (`J`/`K`) — the placement
+/// form rides `ViInsert` (the insert chain drops the view context),
+/// so in `ViNormal` the uppercase glyphs never edit text; Delete
+/// joins the removal family. `PlanCommitPlace` gets NO row — the armed
+/// Return stands.
+static VI_PLANNER_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::PlanBoxEarlier, ContextId::PlanNextDay, &["K"]),
+    (ActionId::PlanBoxLater, ContextId::PlanNextDay, &["J"]),
+    (ActionId::PlanRemoveBox, ContextId::PlanNextDay, &["Delete"]),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest

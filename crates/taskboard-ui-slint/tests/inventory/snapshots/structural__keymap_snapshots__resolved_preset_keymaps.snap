@@ -486,6 +486,15 @@ expression: rows
             - Escape
           action: view.plan-next-day
         - sequence:
+            - Delete
+          action: plan.remove-box
+        - sequence:
+            - Shift+Up
+          action: plan.box-earlier
+        - sequence:
+            - Shift+Down
+          action: plan.box-later
+        - sequence:
             - Left
           action: nav.focus-left
         - sequence:
@@ -1188,6 +1197,15 @@ expression: rows
         - sequence:
             - Ctrl+f
           action: nav.focus-right
+        - sequence:
+            - Ctrl+Shift+n
+          action: plan.box-later
+        - sequence:
+            - Ctrl+Shift+p
+          action: plan.box-earlier
+        - sequence:
+            - Delete
+          action: plan.remove-box
     - context: menu
       bindings:
         - sequence:
@@ -1609,6 +1627,17 @@ expression: rows
         - sequence:
             - Escape
           action: app.status-panel-open
+    - context: plan-next-day
+      bindings:
+        - sequence:
+            - J
+          action: plan.box-later
+        - sequence:
+            - K
+          action: plan.box-earlier
+        - sequence:
+            - Delete
+          action: plan.remove-box
     - context: menu
       bindings:
         - sequence:
