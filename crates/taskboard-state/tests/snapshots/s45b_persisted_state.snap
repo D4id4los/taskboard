@@ -95,8 +95,6 @@ habits:
         deleted: "1970-01-01T10:05:00Z"
       continued_from: ~
       deleted: true
-  log: {}
-  day_log: {}
   time_log: {}
   events:
     00000000-0000-0000-0000-000000000004:

@@ -4891,7 +4891,7 @@ fn delete_habit_journals_pre_images_and_undo_restores_the_tombstone_target() {
     let habit_before = h.disk.habits.habits[&habit_id].clone();
     h.exec(&StateCommand::LogHabit { habit: habit_id })
         .expect("logged");
-    let log_before = h.disk.habits.log.clone();
+    let events_before = h.disk.habits.events.clone();
     h.exec(&StateCommand::DeleteHabit { habit: habit_id })
         .expect("deleted");
     assert!(h.disk.habits.habits[&habit_id].deleted);
@@ -4907,7 +4907,7 @@ fn delete_habit_journals_pre_images_and_undo_restores_the_tombstone_target() {
     assert_eq!(after.clocks.title, habit_before.clocks.title);
     assert_eq!(after.clocks.target, habit_before.clocks.target);
     assert_eq!(after.clocks.order, habit_before.clocks.order);
-    assert_eq!(h.disk.habits.log, log_before);
+    assert_eq!(h.disk.habits.events, events_before);
 }
 
 #[test]

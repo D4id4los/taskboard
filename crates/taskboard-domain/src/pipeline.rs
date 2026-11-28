@@ -3638,24 +3638,7 @@ mod tests {
 
             paused_until: None,
         };
-        let key = crate::habit::HabitLogKey {
-            habit: habit.id,
-            window: crate::habit::WindowStart::of_period(
-                crate::habit::PeriodKind::Day,
-                chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
-            ),
-        };
         state.habits.habits.insert(habit.id, habit.clone());
-        state.habits.log.insert(
-            key,
-            crate::habit::HabitLogEntry {
-                count: 2,
-                clock: ts(BASE),
-                by: None,
-
-                skip: false,
-            },
-        );
 
         // A document without the sections carries everything through.
         let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
@@ -3681,7 +3664,11 @@ mod tests {
         let evidence = document_with_habit_sections(
             &[(remote_id, wire_live_habit(BASE + 500))],
             &[(
-                key,
+                crate::habit::HabitLogKey::parse_wire_form(&format!(
+                    "{}|2026-10-28",
+                    crate::ids::HabitId::from(remote_id).as_uuid()
+                ))
+                .expect("wire key"),
                 crate::appdata::HabitLogRecord::Entry {
                     count: 6,
                     clock: ts(BASE + 400),
@@ -3706,10 +3693,6 @@ mod tests {
             roamed.board,
             *state.boards.keys().next().unwrap(),
             "the fold stamps the locally-bound board"
-        );
-        assert_eq!(
-            app.habits.log[&key].count, 2,
-            "the legacy fold never writes the log (D-6)"
         );
         assert_eq!(
             app.habits.events.len(),
@@ -3755,24 +3738,7 @@ mod tests {
 
             paused_until: None,
         };
-        let key = crate::habit::HabitLogKey {
-            habit: habit.id,
-            window: crate::habit::WindowStart::of_period(
-                crate::habit::PeriodKind::Day,
-                chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
-            ),
-        };
         state.habits.habits.insert(habit.id, habit);
-        state.habits.log.insert(
-            key,
-            crate::habit::HabitLogEntry {
-                count: 2,
-                clock: ts(BASE),
-                by: None,
-
-                skip: false,
-            },
-        );
         let expected = state.habits.clone();
         let (pushed, _actions) = apply_push_report(
             &state,

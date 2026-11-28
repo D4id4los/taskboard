@@ -3129,12 +3129,28 @@ mod tests {
                 crate::habit::PeriodKind::Day,
                 now_date,
             );
-            state.habits.log.insert(
-                crate::habit::HabitLogKey { habit: id, window },
-                crate::habit::HabitLogEntry { count, clock: ts(500) , by: None,
-        skip: false,
-    },
-            );
+            for ordinal in 0..count {
+                let at = Utc
+                    .timestamp_opt(now_secs, 0)
+                    .unwrap();
+                let id_ev = crate::habit_event::legacy_habit_event_id(
+                    id,
+                    window.as_date(),
+                    at,
+                    Some(ordinal),
+                );
+                state.habits.events.insert(
+                    id_ev,
+                    crate::habit_event::HabitEvent {
+                        id: id_ev,
+                        habit: id,
+                        kind: crate::habit_event::HabitEventKind::Completion,
+                        at,
+                        by: None,
+                        deleted: None,
+                    },
+                );
+            }
             let now = Utc.timestamp_opt(now_secs, 0).unwrap();
             let defaults = crate::reminders::ReminderDefaults::default();
             let evaluate = |state: &PersistedState| {

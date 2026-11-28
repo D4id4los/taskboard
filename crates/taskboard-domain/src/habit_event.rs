@@ -948,14 +948,11 @@ mod derivation_tests {
             day in day_calendar_strategy(),
         ) {
             let events = habit_for(&events, &habit);
-            let mut legacy: BTreeMap<crate::habit::HabitDayKey, u32> = BTreeMap::new();
+            let mut legacy_by_day: BTreeMap<chrono::NaiveDate, u32> = BTreeMap::new();
             for event in completions_only(&events) {
-                let key = crate::habit::HabitDayKey { habit: habit.id, day: day.today(event.at) };
-                *legacy.entry(key).or_default() += 1;
+                *legacy_by_day.entry(day.today(event.at)).or_default() += 1;
             }
             let derived = derive_day_counts(&habit, events.iter(), day);
-            let legacy_by_day: BTreeMap<chrono::NaiveDate, u32> =
-                legacy.into_iter().map(|(key, count)| (key.day, count)).collect();
             prop_assert_eq!(derived, legacy_by_day);
         }
     }

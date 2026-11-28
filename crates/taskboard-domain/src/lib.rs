@@ -113,10 +113,10 @@ pub use entities::{
 };
 pub use find::{MatchQuality, SearchHit, SearchTarget, find};
 pub use habit::{
-    AdherenceRatio, AnchorDay, Habit, HabitClocks, HabitDayKey, HabitDayLogEntry, HabitLogEntry,
-    HabitLogKey, HabitState, HabitTarget, InvalidHabitTarget, MonthDay, NonZeroCount, PeriodKind,
-    WindowStart, adherence, best_streak, habit_streak_unioned, log_window, per_period_totals,
-    period_after, period_before, period_end, period_start, statistics_horizon, streak,
+    AdherenceRatio, AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState,
+    HabitTarget, InvalidHabitTarget, MonthDay, NonZeroCount, PeriodKind, WindowStart, adherence,
+    best_streak, habit_streak_unioned, log_window, per_period_totals, period_after, period_before,
+    period_end, period_start, statistics_horizon, streak,
 };
 pub use habit_time::{HabitTimeEntry, HabitTimeLog};
 pub use idgen::{IdGenerator, UuidV7Generator};
