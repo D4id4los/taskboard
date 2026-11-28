@@ -1839,131 +1839,6 @@ async fn habit_rows_survive_a_close_reopen_including_the_tombstone() {
     db.close().await;
 }
 
-/// The log LWW guard is exercised at the SQL layer: a batch whose
-/// The per-day overlay (US-8, #1144) round-trips: an apply persists
-/// the `(habit, day)` row, the load restores it, and the same
-/// strictly-older-clock LWW guard keeps the newer overlay row.
-#[tokio::test]
-async fn the_habit_day_overlay_round_trips_with_the_lww_guard() {
-    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
-        .await
-        .expect("open");
-    let key = taskboard_domain::HabitDayKey {
-        habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(62)),
-        day: chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(),
-    };
-    repo.apply(vec![PersistenceAction::RecordHabitDayLog(
-        key,
-        taskboard_domain::HabitDayLogEntry {
-            count: 3,
-            clock: ts(700),
-        },
-    )])
-    .await
-    .expect("apply newer");
-    // A strictly older batch row: the SQL guard keeps local.
-    repo.apply(vec![PersistenceAction::RecordHabitDayLog(
-        key,
-        taskboard_domain::HabitDayLogEntry {
-            count: 1,
-            clock: ts(600),
-        },
-    )])
-    .await
-    .expect("apply older");
-    let loaded = repo.load().await.expect("load");
-    assert_eq!(
-        loaded.habits.day_log.get(&key).map(|e| (e.count, e.clock)),
-        Some((3, ts(700))),
-        "the older overlay row never overwrites"
-    );
-    repo.close().await;
-}
-
-/// `RecordHabitLog` carries a strictly older clock leaves the newer row.
-#[tokio::test]
-async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {
-    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
-        .await
-        .expect("open");
-    let key = taskboard_domain::HabitLogKey {
-        habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(60)),
-        window: taskboard_domain::WindowStart::of_period(
-            taskboard_domain::PeriodKind::Day,
-            chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
-        ),
-    };
-    repo.apply(vec![PersistenceAction::RecordHabitLog(
-        key,
-        taskboard_domain::HabitLogEntry {
-            count: 5,
-            clock: ts(500),
-            by: None,
-
-            skip: false,
-        },
-    )])
-    .await
-    .expect("apply newer");
-    // A strictly older batch row: the SQL guard keeps local.
-    repo.apply(vec![PersistenceAction::RecordHabitLog(
-        key,
-        taskboard_domain::HabitLogEntry {
-            count: 1,
-            clock: ts(400),
-            by: None,
-
-            skip: false,
-        },
-    )])
-    .await
-    .expect("apply older");
-    let loaded = repo.load().await.expect("load");
-    assert_eq!(
-        loaded.habits.log.get(&key).map(|e| (e.count, e.clock)),
-        Some((5, ts(500))),
-        "the older row never overwrites"
-    );
-    repo.close().await;
-}
-
-/// The whole-second grammar (#1095): a habit-log clock authored with
-/// sub-second precision is normalized to whole seconds at the write
-/// boundary — the normalization is observable in the loaded row, and
-/// the LWW guard's lexicographic comparison stays chronological.
-#[tokio::test]
-async fn a_fractional_second_habit_log_clock_is_stored_whole_second() {
-    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
-        .await
-        .expect("open");
-    let key = taskboard_domain::HabitLogKey {
-        habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(61)),
-        window: taskboard_domain::WindowStart::of_period(
-            taskboard_domain::PeriodKind::Day,
-            chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(),
-        ),
-    };
-    let authored = ts(1_000) + chrono::TimeDelta::try_milliseconds(500).expect("half a second");
-    repo.apply(vec![PersistenceAction::RecordHabitLog(
-        key,
-        taskboard_domain::HabitLogEntry {
-            count: 2,
-            clock: authored,
-            by: None,
-            skip: false,
-        },
-    )])
-    .await
-    .expect("apply");
-    let loaded = repo.load().await.expect("load");
-    assert_eq!(
-        loaded.habits.log.get(&key).map(|e| e.clock),
-        Some(ts(1_000)),
-        "the sub-second precision is stripped at the boundary"
-    );
-    repo.close().await;
-}
-
 // Under the written grammar (`SecondsFormat::Secs`, UTC `Z`), the
 // guard's lexicographic clock comparison equals chronological
 // `DateTime` ordering for arbitrary instants — the property the
@@ -2951,7 +2826,7 @@ async fn pre_widening_board_rows_decode_as_the_deck_leg() {
 
 mod sidecar_author_slot {
     use super::*;
-    use taskboard_domain::habit::{Habit, HabitClocks, HabitLogEntry, HabitLogKey};
+    use taskboard_domain::habit::{Habit, HabitClocks};
     use taskboard_domain::ids::AuthorId;
 
     fn author(raw: u64) -> AuthorId {
@@ -3002,14 +2877,6 @@ mod sidecar_author_slot {
         }
     }
 
-    fn log_key(habit_id: u128) -> HabitLogKey {
-        HabitLogKey::parse_wire_form(&format!(
-            "{uuid}|2026-01-01",
-            uuid = taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(habit_id)).as_uuid()
-        ))
-        .unwrap()
-    }
-
     /// T-STORE-1: the stored slot survives the SQLite roundtrip in
     /// both directions — `Some` re-reads as the same author on every
     /// sidecar family, `None` stays `None`.
@@ -3052,26 +2919,19 @@ mod sidecar_author_slot {
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
             by: Some(author(10)),
         };
-        let authored_log = (
-            log_key(0xC01),
-            HabitLogEntry {
-                count: 2,
-                clock: ts(500),
-                by: Some(author(11)),
-
-                skip: false,
-            },
-        );
-        let plain_log = (
-            log_key(0xC02),
-            HabitLogEntry {
-                count: 3,
-                clock: ts(501),
-                by: None,
-
-                skip: false,
-            },
-        );
+        // The habit family's author slot rides the EVENT rows (the
+        // chunk-5 C5 re-key: the legacy log tables have no writer; the
+        // event log is the persisted habit author surface).
+        let event = |raw: u128, habit_id, at: i64, by| taskboard_domain::habit_event::HabitEvent {
+            id: taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(raw)),
+            habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(habit_id)),
+            kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+            at: ts(at),
+            by,
+            deleted: None,
+        };
+        let authored_event = event(0xE01, 0xC01, 500, Some(author(11)));
+        let plain_event = event(0xE02, 0xC02, 501, None);
 
         repo.apply(vec![
             PersistenceAction::UpsertBoard(b.clone()),
@@ -3083,8 +2943,8 @@ mod sidecar_author_slot {
             PersistenceAction::UpsertHabit(authored_habit.clone()),
             PersistenceAction::UpsertHabit(plain_habit.clone()),
             PersistenceAction::UpsertTimeEntry(authored_entry.clone()),
-            PersistenceAction::RecordHabitLog(authored_log.0, authored_log.1),
-            PersistenceAction::RecordHabitLog(plain_log.0, plain_log.1),
+            PersistenceAction::UpsertHabitEvent(authored_event),
+            PersistenceAction::UpsertHabitEvent(plain_event),
         ])
         .await
         .expect("apply");
@@ -3121,10 +2981,13 @@ mod sidecar_author_slot {
             "the time entry's slot roundtrips"
         );
         assert_eq!(
-            loaded.habits.log.get(&authored_log.0),
-            Some(&authored_log.1)
+            loaded.habits.events.get(&authored_event.id),
+            Some(&authored_event)
         );
-        assert_eq!(loaded.habits.log.get(&plain_log.0), Some(&plain_log.1));
+        assert_eq!(
+            loaded.habits.events.get(&plain_event.id),
+            Some(&plain_event)
+        );
         repo.close().await;
     }
 
@@ -3228,16 +3091,8 @@ mod sidecar_author_slot {
         };
         let authored_break = break_rule(0xB01, &b, "authored", 500, Some(author(8)));
         let authored_habit = habit(0xC01, &b, "authored", 500, Some(author(9)));
-        let log_row = (
-            log_key(0xC01),
-            HabitLogEntry {
-                count: 2,
-                clock: ts(500),
-                by: Some(author(11)),
-
-                skip: false,
-            },
-        );
+        // The legacy log table's au_by leg is gone with its writer (the
+        // #1519 chunk-5 C5); the habits-table leg covers the family.
         repo.apply(vec![
             PersistenceAction::UpsertBoard(b.clone()),
             PersistenceAction::UpsertStack(s.clone()),
@@ -3245,7 +3100,6 @@ mod sidecar_author_slot {
             PersistenceAction::UpsertReminderRule(rule.clone()),
             PersistenceAction::UpsertBreakRule(authored_break.clone()),
             PersistenceAction::UpsertHabit(authored_habit.clone()),
-            PersistenceAction::RecordHabitLog(log_row.0, log_row.1),
         ])
         .await
         .expect("apply");
@@ -3277,7 +3131,6 @@ mod sidecar_author_slot {
             .values()
             .for_each(|r| authorless(&r.by));
         after.habits.habits.values().for_each(|h| authorless(&h.by));
-        after.habits.log.values().for_each(|l| authorless(&l.by));
         after
             .tracking
             .entries
@@ -3304,10 +3157,6 @@ mod sidecar_author_slot {
                 .get(&authored_break.id)
                 .map(|r| r.created_at),
             "no clock text changes"
-        );
-        assert_eq!(
-            after.habits.log.get(&log_row.0).map(|l| l.clock),
-            before.habits.log.get(&log_row.0).map(|l| l.clock)
         );
     }
 

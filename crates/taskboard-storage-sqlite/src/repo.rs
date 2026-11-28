@@ -2102,81 +2102,6 @@ impl SqliteTaskRepository {
                         .map_err(|e| e.attached(PersistedTable::Habits, row_key))?;
                     habits.habits.insert(id, habit);
                 }
-                for (habit_id, window_start, count, clock, au_by, skip) in &habit_log_rows {
-                    let row_key = Uuid::parse_str(habit_id).ok();
-                    let decoded = (|| {
-                        Result::<
-                            (
-                                taskboard_domain::HabitLogKey,
-                                taskboard_domain::HabitLogEntry,
-                            ),
-                            RepositoryError,
-                        >::Ok({
-                            let habit = taskboard_domain::ids::HabitId::from(
-                                codec::uuid_from_text(habit_id).map_err(|_| {
-                                    corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid)
-                                })?,
-                            );
-                            // D-H12's decode seam: the stored date decodes
-                            // as-is, never floored (former-kind synced rows).
-                            let date = chrono::NaiveDate::parse_from_str(window_start, "%Y-%m-%d")
-                                .map_err(|_| {
-                                    corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate)
-                                })?;
-                            let key = taskboard_domain::HabitLogKey {
-                                habit,
-                                window: taskboard_domain::WindowStart::from_stored(date),
-                            };
-                            let count = u32::try_from(*count).map_err(|_| {
-                                corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange)
-                            })?;
-                            let clock: DateTime<Utc> = decode::clock(clock)?;
-                            let by = decode::author(au_by.as_deref())?;
-                            (
-                                key,
-                                taskboard_domain::HabitLogEntry {
-                                    count,
-                                    clock,
-                                    by,
-                                    skip: *skip,
-                                },
-                            )
-                        })
-                    })()
-                    .map_err(|e| e.attached(PersistedTable::HabitLog, row_key))?;
-                    habits.log.insert(decoded.0, decoded.1);
-                }
-                for (habit_id, day, count, clock) in &habit_day_log_rows {
-                    let row_key = Uuid::parse_str(habit_id).ok();
-                    let decoded = (|| {
-                        Result::<
-                            (
-                                taskboard_domain::HabitDayKey,
-                                taskboard_domain::HabitDayLogEntry,
-                            ),
-                            RepositoryError,
-                        >::Ok({
-                            let habit = taskboard_domain::ids::HabitId::from(
-                                codec::uuid_from_text(habit_id).map_err(|_| {
-                                    corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid)
-                                })?,
-                            );
-                            let date = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").map_err(
-                                |_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate),
-                            )?;
-                            let count = u32::try_from(*count).map_err(|_| {
-                                corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange)
-                            })?;
-                            let clock: DateTime<Utc> = decode::clock(clock)?;
-                            (
-                                taskboard_domain::HabitDayKey { habit, day: date },
-                                taskboard_domain::HabitDayLogEntry { count, clock },
-                            )
-                        })
-                    })()
-                    .map_err(|e| e.attached(PersistedTable::HabitDayLog, row_key))?;
-                    habits.day_log.insert(decoded.0, decoded.1);
-                }
                 for (entry_id, habit_id, habit_title, start, end, created_at, updated_at, au_by) in
                     &habit_time_entry_rows
                 {
@@ -2563,8 +2488,6 @@ async fn execute_batch(
     // the queries run through the prepared-cache macros like every
     // other lane.
     let mut habit_upserts = Vec::new();
-    let mut habit_log_rows = Vec::new();
-    let mut habit_day_log_rows = Vec::new();
     // The habit event lane (#1519 chunk 3): chunk 2's inert partition
     // arm (D-P) became real with migration 0032 — the rows flush below,
     // replace-by-uuid with no clock predicate (the stage-1 plan's D-FL).
@@ -2602,8 +2525,6 @@ async fn execute_batch(
             PersistenceAction::DeleteSyncStatus(board) => {
                 sync_status_deletes.push(*board);
             }
-            // Ran first, above: the batch's upserts address the new ids.
-            PersistenceAction::AdoptMovedBoard(_) => {}
             PersistenceAction::UpsertReminderRule(rule) => rule_upserts.push(rule),
             PersistenceAction::DeleteReminderRule(rule_id) => rule_deletes.push(rule_id),
             PersistenceAction::UpsertAdhocAlarm(alarm) => alarm_upserts.push(alarm),
@@ -2628,12 +2549,15 @@ async fn execute_batch(
             PersistenceAction::UpsertHabitEvent(event) => {
                 habit_event_rows.push(*event);
             }
-            PersistenceAction::RecordHabitLog(key, entry) => {
-                habit_log_rows.push((key, entry));
-            }
-            PersistenceAction::RecordHabitDayLog(key, entry) => {
-                habit_day_log_rows.push((key, entry));
-            }
+            // Retired with the #1519 chunk-5 C5 (plan D-9): the
+            // legacy mirror's storage arms flush nothing — and the
+            // batch's AdoptMovedBoard no-op rides the same arm (ran
+            // first, above: the batch's upserts address the new ids).
+            // The variants die with the mirror writers in the next
+            // commit (D-11's order).
+            PersistenceAction::AdoptMovedBoard(_)
+            | PersistenceAction::RecordHabitLog(_, _)
+            | PersistenceAction::RecordHabitDayLog(_, _) => {}
             PersistenceAction::UpsertHabitTimeEntry(entry) => {
                 habit_time_upserts.push(entry);
             }
@@ -3201,73 +3125,6 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(setting = %name, "roaming setting upserted");
-    }
-    for (key, entry) in habit_log_rows {
-        // The LWW guard lives in the SQL: a strictly-older batch row
-        // never overwrites; equal/older keeps local (belt to the fold's
-        // braces).
-        //
-        // Invariant (2026-11-23, #1095): clocks in `habit_log` are
-        // whole-second RFC 3339 UTC (`SecondsFormat::Secs`); the
-        // guard's lexicographic string comparison is chronological
-        // under that grammar. Sub-second precision would break the
-        // guard (`…:00.5Z` sorts *before* `…:00Z`) and is refused
-        // precision at this write boundary; if a future rule ever
-        // wants sub-second clocks (#986 rejected it), this guard must
-        // move to an epoch-integer comparison first.
-        sqlx::query!(
-            r#"INSERT INTO habit_log (habit_id, window_start, count, clock, au_by, skip)
-                   VALUES (?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(habit_id, window_start) DO UPDATE SET
-                       count = excluded.count,
-                       clock = excluded.clock,
-                       au_by = excluded.au_by,
-                       skip = excluded.skip
-                   WHERE excluded.clock > habit_log.clock"#,
-            codec::uuid_to_text(key.habit.as_uuid()),
-            key.window.as_date().to_string(),
-            i64::from(entry.count),
-            // The whole-second grammar (see the invariant above):
-            // sub-second input is normalized away here, so the SQL
-            // guard's string comparison stays chronological by
-            // construction.
-            entry
-                .clock
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            entry.by.map(|a| a.to_string()),
-            entry.skip,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| stmt_error(&e))?;
-        tracing::trace!(habit = ?key.habit, window = %key.window.as_date(), "habit log recorded");
-    }
-    for (key, entry) in habit_day_log_rows {
-        // The same whole-second LWW guard as `habit_log` (#1095's
-        // invariant): the overlay's clock grammar is identical, so the
-        // string comparison stays chronological. The twin rides the
-        // same transaction as its window row (one repo.apply batch —
-        // the transactional-twin law).
-        sqlx::query(
-            r"INSERT INTO habit_day_log (habit_id, day, count, clock)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(habit_id, day) DO UPDATE SET
-                       count = excluded.count,
-                       clock = excluded.clock
-                   WHERE excluded.clock > habit_day_log.clock",
-        )
-        .bind(codec::uuid_to_text(key.habit.as_uuid()))
-        .bind(key.day.to_string())
-        .bind(i64::from(entry.count))
-        .bind(
-            entry
-                .clock
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| stmt_error(&e))?;
-        tracing::trace!(habit = ?key.habit, day = %key.day, "habit day overlay recorded");
     }
     for event in habit_event_rows {
         upsert_habit_event_row(tx, &event).await?;
@@ -4126,6 +3983,38 @@ mod habit_event_migration_tests {
             &events[&legacy_habit_event_id(habit_id(habit), window, instant(clock), Some(ordinal))];
         assert!(matches!(event.kind, HabitEventKind::Completion));
         assert_eq!(event.at, instant(clock));
+    }
+
+    /// The chunk-5 ordering guard (plan D-9, C5's last bullet): the
+    /// load-seeding of the legacy rows into the in-memory state is
+    /// GONE, but the remap still fires on a legacy-populated fixture —
+    /// the synthesized events seed the state, and no path reads the
+    /// legacy rows for state (the tables keep them as inert history).
+    #[tokio::test]
+    async fn c5_remap_still_fires_after_the_state_seeding_arms_are_gone() {
+        let db = FixtureDb::new().await;
+        let window = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        write_legacy_habit_rows(
+            db.pool(),
+            &[legacy_row(habit_uuid(), window, 2, clock_text(10, 0))],
+        )
+        .await
+        .expect("fixture rows");
+        write_legacy_day_rows(
+            db.pool(),
+            &[twin_row(habit_uuid(), window, 2, clock_text(10, 0))],
+        )
+        .await
+        .expect("fixture twin rows");
+        assert!(!marker_present(db.pool()).await, "the fixture is pre-0032");
+
+        let state = db.repo().load().await.expect("load").habits;
+        assert_eq!(state.events.len(), 2, "the remap synthesized the events");
+        assert!(
+            state.log.is_empty() && state.day_log.is_empty(),
+            "no path seeds the legacy rows into the state anymore"
+        );
+        assert!(marker_present(db.pool()).await, "the remap marked its run");
     }
 
     /// Fixture story 1 (`us4_s2` token): a legacy Week row of count 3
