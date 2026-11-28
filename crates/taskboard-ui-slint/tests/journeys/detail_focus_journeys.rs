@@ -288,6 +288,70 @@ fn row11_track_entries_opener_return_opens_the_entries_overlay() {
     });
 }
 
+/// The overlay-scope walk (issue #1259): the same deadline-polling
+/// idiom as `walk_to`, but the stroke is the overlay context's own
+/// `NavNextControl` row — inside the open `TrackEntries` mask the
+/// detail-context directional rows are masked away, and the overlay's
+/// ladder carries the walk (`Ctrl+n` on the emacs letter, pressed
+/// raw — `walk_to`'s insert-guard precedent: raw stroke delivery is
+/// the seam when a chain-level assert would read the host context).
+/// A miss is the structural finding (#1259): the mask clamp's extent
+/// is the overlay's declared stop inventory, so a walk that never
+/// lands is a missing inventory, not a text mismatch.
+fn walk_overlay_to(harness: &mut JourneyHarness, address: &str) {
+    let mut guard = 0;
+    while harness.driver.focused_label().as_deref() != Some(address) {
+        assert!(
+            guard < 60,
+            "the overlay walk never landed on {address:?} (at {:?})",
+            harness.driver.focused_label()
+        );
+        harness
+            .driver
+            .press_stroke(parse("Ctrl+n").expect("Ctrl+n parses"));
+        harness.advance();
+        guard += 1;
+    }
+}
+
+/// Row 12's overlay leg (issue #1259): with the entries overlay open,
+/// the control walk lands on the overlay's named stops and Return on
+/// the add affordance opens the seeded entry form (the typed flow
+/// fact — `track_form_open`), never the title editor. The row's
+/// red signature was the walk never landing at all (`focused_label`
+/// `None` — the degenerate mask clamp); this journey pins the proven
+/// walk.
+#[test]
+fn row12_entries_overlay_walk_lands_on_the_add_affordance_and_return_opens_the_form() {
+    golden_state_journey(|_state| {
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(detail_fixture_state(), preset);
+        open_detail_first_card(&mut harness, preset);
+        walk_to(&mut harness, preset, "Time entries");
+        harness
+            .driver
+            .press_stroke(parse("Return").expect("Return parses"));
+        harness.advance();
+        assert!(
+            harness.handle.window().get_task_model().track_entries_open,
+            "the entries opener's Return opens the entries overlay"
+        );
+        walk_overlay_to(&mut harness, "Add time entry");
+        harness
+            .driver
+            .press_stroke(parse("Return").expect("Return parses"));
+        harness.advance();
+        assert!(
+            !title_edit_open(&harness),
+            "the add affordance's Return is not stolen by the title"
+        );
+        assert!(
+            harness.handle.window().get_track_form_open(),
+            "Return on the add affordance opens the seeded entry form"
+        );
+    });
+}
+
 /// Row 14 — the description display cell: Return opens the
 /// description editor (the reservation's existing letter — stays).
 #[test]
