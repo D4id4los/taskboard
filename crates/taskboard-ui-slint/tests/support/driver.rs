@@ -500,14 +500,18 @@ fn dispatch(window: &slint::Window, text: SharedString, pressed: bool) {
 ///
 /// # Panics
 ///
-/// Panics if the job panics, if the platform is already registered
-/// elsewhere, or if two `run` calls request different
-/// [`DriverOptions`] (never: options are per test binary).
+/// Panics on the *calling* thread with the job's payload if the job
+/// panicked (the worker isolates the unwind, ships the payload over
+/// the completion channel, and survives; the caller resumes it so the
+/// offending test fails alone — #1016). Also panics if the platform
+/// is already registered elsewhere, or if two `run` calls request
+/// different [`DriverOptions`] (never: options are per test binary).
 pub fn run<R>(options: DriverOptions, job: impl FnOnce(&mut SlintDriver) -> R + Send + 'static) -> R
 where
     R: Send + 'static,
 {
     type Job = Box<dyn FnOnce() + Send>;
+    type PanicPayload = Box<dyn std::any::Any + Send>;
     static SENDER: std::sync::OnceLock<std::sync::mpsc::Sender<Job>> = std::sync::OnceLock::new();
     static OPTIONS: std::sync::OnceLock<DriverOptions> = std::sync::OnceLock::new();
 
@@ -540,14 +544,19 @@ where
         tx
     });
 
-    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel::<Result<R, PanicPayload>>();
     sender
         .send(Box::new(move || {
             let mut driver = SlintDriver::default();
-            let _ = reply_tx.send(job(&mut driver));
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut driver)));
+            let _ = reply_tx.send(outcome);
         }))
         .expect("the driver worker is alive");
-    reply_rx.recv().expect("the journey job returned a result")
+    match reply_rx.recv().expect("the journey job returned a result") {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 #[cfg(test)]
@@ -706,5 +715,34 @@ mod tests {
                 );
             },
         );
+    }
+
+    /// The panic-isolation seam (#1016 residue R1): a panicking job
+    /// ships its payload back and the *caller's* thread resumes it —
+    /// the offending test fails alone, the worker thread survives,
+    /// and a follow-up job on the same process completes. The `String`
+    /// payload is the typed fact (the formatted panic of the job, not
+    /// the channel-teardown `&'static str` the unisolated loop
+    /// produced); the content is never asserted.
+    #[test]
+    fn driver_job_panic_fails_the_caller_and_the_worker_survives() {
+        let options = DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let () = run(options, |_driver: &mut SlintDriver| {
+                panic!("{}", "the isolated job's payload");
+            });
+        }));
+        let Err(payload) = outcome else {
+            panic!("the panicking job must fail the calling thread");
+        };
+        assert!(
+            payload.downcast_ref::<String>().is_some(),
+            "the worker shipped the job's panic payload to the caller"
+        );
+        // The worker survived: a follow-up job still completes.
+        let value = run(options, |_driver: &mut SlintDriver| 7_u32);
+        assert_eq!(value, 7, "the follow-up job ran on the live worker");
     }
 }
