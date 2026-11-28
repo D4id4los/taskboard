@@ -27,10 +27,6 @@ export component Badge inherits Rectangle {
         ? Theme.surface-raised
         : Semantic.tone-fill(root.tone);
 
-    pure function tone-color() -> color {
-        return Semantic.tone-color(root.tone);
-    }
-
     accessible-role: AccessibleRole.text;
     accessible-label: root.accessible-label-override == ""
         ? root.text : root.accessible-label-override;
@@ -40,7 +36,12 @@ export component Badge inherits Rectangle {
         padding-right: Theme.space-1;
         RoleText {
             role: Typography.badge;
-            text-color: root.tone-color();
+            // Chip-ink rule (#1458, chunk plan 2026-11-28 D3): text over
+            // the tone's own 0.2-alpha `tone-fill` must hold ≥ 4.5:1 in
+            // both palettes — `text-primary` is the one ink that clears
+            // it over every fill; the tone stays legible through the
+            // fill, never through the text colour.
+            text-color: Theme.text-primary;
             text: root.text;
             vertical-alignment: center;
         }

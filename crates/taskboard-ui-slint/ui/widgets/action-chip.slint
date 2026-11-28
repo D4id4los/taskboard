@@ -97,11 +97,13 @@ export component ActionChip inherits Rectangle {
     private property <bool> chip-has-focus: stop-host.has-focus || raw-scope.has-focus;
 
     pure function text-paint() -> color {
-        // The neutral hover lift (the PresetChip grammar): the
-        // background alone carries the cue for the semantic tones.
-        root.interactive && root.tone == Tone.neutral && touch.has-hover
-            ? Theme.text-primary
-            : Semantic.tone-color(root.tone)
+        // Chip-ink rule (#1458, chunk plan 2026-11-28 D3): text over
+        // the tone's own 0.2-alpha `tone-fill` must hold ≥ 4.5:1 in
+        // both palettes — `text-primary` is the one ink that clears it
+        // over every fill (the old neutral-hover lift and the tone
+        // ink converge on it); the tone stays legible through the
+        // fill/background, never through the text colour.
+        Theme.text-primary
     }
 
     // The host's grab seam (the mount-side focus pushes, the
