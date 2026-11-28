@@ -167,7 +167,7 @@ notify-rust = { version = "4.18.2", default-features = false, features = ["z-wit
 # sleep-in-test problem the clock law forbids). Pin discipline: the
 # exact version is committed via Cargo.lock (Q12); consumed by
 # taskboard-app only, so a future bump is one line.
-notify = "8"
+notify = "9"
 
 # Owned alarm audio (taskboard-app, DR-3/4 / D-I10 — stack approval
 # GRANTED 2026-10-26). Minimal no-decode feature set, verified against
