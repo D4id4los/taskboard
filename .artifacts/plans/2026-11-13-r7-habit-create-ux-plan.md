@@ -232,6 +232,14 @@ file::name embedding the step-ID token. Header row is a parser contract — do n
 | W-1 | ui/compositions/habits.slint (pass-through via ui/views/today-view.slint and ui/app-window.slint) | header add `IconButton` (plus icon, gated by `editing-visible` per D-T16) | `create-asked` | habits-section adapter seam (name assumed — A-1) | ActionId::HabitCreate | StateCommand::CreateHabit | — (section-scoped: no list row is addressed; the section's own board is the target) | US-1/S1 | lib.rs::habit_create_toggles_and_escape_disarms_without_shadowing (bound 2026-11-13, PC-3) |
 | W-2 | ui/compositions/habits.slint | inline create form: title `TippedField`, target `SegmentedControl`, quota field, confirm/cancel `IconButton`s | internal callbacks assumed (A-2) | habits-section adapter seam (name assumed — A-1) | — (form-local edits ride the armed form, not the action registry) | StateCommand::CreateHabit | — (section-scoped: no list row) | US-1/S2–S5 | lib.rs::habit_create_sends_the_exact_command (bound 2026-11-13, PC-3) |
 
+<!-- Retro bindings (2026-11-28, the test-harness journeys chunk —
+.artifacts/plans/2026-11-28-test-harness-journeys-plan.md §2 D-#770):
+the two form-local echo steps this retro-cohort plan declared in §6
+without a landed test. -->
+
+bound-test: US-1/S2 -> crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us1_s2_create_title_draft_echoes_and_commits_on_return
+bound-test: US-1/S3 -> crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us1_s3_create_target_pick_shows_via_selected_index
+
 ## 7. Command-contract delta
 
 <!-- Every new/changed StateCommand, UiRequest, ActionId the journeys
