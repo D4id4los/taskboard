@@ -265,19 +265,20 @@ async fn h04_update_routes_move_and_rm_keeps_the_log_queryable() {
         "the moved row re-sorts behind order 9"
     );
 
-    // `rm` keeps the log queryable: the receipt names the row count.
+    // `rm` keeps the history queryable: the receipt names the live
+    // event count (the chunk-5 D-4 re-key).
     let removed = run_one(&config, parse(&["habits", "rm", "hydration"]))
         .await
         .expect("rm");
     let habits::HabitOutcome::Removed(HabitDeleteReceipt {
         deleted: true,
-        log_rows,
+        event_count,
         ..
     }) = &removed
     else {
         panic!("the rm receipt: {removed:?}");
     };
-    assert_eq!(*log_rows, 1, "the tombstone never touches the log");
+    assert_eq!(*event_count, 1, "the tombstone never touches the events");
 
     // The tombstoned habit stops resolving and stops rendering.
     let err = run_one(&config, parse(&["habits", "log", "hydration"]))

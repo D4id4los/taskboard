@@ -1570,7 +1570,7 @@ pub struct HabitDeleteReceipt {
     /// `false` = the repeat no-op (already tombstoned).
     pub deleted: bool,
     /// The log rows that remain queryable.
-    pub log_rows: usize,
+    pub event_count: usize,
 }
 
 // ---- The `journal` family (DR-7 D-J11) --------------------------------------

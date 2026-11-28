@@ -15,8 +15,8 @@ use std::sync::Arc;
 use chrono::{DateTime, NaiveDate, Utc};
 
 use taskboard_domain::{
-    AppState, CommandOutcome, DayCalendar, HabitChanges, HabitId, HabitLogKey, HabitTarget,
-    NonZeroCount, StateCommand, WindowStart, habit_streak_unioned,
+    AppState, CommandOutcome, DayCalendar, HabitChanges, HabitId, HabitTarget, NonZeroCount,
+    StateCommand, WindowStart, habit_streak_unioned,
 };
 
 use crate::cli::DayEdit;
@@ -582,10 +582,9 @@ pub fn list_on(
 ///
 /// [`CommandError`] — typed, see the variant docs.
 ///
-/// # Panics
-///
-/// Only via `expect` on the post-execute row read: the outcome names
-/// the touched window, so the same-state projection cannot miss.
+/// The receipt reports the outcome's derived post-count directly (the
+/// #1519 chunk-5 D-4 collapse: the legacy row read-back is gone — under
+/// one source of truth the outcome's count IS the stored count).
 pub async fn log_on(app: &crate::App, selector: &str) -> Result<HabitLogReceipt, CommandError> {
     let id = resolve_habit(&app.engine.shared_state().load_full(), selector)?;
     match app
@@ -598,22 +597,12 @@ pub async fn log_on(app: &crate::App, selector: &str) -> Result<HabitLogReceipt,
             window,
             count,
             ..
-        } => {
-            let state = app.engine.shared_state().load_full();
-            let key = HabitLogKey { habit, window };
-            let row = state
-                .habits
-                .log
-                .get(&key)
-                .copied()
-                .expect("the log outcome names a stored row");
-            Ok(HabitLogReceipt {
-                habit_id: habit.as_uuid().to_string(),
-                window: window.as_date(),
-                count: row.count,
-                reported: count,
-            })
-        }
+        } => Ok(HabitLogReceipt {
+            habit_id: habit.as_uuid().to_string(),
+            window: window.as_date(),
+            count,
+            reported: count,
+        }),
         _ => Err(outcome_mismatch()),
     }
 }
@@ -648,13 +637,12 @@ pub async fn adjust_on(
             count,
             ..
         } => {
-            let state = app.engine.shared_state().load_full();
-            let key = HabitLogKey { habit, window };
-            let row = state.habits.log.get(&key).copied();
+            // The receipt reports the outcome's derived count (the
+            // #1549 grammar limit's honest surface; the D-4 collapse).
             Ok(HabitAdjustReceipt {
                 habit_id: habit.as_uuid().to_string(),
                 window: window.as_date(),
-                count: row.map_or(count, |entry| entry.count),
+                count,
                 reported: count,
             })
         }
@@ -823,22 +811,25 @@ pub async fn rm_on(app: &crate::App, selector: &str) -> Result<HabitDeleteReceip
     {
         CommandOutcome::Applied => {
             let state = app.engine.shared_state().load_full();
-            let log_rows = state
+            // The "data deleted" structural fact counts the habit's
+            // LIVE EVENTS (the chunk-5 D-4 re-key: the mirror-row
+            // count named a deleted storage shape).
+            let event_count = state
                 .habits
-                .log
-                .keys()
-                .filter(|key| key.habit == id)
+                .events
+                .values()
+                .filter(|event| event.habit == id && event.is_live())
                 .count();
             Ok(HabitDeleteReceipt {
                 habit_id,
                 deleted: true,
-                log_rows,
+                event_count,
             })
         }
         CommandOutcome::NoOp => Ok(HabitDeleteReceipt {
             habit_id,
             deleted: false,
-            log_rows: 0,
+            event_count: 0,
         }),
         _ => Err(outcome_mismatch()),
     }
@@ -994,16 +985,12 @@ pub fn habit_rows(
     live.iter()
         .map(|habit| {
             let window = WindowStart::of_period(habit.target.kind(), today);
-            let key = HabitLogKey {
-                habit: habit.id,
-                window,
-            };
-            let count = state.habits.log.get(&key).map_or(0, |e| e.count);
             let (counts, posture) = taskboard_domain::habit_event::derived_window_views(
                 habit,
                 state.habits.events.values(),
                 day,
             );
+            let count = counts.get(&window).copied().unwrap_or(0);
             let quota = habit.target.quota().get();
             HabitRow {
                 habit_id: habit.id.as_uuid().to_string(),
@@ -1184,8 +1171,8 @@ pub fn render_text(outcome: &HabitOutcome) -> String {
         HabitOutcome::Removed(receipt) => {
             if receipt.deleted {
                 format!(
-                    "deleted habit {} ({} log rows remain queryable)",
-                    receipt.habit_id, receipt.log_rows
+                    "deleted habit {} ({} events remain queryable)",
+                    receipt.habit_id, receipt.event_count
                 )
             } else {
                 format!(
@@ -1284,17 +1271,18 @@ pub fn resolve_habit_with_tombstones(
 }
 
 /// One canonical window's typed state (the walk's classification,
-/// verbatim semantics — met / pending / missed).
+/// verbatim semantics over the derived views — met / pending /
+/// missed).
 fn window_state_view(
     habit: &taskboard_domain::habit::Habit,
-    row: Option<&taskboard_domain::HabitLogEntry>,
+    count: u32,
+    skipped: bool,
     window: chrono::NaiveDate,
     now: DateTime<Utc>,
     day: taskboard_domain::DayCalendar,
 ) -> HabitWindowStateView {
     let kind = habit.target.kind();
     let quota = habit.target.quota().get();
-    let count = row.map_or(0, |entry| entry.count);
     if habit
         .paused_until
         .is_some_and(|until| taskboard_domain::habit::pause_covers_window(kind, window, until))
@@ -1303,7 +1291,7 @@ fn window_state_view(
         HabitWindowStateView::Paused
     } else if count >= quota {
         HabitWindowStateView::Met
-    } else if row.is_some_and(|entry| entry.skip) {
+    } else if skipped {
         HabitWindowStateView::Skipped
     } else if taskboard_domain::habit::preschedule_window(
         habit,
@@ -1341,7 +1329,7 @@ pub fn history_on(app: &crate::App, selector: &str) -> Result<HabitHistoryView, 
     let day = app.config.resolved_day_calendar();
     let now = Utc::now();
     let kind = habit.target.kind();
-    let (counts, _) = taskboard_domain::habit_event::derived_window_views(
+    let (counts, posture) = taskboard_domain::habit_event::derived_window_views(
         habit,
         state.habits.events.values(),
         day,
@@ -1350,15 +1338,13 @@ pub fn history_on(app: &crate::App, selector: &str) -> Result<HabitHistoryView, 
         taskboard_domain::habit::statistics_horizon(habit, &counts, now, day)
             .into_iter()
             .map(|window| {
-                let key = taskboard_domain::HabitLogKey {
-                    habit: id,
-                    window: taskboard_domain::habit::WindowStart::of_period(kind, window),
-                };
-                let entry = state.habits.log.get(&key);
+                let window_start = taskboard_domain::habit::WindowStart::of_period(kind, window);
+                let count = counts.get(&window_start).copied().unwrap_or(0);
+                let skipped = posture.get(&window_start).is_some_and(|skip| *skip);
                 HabitWindowRow {
                     window,
-                    count: entry.map_or(0, |row| row.count),
-                    state: window_state_view(habit, entry, window, now, day),
+                    count,
+                    state: window_state_view(habit, count, skipped, window, now, day),
                 }
             })
             .collect();
@@ -2167,6 +2153,38 @@ mod engine_seam_tests {
     /// The tombstone receipt (plan §3 #14): the log survives and the
     /// receipt names the surviving row count; the repeat is the
     /// accepted non-deleted receipt.
+    /// `us1_s2_cli_log_derives_count` (W-3, journey plan US-1/S2):
+    /// the CLI log receipt surfaces the outcome's derived post-count —
+    /// routing-level evidence only (the reconcile semantics live in
+    /// the domain engine's `us2_s1` pin, "one behavior, one test,
+    /// lowest layer"). Two same-instant dispatches mint distinct
+    /// events; the receipts report 1 then 2 (structural, typed).
+    #[tokio::test]
+    async fn us1_s2_cli_log_derives_count() {
+        let fixture = standalone_boot_fixture("us1-s2-cli-log").await;
+        let board = minted_board(&fixture).await;
+        // Quota 2: both same-instant logs land in today's window (a
+        // quota-1 habit's second log surplus-repairs into yesterday —
+        // a different receipt window, pinned by the engine suite).
+        let quota2 = taskboard_domain::HabitTarget::PerDay(
+            taskboard_domain::NonZeroCount::new(2).expect("nonzero"),
+        );
+        let _ = add_on(&fixture.app, "water", quota2, Some(board), None, None, None)
+            .await
+            .expect("habits add");
+        let first = log_on(&fixture.app, "water").await.expect("the first log");
+        assert_eq!(first.count, 1);
+        assert_eq!(first.reported, 1);
+        let second = log_on(&fixture.app, "water").await.expect("the second log");
+        assert_eq!(second.window, first.window, "both land in today's window");
+        assert_eq!(
+            second.count, 2,
+            "the second same-instant log derives the post-count"
+        );
+        assert_eq!(second.reported, 2);
+        let _ = fixture.app.shutdown().await;
+    }
+
     #[tokio::test]
     async fn rm_tombstones_and_the_log_survives() {
         let fixture = standalone_boot_fixture("pred-habit-rm").await;
@@ -2186,7 +2204,7 @@ mod engine_seam_tests {
         let _ = log_on(&fixture.app, "water").await.expect("the log lands");
         let removed = rm_on(&fixture.app, "water").await.expect("the rm lands");
         assert!(removed.deleted);
-        assert_eq!(removed.log_rows, 1, "the log row survives the tombstone");
+        assert_eq!(removed.event_count, 1, "the event survives the tombstone");
         // The repeat is the typed unknown: rm's resolver is live-only
         // (a tombstone never resolves, by uuid or title — the restore
         // family owns tombstone addressing), so the NoOp receipt arm
