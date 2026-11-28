@@ -156,6 +156,42 @@ pub fn op_kind_to_text(op: &LocalOp) -> &'static str {
     op.tag().text_form()
 }
 
+/// The stored TEXT form of a habit event kind (`habit_event.kind`,
+/// migration 0032): the domain enum's serde tag names (the
+/// one-representation discipline — storage TEXT *is* the serde
+/// encoding).
+#[must_use]
+pub fn habit_event_kind_to_text(
+    kind: taskboard_domain::habit_event::HabitEventKind,
+) -> &'static str {
+    match kind {
+        taskboard_domain::habit_event::HabitEventKind::Completion => "completion",
+        taskboard_domain::habit_event::HabitEventKind::Skip { .. } => "skip",
+        taskboard_domain::habit_event::HabitEventKind::Unskip { .. } => "unskip",
+    }
+}
+
+/// Parses the stored TEXT form back (with the mark's provenance
+/// window, mandatory for the mark kinds); `None` on an unknown kind
+/// string — the caller fails closed.
+#[must_use]
+pub fn habit_event_kind_from_text(
+    raw: &str,
+    window: Option<chrono::NaiveDate>,
+) -> Option<taskboard_domain::habit_event::HabitEventKind> {
+    use taskboard_domain::habit_event::HabitEventKind;
+    match raw {
+        "completion" if window.is_none() => Some(HabitEventKind::Completion),
+        "skip" => window
+            .map(taskboard_domain::WindowStart::from_stored)
+            .map(|w| HabitEventKind::Skip { window: w }),
+        "unskip" => window
+            .map(taskboard_domain::WindowStart::from_stored)
+            .map(|w| HabitEventKind::Unskip { window: w }),
+        _ => None,
+    }
+}
+
 /// Which id columns an op kind requires in the `outbox` row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_field_names)] // the *_id names mirror the SQL columns
