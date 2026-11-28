@@ -191,8 +191,8 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
 
 /// The chip ink (plan 2026-11-28 D3, #1458): chip text is the theme's
 /// primary text colour over every tone-fill — the one ink that clears
-/// the Body floor over every fill in both palettes (dark worst
-/// 6.54:1, light worst 7.53:1).
+/// the Body floor over every fill in both palettes (worst over the
+/// full table: dark 5.80:1, light 7.06:1, both the `info` fill).
 const CHIP_INK: TokenName = ("Theme", "text-primary");
 
 /// The chip fill pairs (plan 2026-11-28 D4, #1458): `(declared Tone
