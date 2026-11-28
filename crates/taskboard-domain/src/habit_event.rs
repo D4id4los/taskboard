@@ -84,6 +84,65 @@ impl<'de> Deserialize<'de> for HabitEventId {
     }
 }
 
+/// The fixed namespace for every deterministically synthesized legacy
+/// habit event (the sqlite remap, the wire legacy fold in a later
+/// chunk). Version-tagged recipe: bump the suffix to change the
+/// recipe once, deliberately.
+pub const LEGACY_HABIT_EVENT_NAMESPACE: Uuid =
+    Uuid::from_u128(0x7461_736b_6261_6f72_6c65_6761_6379_0001); // "taskboard|legacy|1"
+
+/// Ruling I: the deterministic id of an event synthesized from a
+/// legacy habit fact — `Uuid::new_v5(LEGACY_HABIT_EVENT_NAMESPACE,
+/// "legacy-habit-log|<habit uuid>|<window date YYYY-MM-DD>|<at rfc3339
+/// nanos UTC>|<ordinal>")` for completions; the mark leg appends
+/// `|skip` instead of an ordinal (the stage-1 plan's RQ-3).
+///
+/// The `at` wire form is fixed at
+/// `to_rfc3339_opts(SecondsFormat::Nanos, true)` — always UTC, always
+/// 9 fractional digits — so the key string is byte-stable across
+/// platforms and clock grammars (legacy clocks are whole-second per
+/// the #1095 invariant; the nanos form is deterministic for any
+/// input).
+///
+/// **Determinism is the contract**: the id is a pure function of
+/// recorded facts (habit uuid, stored window date, stored clock,
+/// ordinal), so two devices holding the *same* legacy row mint the
+/// *same* id — that is what makes the chunk-4 union fold converge
+/// instead of double-counting identical history. The flip side (the
+/// stage-1 plan's risk R2): legacy rows whose *clocks* differ across
+/// devices mint distinct ids for "the same" completions, and the
+/// wire union keeps both until the ≤ 180 d retention ages the legacy
+/// rows out (Ruling D1's accepted transitional semantics; sqlite
+/// itself is device-local and never sees this).
+///
+/// Mint-at-trust-boundary (A1): the sqlite remap and the wire shim
+/// are the only callers; the returned id enters typed circulation via
+/// [`HabitEventId::from(Uuid)`] (the sanctioned constructor, whose
+/// doc names this exact use). This function is pure — `v5` is
+/// `sha1` + name, no IO; the domain-crate discipline holds.
+#[must_use]
+pub fn legacy_habit_event_id(
+    habit: crate::ids::HabitId,
+    window_date: chrono::NaiveDate,
+    at: DateTime<Utc>,
+    ordinal: Option<u32>,
+) -> HabitEventId {
+    let tail = match ordinal {
+        Some(n) => n.to_string(),
+        // The skip-mark leg (RQ-3): no ordinal — there is exactly one
+        // mark per legacy window row.
+        None => "skip".to_string(),
+    };
+    let key = format!(
+        "legacy-habit-log|{}|{}|{}|{}",
+        habit.as_uuid(),
+        window_date.format("%Y-%m-%d"),
+        at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        tail,
+    );
+    HabitEventId::from(Uuid::new_v5(&LEGACY_HABIT_EVENT_NAMESPACE, key.as_bytes()))
+}
+
 /// What kind of fact the event records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -364,6 +423,149 @@ pub fn derive_day_counts<'a>(
         *counts.entry(day.today(event.at)).or_default() += 1;
     }
     counts
+}
+
+#[cfg(test)]
+mod legacy_id_recipe_tests {
+    use super::*;
+    use crate::ids::HabitId;
+    use chrono::TimeZone;
+
+    fn habit(raw: u128) -> HabitId {
+        HabitId::from(Uuid::from_u128(raw))
+    }
+
+    fn instant(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).single().expect("valid instant")
+    }
+
+    fn day(raw: (i32, u32, u32)) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(raw.0, raw.1, raw.2).expect("valid date")
+    }
+
+    /// The idempotence proof's unit leg (the stage-1 plan's D-ID): the
+    /// same recorded facts mint the same id — the remap run twice over
+    /// an unchanged database is byte-identical because this is a pure
+    /// function.
+    #[test]
+    fn same_facts_mint_the_same_id() {
+        let a = legacy_habit_event_id(
+            habit(42),
+            day((2026, 11, 23)),
+            instant(1_700_000_000),
+            Some(0),
+        );
+        let b = legacy_habit_event_id(
+            habit(42),
+            day((2026, 11, 23)),
+            instant(1_700_000_000),
+            Some(0),
+        );
+        assert_eq!(a, b);
+    }
+
+    /// Distinct facts mint distinct ids: each ordinal leg is its own
+    /// individual (a row of count N synthesizes N distinct events).
+    #[test]
+    fn distinct_ordinals_mint_distinct_ids() {
+        let zero = legacy_habit_event_id(
+            habit(42),
+            day((2026, 11, 23)),
+            instant(1_700_000_000),
+            Some(0),
+        );
+        let one = legacy_habit_event_id(
+            habit(42),
+            day((2026, 11, 23)),
+            instant(1_700_000_000),
+            Some(1),
+        );
+        assert_ne!(zero, one);
+    }
+
+    /// Any leg differing mints a distinct id (habit, stored date,
+    /// clock — the R2 consequence's local shape: a differing clock is
+    /// a different id by construction).
+    #[test]
+    fn distinct_facts_mint_distinct_ids() {
+        let base = legacy_habit_event_id(
+            habit(42),
+            day((2026, 11, 23)),
+            instant(1_700_000_000),
+            Some(0),
+        );
+        assert_ne!(
+            base,
+            legacy_habit_event_id(
+                habit(43),
+                day((2026, 11, 23)),
+                instant(1_700_000_000),
+                Some(0)
+            )
+        );
+        assert_ne!(
+            base,
+            legacy_habit_event_id(
+                habit(42),
+                day((2026, 11, 24)),
+                instant(1_700_000_000),
+                Some(0)
+            )
+        );
+        assert_ne!(
+            base,
+            legacy_habit_event_id(
+                habit(42),
+                day((2026, 11, 23)),
+                instant(1_700_000_001),
+                Some(0)
+            )
+        );
+    }
+
+    /// The mark leg (RQ-3) is distinct from every completion ordinal
+    /// of the same row.
+    #[test]
+    fn the_mark_leg_differs_from_the_completion_legs() {
+        let mark =
+            legacy_habit_event_id(habit(42), day((2026, 11, 23)), instant(1_700_000_000), None);
+        for ordinal in 0..3_u32 {
+            assert_ne!(
+                mark,
+                legacy_habit_event_id(
+                    habit(42),
+                    day((2026, 11, 23)),
+                    instant(1_700_000_000),
+                    Some(ordinal)
+                )
+            );
+        }
+    }
+
+    /// The key's clock grammar is the fixed nanos-UTC form: a
+    /// whole-second input still renders 9 fractional digits (the
+    /// byte-stability the cross-platform contract needs).
+    #[test]
+    fn the_whole_second_input_renders_the_nanos_form() {
+        let with_nanos = legacy_habit_event_id(
+            habit(42),
+            day((2026, 11, 23)),
+            Utc.timestamp_opt(1_700_000_000, 500_000_000)
+                .single()
+                .expect("valid instant"),
+            Some(0),
+        );
+        let whole = legacy_habit_event_id(
+            habit(42),
+            day((2026, 11, 23)),
+            instant(1_700_000_000),
+            Some(0),
+        );
+        // Structural fact: nanos input and whole-second input mint
+        // different keys — the grammar preserves sub-second facts, it
+        // does not normalize them away.
+        assert_ne!(with_nanos, whole);
+    }
 }
 
 #[cfg(test)]
