@@ -7616,13 +7616,6 @@ mod habit_events_codec_tests {
             matches!(&base_event[&key], HabitEventRecord::Event { .. }),
             "overlay verbatim never displaces a clocked base row"
         );
-        let mut overlay_verbatim = BTreeMap::new();
-        overlay_verbatim.insert(key.clone(), HabitEventRecord::Verbatim(verbatim.clone()));
-        union_habit_events(&mut base_event, &overlay_verbatim);
-        assert!(
-            matches!(&base_event[&key], HabitEventRecord::Event { .. }),
-            "overlay verbatim never displaces a clocked base row"
-        );
     }
 
     /// Test 14 (the UX W-10 token at the codec): a foreign
@@ -7862,16 +7855,8 @@ mod habit_events_codec_tests {
         );
         let gc_all = lane_gc_old_habit_events(&only_aged, today);
         assert_eq!(gc_all.sections.habit_events, None);
-        // Wire-only: the input document's local twin is untouched —
-        // the function takes the document by reference and returns a
-        // fresh one; pin the local state equivalence structurally.
-        let local_state = crate::habit::HabitState::default();
-        let _ = lane_gc_old_habit_events(&doc, today);
-        assert_eq!(
-            local_state,
-            crate::habit::HabitState::default(),
-            "wire-only"
-        );
+        // Wire-only: the function takes the document by reference and
+        // returns a fresh one — the input document is untouched.
         assert_eq!(doc.sections.habit_events.as_ref().unwrap().len(), 4);
     }
 
@@ -8076,10 +8061,10 @@ mod habit_events_codec_tests {
             -200,
             chrono::NaiveDate::from_ymd_opt(2026, 11, 28).unwrap(),
         );
-        let _ = |_: proptest::test_runner::TestCaseResult| {};
         // Deterministic instances cover the shape; the retention
-        // proptest (item 22's property form) runs over the legacy lane
-        // unchanged — the lanes share the one cutoff constant.
+        // proptest's randomized form is filed as #1567 (it runs over
+        // the legacy lane unchanged — the lanes share the one cutoff
+        // constant).
     }
 
     /// Test 23 (D-9, the named debt): identical legacy facts with
