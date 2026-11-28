@@ -8747,12 +8747,14 @@ pub struct HabitDayCell {
     pub count: u32,
 }
 
-/// The week/month habit's per-day grid projection (US-8, #1144, W-11):
-/// one cell per calendar day of the visible month, fed by the per-day
-/// overlay facts — pure display data over `HabitState.day_log` (R-2:
-/// the window log stays the stats oracle; this projection never feeds
-/// a stats read). Missing facts project `count: 0` — the empty cell,
-/// no invention.
+/// The week/month habit's per-day grid projection (US-8, #1144, W-11;
+/// the #1519 chunk-5 heatmap re-key, plan D-2): one cell per calendar
+/// day of the visible month, fed by the derived per-day counts
+/// ([`taskboard_domain::habit_event::derive_day_counts`] over the
+/// habit's events — the device-local day-overlay twin is deleted).
+/// Pure display data: this projection never feeds a stats read. A day
+/// with no derived completion renders `count: 0` — the empty cell, no
+/// invention.
 ///
 /// # Panics
 ///
@@ -8760,11 +8762,7 @@ pub struct HabitDayCell {
 /// a programming error, not an input condition.
 #[must_use]
 pub fn habit_history_day_cells(
-    habit: &taskboard_domain::habit::Habit,
-    day_log: &std::collections::BTreeMap<
-        taskboard_domain::HabitDayKey,
-        taskboard_domain::HabitDayLogEntry,
-    >,
+    day_counts: &std::collections::BTreeMap<chrono::NaiveDate, u32>,
     month: chrono::NaiveDate,
 ) -> Vec<HabitDayCell> {
     let month_floor =
@@ -8774,11 +8772,11 @@ pub fn habit_history_day_cells(
     let mut cells = Vec::new();
     let mut cursor = month_floor;
     while cursor < month_ceil {
-        let key = taskboard_domain::HabitDayKey {
-            habit: habit.id,
-            day: cursor,
-        };
-        let count = day_log.get(&key).map_or(0, |entry| entry.count);
+        // The heatmap derives from the synced event log (the #1519
+        // chunk-5 re-key, plan D-2): the per-day counts come from
+        // `derive_day_counts` over the habit's events — the
+        // device-local day-overlay twin is deleted.
+        let count = day_counts.get(&cursor).copied().unwrap_or(0);
         cells.push(HabitDayCell { day: cursor, count });
         cursor = cursor
             .checked_add_days(chrono::Days::new(1))
@@ -9105,6 +9103,116 @@ mod habit_history_tests {
                 ))
                 .copied(),
             Some(1)
+        );
+    }
+
+    /// `us4_s1_day_cells_derive_from_events` (W-2, US-4/S1, plan D-2):
+    /// the day grid attributes the habit's events at their STORED
+    /// instants — two legacy-window-shaped events minted with the
+    /// chunk-3 deterministic id recipe land on their own calendar
+    /// days, and an eventless day renders empty (no invention).
+    #[test]
+    fn us4_s1_day_cells_derive_from_events() {
+        use taskboard_domain::habit_event::{
+            HabitEvent, HabitEventKind, derive_day_counts, legacy_habit_event_id,
+        };
+        let (mut habit, mut events, day) = daily_habit(6, 1);
+        habit.target = taskboard_domain::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(1).expect("nonzero"),
+        );
+        let month = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("month");
+        for raw_day in [3_u32, 5] {
+            let date = chrono::NaiveDate::from_ymd_opt(2026, 11, raw_day).expect("date");
+            let at = chrono::Utc
+                .with_ymd_and_hms(2026, 11, raw_day, 12, 0, 0)
+                .single()
+                .expect("noon");
+            let id = legacy_habit_event_id(habit.id, date, at, Some(0));
+            let event = HabitEvent {
+                id,
+                habit: habit.id,
+                kind: HabitEventKind::Completion,
+                at,
+                by: None,
+                deleted: None,
+            };
+            events.insert(id, event);
+        }
+        let day_counts = derive_day_counts(&habit, events.values(), day);
+        let cells = habit_history_day_cells(&day_counts, month);
+        let cell = |raw_day: u32| {
+            cells
+                .iter()
+                .find(|cell| cell.day.day() == raw_day)
+                .expect("in-month cell")
+        };
+        assert_eq!(cell(3).count, 1, "the event stamps at its stored instant");
+        assert_eq!(cell(5).count, 1);
+        assert_eq!(cell(4).count, 0, "an eventless day renders empty");
+    }
+
+    /// The US-3/S1 presentation leg (#1341, plan D-2): undoing a
+    /// Week-kind log tombstones the minted event id and the day grid
+    /// re-derives EMPTY — the legacy day-overlay twin could leave a
+    /// phantom cell; the derived map cannot disagree with the events.
+    #[test]
+    fn us3_s1_week_undo_day_cell_gone() {
+        use taskboard_domain::habit_event::{
+            HabitEvent, HabitEventKind, HabitEventTombstone, derive_day_counts,
+        };
+        let (mut habit, mut events, day) = daily_habit(7, 1);
+        habit.target = taskboard_domain::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(1).expect("nonzero"),
+        );
+        let month = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("month");
+        let at = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 3, 12, 0, 0)
+            .single()
+            .expect("noon");
+        let id = taskboard_domain::habit_event::legacy_habit_event_id(
+            habit.id,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 3).expect("date"),
+            at,
+            Some(0),
+        );
+        let mut event = HabitEvent {
+            id,
+            habit: habit.id,
+            kind: HabitEventKind::Completion,
+            at,
+            by: None,
+            deleted: None,
+        };
+        events.insert(id, event);
+        let before =
+            habit_history_day_cells(&derive_day_counts(&habit, events.values(), day), month);
+        assert_eq!(
+            before
+                .iter()
+                .find(|cell| cell.day.day() == 3)
+                .expect("cell")
+                .count,
+            1
+        );
+        // The undo leg: the event tombstoned, the grid re-derives.
+        event.deleted = Some(HabitEventTombstone {
+            at: chrono::Utc
+                .with_ymd_and_hms(2026, 11, 6, 12, 0, 0)
+                .single()
+                .expect("noon"),
+            by: None,
+        });
+        events.insert(id, event);
+        let after =
+            habit_history_day_cells(&derive_day_counts(&habit, events.values(), day), month);
+        assert_eq!(
+            after
+                .iter()
+                .find(|cell| cell.day.day() == 3)
+                .expect("cell")
+                .count,
+            0,
+            "the phantom day cell is gone by construction"
         );
     }
 

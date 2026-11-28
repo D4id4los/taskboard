@@ -602,9 +602,10 @@ async fn h08_history_renders_the_grid_vocabulary_chronologically() {
     )
     .await
     .expect("met seed");
-    // Missed: the day-before-yesterday window stayed empty and its
-    // grace closed (any now inside today's UTC day is past its grace
-    // end).
+    // Missed: the day-before-yesterday window stays under quota and
+    // its grace closed (any now inside today's UTC day is past its
+    // grace end). The event grammar has no count-0 rows — a live
+    // under-quota completion is the fact that makes the window render.
     let missed_window = today(now) - chrono::Duration::days(2);
     let missed_text = missed_window.format("%Y-%m-%d").to_string();
     run_one(
@@ -615,7 +616,7 @@ async fn h08_history_renders_the_grid_vocabulary_chronologically() {
             "--window",
             &missed_text,
             "--count",
-            "0",
+            "1",
             "water",
         ]),
     )

@@ -1473,38 +1473,39 @@ mod tests {
     fn us9_s2_cli_stats_renders_the_typed_values() {
         let mut state = AppState::default();
         let h = habit(11, 1, 0, false, None);
-        let mut log = std::collections::BTreeMap::new();
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
-        for (d, count) in [(18, 3_u32), (19, 0_u32)] {
-            log.insert(
-                taskboard_domain::HabitLogKey {
+        // The event-grammar fixture: three completions on the 18th (a
+        // met window); the 19th carries no events (a count-0 window
+        // does not exist in the event grammar — its miss is the
+        // horizon's empty read).
+        let mut events = std::collections::BTreeMap::new();
+        {
+            use taskboard_domain::habit_event::{HabitEvent, HabitEventKind};
+            let date = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+            let at = date.and_hms_opt(12, 0, 0).unwrap().and_utc();
+            for ordinal in 0..3_u32 {
+                let id = taskboard_domain::habit_event::legacy_habit_event_id(
+                    h.id,
+                    date,
+                    at,
+                    Some(ordinal),
+                );
+                let event = HabitEvent {
+                    id,
                     habit: h.id,
-                    window: taskboard_domain::habit::WindowStart::of_period(
-                        PeriodKind::Day,
-                        today
-                            - chrono::Duration::days(
-                                today
-                                    .signed_duration_since(
-                                        chrono::NaiveDate::from_ymd_opt(2026, 11, d).unwrap(),
-                                    )
-                                    .num_days(),
-                            ),
-                    ),
-                },
-                HabitLogEntry {
-                    count,
-                    clock: ts(10),
+                    kind: HabitEventKind::Completion,
+                    at,
                     by: None,
-                    skip: false,
-                },
-            );
+                    deleted: None,
+                };
+                events.insert(id, event);
+            }
         }
         state.habits = HabitState {
             habits: std::collections::BTreeMap::from([(h.id, h.clone())]),
-            log,
+            log: std::collections::BTreeMap::default(),
             day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
-            events: std::collections::BTreeMap::default(),
+            events,
         };
         // The empty twin: same shape, no rows.
         let empty = habit(12, 1, 0, false, None);
