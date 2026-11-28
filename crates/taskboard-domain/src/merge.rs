@@ -1498,31 +1498,110 @@ fn effective_clock_of(clocks: &crate::habit::HabitClocks) -> chrono::DateTime<ch
         .max(clocks.deleted)
 }
 
-/// The typed deltas one [`fold_habit_log`] pass produced.
+/// The typed deltas one events fold pass produced (the events fold
+/// and the legacy shim share the shape — D-4/D-6).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct HabitLogFoldChanges {
-    /// Log rows adopted or overwritten.
-    pub records: Vec<(crate::habit::HabitLogKey, crate::habit::HabitLogEntry)>,
+pub struct HabitEventFoldChanges {
+    /// Events adopted into `habits.events` (the persistence batch's
+    /// `UpsertHabitEvent` rows).
+    pub upserts: Vec<crate::habit_event::HabitEvent>,
 }
 
-/// The sidecar document fold for the board-level `habit-log` section
-/// (§4.5). Keyed by [`crate::habit::HabitLogKey::wire_form`]; per-key
-/// LWW on the row clock:
+/// The fold's one adoption law (D-4), shared by the events fold and
+/// the legacy shim: identity is the event UUID — the only competition
+/// is the tombstone slot, adopted iff the incoming `deleted` ranks
+/// strictly greater under `Option<HabitEventTombstone>`'s derived
+/// `Ord` (`None < Some`; `Some` compares `(at, then by)` — the
+/// newest-wins max). Consequences pinned by the §2 tests: a
+/// tombstone-less row can never displace a tombstoned one (no
+/// resurrection); re-folding identical rows is idempotent; **no
+/// clock arbitration anywhere** — `at`/`by` are never compared, the
+/// uuid alone is the fact.
+fn adopt_event(
+    habits: &mut crate::habit::HabitState,
+    event: crate::habit_event::HabitEvent,
+    changes: &mut HabitEventFoldChanges,
+) {
+    let adopt = match habits.events.get(&event.id) {
+        None => true,
+        Some(local) => event.deleted > local.deleted,
+    };
+    if adopt {
+        habits.events.insert(event.id, event);
+        changes.upserts.push(event);
+    }
+}
+
+/// The sidecar document fold for the board-level `habit-events`
+/// section (the event-log design §4.1, #1519 chunk 4, D-4). Keyed by
+/// the event UUID string; per key the [`adopt_event`] law:
 ///
-/// - a locally-absent key adopts the row; a local row strictly older
-///   adopts **wholesale** — a lower count with a newer clock is a
-///   legitimate audited correction from another device; equal/older
-///   leaves local standing (the storage layer's SQL guard and
-///   `apply_actions` are independently LWW — belt and braces);
-/// - **no habit-existence check** (D-H6): orphan facts import and are
-///   analytically inert (no projection reads keys of unknown habits),
-///   retention-bounded, and honest — the log outlives the tracker;
-/// - [`crate::appdata::HabitLogRecord::Verbatim`] rows never fold.
-pub fn fold_habit_log(
+/// - [`crate::appdata::HabitEventRecord::Verbatim`] rows never fold,
+///   and neither does a row whose map key does not parse as a UUID
+///   (fail-closed, the `lane_gc_old_habit_log` posture);
+/// - **no habit-existence check** (D-H6 verbatim): orphan facts
+///   import (persisted via `UpsertHabitEvent`), are analytically
+///   inert (`participates()` re-checks membership per derivation),
+///   and age out under the wire GC like any row.
+pub fn fold_habit_events(
+    habits: &mut crate::habit::HabitState,
+    rows: &std::collections::BTreeMap<String, crate::appdata::HabitEventRecord>,
+) -> HabitEventFoldChanges {
+    let mut changes = HabitEventFoldChanges::default();
+    for (key, row) in rows {
+        let crate::appdata::HabitEventRecord::Event {
+            habit,
+            kind,
+            at,
+            by,
+            deleted,
+        } = row
+        else {
+            continue; // verbatim content never folds
+        };
+        let Some(id) = crate::habit_event::HabitEventId::parse(key) else {
+            continue; // an unparseable key is not an event identity
+        };
+        adopt_event(
+            habits,
+            crate::habit_event::HabitEvent {
+                id,
+                habit: *habit,
+                kind: *kind,
+                at: *at,
+                by: *by,
+                deleted: *deleted,
+            },
+            &mut changes,
+        );
+    }
+    changes
+}
+
+/// The read-side legacy shim for the board-level `habit-log` section
+/// (Ruling D1's reader half, D-6): each parsed legacy row
+/// synthesizes events under chunk 3's deterministic recipe —
+/// [`crate::habit_event::legacy_habit_event_id`] through the domain
+/// function, the namespace imported, never re-declared (one recipe,
+/// two call sites: the sqlite remap and this shim). The shim **no
+/// longer writes `habits.log`** — the synthesized events fold into
+/// `habits.events` under the same [`adopt_event`] law, so a shim
+/// re-import after the same facts arrived via the `habit-events`
+/// section is idempotent (identical uuids).
+///
+/// Synthesis grammar: `skip == true` → one `Skip` mark (no ordinal);
+/// `count >= 1` → `count` `Completion` events, ordinals `0..count`;
+/// `count == 0` with no skip → nothing (row-absence expresses
+/// exactly — the D24 fence's successor posture). `Verbatim` rows and
+/// unparsable keys never fold. The synthesized event stamps at the
+/// row clock (Ruling A1: migrated Week/Month completions render on
+/// the row-clock day). No retention check here — the wire GC owns
+/// the age-out (D-8).
+pub fn fold_legacy_habit_log(
     habits: &mut crate::habit::HabitState,
     rows: &std::collections::BTreeMap<String, crate::appdata::HabitLogRecord>,
-) -> HabitLogFoldChanges {
-    let mut changes = HabitLogFoldChanges::default();
+) -> HabitEventFoldChanges {
+    let mut changes = HabitEventFoldChanges::default();
     for (key, row) in rows {
         let crate::appdata::HabitLogRecord::Entry {
             count,
@@ -1536,21 +1615,44 @@ pub fn fold_habit_log(
         let Some(parsed) = crate::habit::HabitLogKey::parse_wire_form(key) else {
             continue;
         };
-        // Tuple duel (D-BF2) on the stored slot; the strict direction
-        // stands at a full tie.
-        let adopt = match habits.log.get(&parsed) {
-            None => true,
-            Some(local) => (*clock, *by) > (local.clock, local.by),
+        let window_date = parsed.window.as_date();
+        let mut synthesize = |ordinal: Option<u32>,
+                              kind: crate::habit_event::HabitEventKind,
+                              changes: &mut HabitEventFoldChanges| {
+            adopt_event(
+                habits,
+                crate::habit_event::HabitEvent {
+                    id: crate::habit_event::legacy_habit_event_id(
+                        parsed.habit,
+                        window_date,
+                        *clock,
+                        ordinal,
+                    ),
+                    habit: parsed.habit,
+                    kind,
+                    at: *clock,
+                    by: *by,
+                    deleted: None,
+                },
+                changes,
+            );
         };
-        if adopt {
-            let entry = crate::habit::HabitLogEntry {
-                count: *count,
-                clock: *clock,
-                by: *by,
-                skip: *skip,
-            };
-            habits.log.insert(parsed, entry);
-            changes.records.push((parsed, entry));
+        if *skip {
+            synthesize(
+                None,
+                crate::habit_event::HabitEventKind::Skip {
+                    window: parsed.window,
+                },
+                &mut changes,
+            );
+        } else {
+            for ordinal in 0..*count {
+                synthesize(
+                    Some(ordinal),
+                    crate::habit_event::HabitEventKind::Completion,
+                    &mut changes,
+                );
+            }
         }
     }
     changes
@@ -6959,10 +7061,9 @@ mod duplicate_reconcile_tests {
 #[cfg(test)]
 mod habit_fold_tests {
     use super::*;
-    use crate::appdata::{HabitLogRecord, HabitRecord};
+    use crate::appdata::HabitRecord;
     use crate::habit::{
-        Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget, NonZeroCount,
-        WindowStart,
+        Habit, HabitClocks, HabitLogKey, HabitState, HabitTarget, NonZeroCount, WindowStart,
     };
     use crate::ids::{BoardId, HabitId};
     use crate::merge_testutil::BASE;
@@ -7280,32 +7381,291 @@ mod habit_fold_tests {
         assert!(state.habits[&id].deleted);
     }
 
+    /// Test 1 (the S1 headline, the #1094 G-Counter question's
+    /// dissolution pin): two devices log the same window once —
+    /// the union keeps BOTH facts, the derived count is 2. No
+    /// duel, no lost increment.
     #[test]
-    fn fold_habit_log_adopts_newer_and_imports_orphans() {
+    fn us5_ac2_two_devices_same_window_log_union_keeps_both() {
         let mut state = HabitState::default();
-        let k = key(1, date(2026, 10, 26));
-        let rows = [(
-            k.wire_form(),
-            HabitLogRecord::Entry {
-                count: 4,
-                clock: ts(200),
+        let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x611));
+        let mut rows = BTreeMap::new();
+        for (raw, clock) in [(0xAA, 500_i64), (0xBB, 510)] {
+            let id = crate::habit_event::HabitEventId::from(uuid::Uuid::from_u128(raw));
+            rows.insert(
+                id.as_uuid().to_string(),
+                crate::appdata::HabitEventRecord::Event {
+                    habit: habit_id,
+                    kind: crate::habit_event::HabitEventKind::Completion,
+                    at: ts(clock),
+                    by: None,
+                    deleted: None,
+                },
+            );
+        }
+        let changes = fold_habit_events(&mut state, &rows);
+        assert_eq!(changes.upserts.len(), 2);
+        assert_eq!(
+            state
+                .events
+                .values()
+                .filter(|e| e.habit == habit_id)
+                .count(),
+            2,
+            "two devices' same-window logs keep both facts"
+        );
+    }
+
+    /// Test 2 (the UX W-9 token): a completion and a skip mark
+    /// from different devices both survive the fold.
+    #[test]
+    fn us5_s3_union_keeps_mark_and_log() {
+        let mut state = HabitState::default();
+        let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x612));
+        let rows: BTreeMap<_, _> = [
+            completion_row(0xAA, habit_id, 500),
+            mark_row(0xBB, habit_id, 520),
+        ]
+        .into_iter()
+        .collect();
+        let changes = fold_habit_events(&mut state, &rows);
+        assert_eq!(changes.upserts.len(), 2);
+        let kinds: Vec<_> = state
+            .events
+            .values()
+            .map(|e| matches!(e.kind, crate::habit_event::HabitEventKind::Completion))
+            .collect();
+        assert!(kinds.contains(&true) && kinds.contains(&false));
+    }
+
+    /// Test 3: two tombstones for one id — the `(at, by)` max
+    /// wins; `None < Some`.
+    #[test]
+    fn fold_habit_events_tombstone_newest_at_by_wins() {
+        let mut state = HabitState::default();
+        let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x613));
+        let id = crate::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0x6131));
+        let tombstone = |at: i64, by: Option<crate::ids::AuthorId>| {
+            Some(crate::habit_event::HabitEventTombstone { at: ts(at), by })
+        };
+        let rows = |deleted| {
+            BTreeMap::from([(
+                id.as_uuid().to_string(),
+                crate::appdata::HabitEventRecord::Event {
+                    habit: habit_id,
+                    kind: crate::habit_event::HabitEventKind::Completion,
+                    at: ts(100),
+                    by: None,
+                    deleted,
+                },
+            )])
+        };
+        fold_habit_events(
+            &mut state,
+            &rows(Some(crate::habit_event::HabitEventTombstone {
+                at: ts(400),
                 by: None,
+            })),
+        );
+        fold_habit_events(&mut state, &rows(tombstone(500, Some(author(0x11)))));
+        let deleted = state.events[&id].deleted.expect("tombstoned");
+        assert_eq!((deleted.at, deleted.by), (ts(500), Some(author(0x11))));
+        // A strictly-older tombstone never displaces.
+        fold_habit_events(&mut state, &rows(tombstone(300, Some(author(0x99)))));
+        let deleted = state.events[&id].deleted.expect("still tombstoned");
+        assert_eq!(deleted.at, ts(500), "the newest (at, by) tombstone stands");
+        // None < Some: a tombstone-less row never displaces (test
+        // 5's law, asserted in the same breath as the ordering).
+        fold_habit_events(&mut state, &rows(None));
+        assert!(state.events[&id].deleted.is_some(), "no resurrection");
+    }
+
+    /// Test 4: folding the same rows twice produces zero changes
+    /// on the second pass (equal tombstones are identical rows).
+    #[test]
+    fn fold_habit_events_tombstone_is_idempotent_under_refold() {
+        let mut state = HabitState::default();
+        let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x614));
+        let rows: BTreeMap<_, _> = [completion_row(0xAA, habit_id, 500)].into_iter().collect();
+        let first = fold_habit_events(&mut state, &rows);
+        assert_eq!(first.upserts.len(), 1);
+        let second = fold_habit_events(&mut state, &rows);
+        assert!(
+            second.upserts.is_empty(),
+            "identical rows re-fold to nothing"
+        );
+    }
+
+    /// Test 5: a tombstone-less row for a locally-tombstoned uuid
+    /// changes nothing (no resurrection through the wire).
+    #[test]
+    fn fold_habit_events_never_resurrects_a_tombstoned_event() {
+        let mut state = HabitState::default();
+        let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x615));
+        let id = crate::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0x6151));
+        let rows = |deleted| {
+            BTreeMap::from([(
+                id.as_uuid().to_string(),
+                crate::appdata::HabitEventRecord::Event {
+                    habit: habit_id,
+                    kind: crate::habit_event::HabitEventKind::Completion,
+                    at: ts(100),
+                    by: None,
+                    deleted,
+                },
+            )])
+        };
+        fold_habit_events(
+            &mut state,
+            &rows(Some(crate::habit_event::HabitEventTombstone {
+                at: ts(400),
+                by: None,
+            })),
+        );
+        let changes = fold_habit_events(&mut state, &rows(None));
+        assert!(changes.upserts.is_empty(), "the live row adopts nothing");
+        assert!(state.events[&id].deleted.is_some());
+    }
+
+    /// Test 6 (D-H6): events for an unknown habit fold in and are
+    /// persisted — analytically inert, never a fold failure.
+    #[test]
+    fn fold_habit_events_orphan_facts_import_inertly() {
+        let mut state = HabitState::default();
+        let orphan = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x616));
+        let rows: BTreeMap<_, _> = [completion_row(0xAA, orphan, 500)].into_iter().collect();
+        let changes = fold_habit_events(&mut state, &rows);
+        assert_eq!(changes.upserts.len(), 1, "the orphan fact persists");
+        assert_eq!(state.events.len(), 1);
+        // No projection reads it: the fold never touched a habit
+        // definition, and nothing else in the state changed.
+        assert!(state.habits.is_empty() && state.log.is_empty());
+    }
+
+    /// Test 7: `Verbatim` rows and unparseable keys never fold.
+    #[test]
+    fn fold_habit_events_verbatim_never_folds() {
+        let mut state = HabitState::default();
+        let rows: BTreeMap<_, _> = [(
+            "not a uuid".to_owned(),
+            crate::appdata::HabitEventRecord::Verbatim(serde_json::json!({
+                "exotic": {"shape": true}
+            })),
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habit_events(&mut state, &rows);
+        assert_is_empty(&changes.upserts);
+        assert_is_empty(&state.events);
+    }
+
+    #[test]
+    fn fold_habit_events_unparseable_key_never_folds() {
+        let mut state = HabitState::default();
+        let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x617));
+        let rows: BTreeMap<_, _> = [(
+            "00000000-0000-0000-0000-not-a-uuid".to_owned(),
+            crate::appdata::HabitEventRecord::Event {
+                habit: habit_id,
+                kind: crate::habit_event::HabitEventKind::Completion,
+                at: ts(500),
+                by: None,
+                deleted: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habit_events(&mut state, &rows);
+        assert_is_empty(&changes.upserts);
+        assert_is_empty(&state.events);
+    }
+
+    /// Test 8: same uuid, same tombstone-absence, `at`/`by`
+    /// differing (a structurally impossible wire, constructed
+    /// here) — no adoption, no panic: identity is the uuid,
+    /// nothing else competes. **No clock arbitration anywhere.**
+    #[test]
+    fn fold_habit_events_has_no_clock_arbitration() {
+        let mut state = HabitState::default();
+        let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x618));
+        let rows: BTreeMap<_, _> = [completion_row(0xAA, habit_id, 500)].into_iter().collect();
+        fold_habit_events(&mut state, &rows);
+        let before = state.events.clone();
+        let mut drift = BTreeMap::new();
+        let id = crate::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0xAA));
+        drift.insert(
+            id.as_uuid().to_string(),
+            crate::appdata::HabitEventRecord::Event {
+                habit: habit_id,
+                kind: crate::habit_event::HabitEventKind::Completion,
+                at: ts(9_999),
+                by: Some(author(0x31)),
+                deleted: None,
+            },
+        );
+        let changes = fold_habit_events(&mut state, &drift);
+        assert!(changes.upserts.is_empty(), "a differing fact never adopts");
+        assert_eq!(state.events, before, "the local fact is untouched");
+    }
+
+    /// Test 9 (the cross-chunk determinism pin): the same legacy
+    /// row fed through the shim yields the exact ids chunk 3's
+    /// remap asserts — the shared recipe's wire twin.
+    #[test]
+    fn legacy_shim_synthesizes_the_same_ids_as_the_chunk3_remap() {
+        let mut state = HabitState::default();
+        let habit_raw = uuid::Uuid::from_u128(0x42);
+        let habit_id = crate::ids::HabitId::from(habit_raw);
+        let d = date(2026, 11, 23);
+        let rows: BTreeMap<_, _> = [(
+            key(0x42, d).wire_form(),
+            crate::appdata::HabitLogRecord::Entry {
+                count: 3,
+                clock: ts(1_000),
+                by: Some(author(0x7)),
 
                 skip: false,
             },
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows);
-        assert_eq!(changes.records.len(), 1);
-        assert_eq!(state.log[&k].count, 4);
-        // Orphan facts import — the log outlives the tracker (D-H6).
-        let orphan = key(99, date(2026, 10, 26));
-        let rows = [(
-            orphan.wire_form(),
-            HabitLogRecord::Entry {
+        let _ = fold_legacy_habit_log(&mut state, &rows);
+        // The chunk-3 recipe, evaluated here over the same facts —
+        // the exact assertion shape the sqlite remap tests carry
+        // (`assert_completion_at`'s wire twin).
+        for ordinal in 0..3_u32 {
+            let id =
+                crate::habit_event::legacy_habit_event_id(habit_id, d, ts(1_000), Some(ordinal));
+            let event = &state.events[&id];
+            assert!(matches!(
+                event.kind,
+                crate::habit_event::HabitEventKind::Completion
+            ));
+            assert_eq!(event.at, ts(1_000));
+            assert_eq!(event.by, Some(author(0x7)));
+        }
+        assert_eq!(state.events.len(), 3);
+    }
+
+    /// Test 13: the same facts arriving via both sections collapse
+    /// to one event set (identical uuids — the shim's re-import
+    /// after the events section landed is idempotent).
+    #[test]
+    fn legacy_shim_refold_after_events_section_is_idempotent() {
+        let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x619));
+        let d = date(2026, 10, 26);
+        let mut state = HabitState::default();
+        // The fact arrives via the events section.
+        let via_events: BTreeMap<_, _> = [(legacy_shim_event(habit_id, d, 1_000))]
+            .into_iter()
+            .collect();
+        let _ = fold_habit_events(&mut state, &via_events);
+        // The same fact arrives again via a legacy row.
+        let via_legacy: BTreeMap<_, _> = [(
+            key(0x619, d).wire_form(),
+            crate::appdata::HabitLogRecord::Entry {
                 count: 1,
-                clock: ts(210),
+                clock: ts(1_000),
                 by: None,
 
                 skip: false,
@@ -7313,41 +7673,192 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows);
-        assert_eq!(changes.records.len(), 1);
-        assert_eq!(state.log[&orphan].count, 1);
-        // A lower count with a newer clock is an audited correction: it roams.
-        let rows = [(
-            k.wire_form(),
-            HabitLogRecord::Entry {
-                count: 0,
-                clock: ts(300),
+        let changes = fold_legacy_habit_log(&mut state, &via_legacy);
+        assert!(
+            changes.upserts.is_empty(),
+            "the shim's synthesized id is already present"
+        );
+        assert_eq!(state.events.len(), 1);
+    }
+
+    /// Shared event-row fixture builders (one shape, many tests —
+    /// the `SonarCloud` duplication gate).
+    fn completion_row(
+        raw: u128,
+        habit_id: crate::ids::HabitId,
+        clock: i64,
+    ) -> (String, crate::appdata::HabitEventRecord) {
+        event_row(
+            raw,
+            habit_id,
+            crate::habit_event::HabitEventKind::Completion,
+            clock,
+        )
+    }
+
+    fn mark_row(
+        raw: u128,
+        habit_id: crate::ids::HabitId,
+        clock: i64,
+    ) -> (String, crate::appdata::HabitEventRecord) {
+        event_row(
+            raw,
+            habit_id,
+            crate::habit_event::HabitEventKind::Skip {
+                window: crate::habit::WindowStart::from_stored(date(2026, 10, 26)),
+            },
+            clock,
+        )
+    }
+
+    fn event_row(
+        raw: u128,
+        habit_id: crate::ids::HabitId,
+        kind: crate::habit_event::HabitEventKind,
+        clock: i64,
+    ) -> (String, crate::appdata::HabitEventRecord) {
+        (
+            crate::habit_event::HabitEventId::from(uuid::Uuid::from_u128(raw))
+                .as_uuid()
+                .to_string(),
+            crate::appdata::HabitEventRecord::Event {
+                habit: habit_id,
+                kind,
+                at: ts(clock),
+                by: None,
+                deleted: None,
+            },
+        )
+    }
+
+    /// The event the shim synthesizes for one legacy completion of
+    /// `habit_id` at `clock` (the recipe, used to seed the events
+    /// section side of test 13).
+    fn legacy_shim_event(
+        habit_id: crate::ids::HabitId,
+        d: chrono::NaiveDate,
+        clock: i64,
+    ) -> (String, crate::appdata::HabitEventRecord) {
+        let id = crate::habit_event::legacy_habit_event_id(habit_id, d, ts(clock), Some(0));
+        (
+            id.as_uuid().to_string(),
+            crate::appdata::HabitEventRecord::Event {
+                habit: habit_id,
+                kind: crate::habit_event::HabitEventKind::Completion,
+                at: ts(clock),
+                by: None,
+                deleted: None,
+            },
+        )
+    }
+
+    fn author(hex: u128) -> crate::ids::AuthorId {
+        crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(hex))
+    }
+
+    /// The typed-empty assertion (`clippy::assertions_on_result_states`
+    /// prefers a named helper over a bare `assert!` on emptiness).
+    fn assert_is_empty<I: IntoIterator>(collection: I) {
+        assert!(collection.into_iter().next().is_none());
+    }
+
+    /// The legacy shim's fixture: one legacy row shape shared by the
+    /// shim tests (the `SonarCloud` duplication gate — one builder, many
+    /// cases).
+    fn legacy_entry(
+        habit_raw: u128,
+        d: chrono::NaiveDate,
+        count: u32,
+        clock: i64,
+        skip: bool,
+    ) -> (String, crate::appdata::HabitLogRecord) {
+        (
+            key(habit_raw, d).wire_form(),
+            crate::appdata::HabitLogRecord::Entry {
+                count,
+                clock: ts(clock),
                 by: None,
 
-                skip: false,
+                skip,
             },
-        )]
-        .into_iter()
-        .collect();
-        let changes = fold_habit_log(&mut state, &rows);
-        assert_eq!(changes.records.len(), 1);
-        assert_eq!(state.log[&k].count, 0);
-        // Equal/older: local stands.
-        let rows = [(
-            k.wire_form(),
-            HabitLogRecord::Entry {
-                count: 9,
-                clock: ts(300),
-                by: None,
+        )
+    }
 
-                skip: false,
-            },
-        )]
-        .into_iter()
-        .collect();
-        let changes = fold_habit_log(&mut state, &rows);
-        assert!(changes.records.is_empty(), "local stands");
-        assert_eq!(state.log[&k].count, 0);
+    /// Test 10: a count row mints one `Completion` per unit, ordinals
+    /// `0..count`, stamped at the row clock (Ruling A1) under the
+    /// chunk-3 recipe's ids.
+    #[test]
+    fn legacy_shim_count_row_mints_ordinal_events_at_row_clock() {
+        let mut state = HabitState::default();
+        let habit_raw = 9;
+        let d = date(2026, 10, 26);
+        let rows: BTreeMap<_, _> = [legacy_entry(habit_raw, d, 3, 500, false)]
+            .into_iter()
+            .collect();
+        let changes = fold_legacy_habit_log(&mut state, &rows);
+        assert_eq!(changes.upserts.len(), 3);
+        for ordinal in 0..3_u32 {
+            let id = crate::habit_event::legacy_habit_event_id(
+                crate::ids::HabitId::from(uuid::Uuid::from_u128(habit_raw)),
+                d,
+                ts(500),
+                Some(ordinal),
+            );
+            let event = &state.events[&id];
+            assert!(matches!(
+                event.kind,
+                crate::habit_event::HabitEventKind::Completion
+            ));
+            assert_eq!(event.at, ts(500), "the event stamps at the row clock (A1)");
+            assert!(event.is_live());
+        }
+    }
+
+    /// Test 11: a skip row mints exactly one mark (no ordinal leg);
+    /// a count-0 row mints nothing (row-absence expresses exactly).
+    #[test]
+    fn legacy_shim_skip_row_mints_one_mark_without_ordinal() {
+        let mut state = HabitState::default();
+        let d = date(2026, 10, 26);
+        let rows: BTreeMap<_, _> = [legacy_entry(9, d, 0, 500, true)].into_iter().collect();
+        let changes = fold_legacy_habit_log(&mut state, &rows);
+        assert_eq!(changes.upserts.len(), 1);
+        let id = crate::habit_event::legacy_habit_event_id(
+            crate::ids::HabitId::from(uuid::Uuid::from_u128(9)),
+            d,
+            ts(500),
+            None,
+        );
+        assert!(matches!(
+            state.events[&id].kind,
+            crate::habit_event::HabitEventKind::Skip { .. }
+        ));
+    }
+
+    #[test]
+    fn legacy_shim_count0_row_mints_nothing() {
+        let mut state = HabitState::default();
+        let rows: BTreeMap<_, _> = [legacy_entry(9, date(2026, 10, 26), 0, 500, false)]
+            .into_iter()
+            .collect();
+        let changes = fold_legacy_habit_log(&mut state, &rows);
+        assert_is_empty(&changes.upserts);
+        assert_is_empty(&state.events);
+    }
+
+    /// Test 12: the shim is the legacy section's *reader* only —
+    /// `habits.log` is never written by it (Ruling D1's read half).
+    #[test]
+    fn legacy_shim_never_writes_habits_log() {
+        let mut state = HabitState::default();
+        let rows: BTreeMap<_, _> = [legacy_entry(9, date(2026, 10, 26), 4, 500, false)]
+            .into_iter()
+            .collect();
+        let _ = fold_legacy_habit_log(&mut state, &rows);
+        assert!(
+            state.log.is_empty(),
+            "the shim synthesizes events, never log rows"
+        );
     }
 
     #[test]
@@ -7357,67 +7868,27 @@ mod habit_fold_tests {
         let b = habit(2, 800, 100, false);
         let row_a = (a.id.as_uuid().to_string(), live_row(300, "a newer"));
         let row_b = (b.id.as_uuid().to_string(), live_row(200, "b newer"));
-        let ka = key(1, date(2026, 10, 26));
-        let kb = key(2, date(2026, 10, 26));
-        let log_a = (
-            ka.wire_form(),
-            HabitLogRecord::Entry {
-                count: 5,
-                clock: ts(400),
-                by: None,
-
-                skip: false,
-            },
-        );
-        let log_b = (
-            kb.wire_form(),
-            HabitLogRecord::Entry {
-                count: 6,
-                clock: ts(410),
-                by: None,
-
-                skip: false,
-            },
-        );
-        let fold = |rows: Vec<&(String, HabitRecord)>, logs: Vec<&(String, HabitLogRecord)>| {
+        let d = date(2026, 10, 26);
+        let log_a = legacy_entry(1, d, 5, 400, false);
+        let log_b = legacy_entry(2, d, 6, 410, false);
+        let fold = |rows: Vec<&(String, HabitRecord)>,
+                    logs: Vec<&(String, crate::appdata::HabitLogRecord)>| {
             let mut state = HabitState {
                 habits: [(a.id, a.clone()), (b.id, b.clone())].into_iter().collect(),
-                log: [
-                    (
-                        ka,
-                        HabitLogEntry {
-                            count: 1,
-                            clock: ts(100),
-                            by: None,
-
-                            skip: false,
-                        },
-                    ),
-                    (
-                        kb,
-                        HabitLogEntry {
-                            count: 2,
-                            clock: ts(100),
-                            by: None,
-
-                            skip: false,
-                        },
-                    ),
-                ]
-                .into_iter()
-                .collect(),
+                log: std::collections::BTreeMap::new(),
                 day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
                 events: std::collections::BTreeMap::default(),
             };
             fold_habits(&mut state, &rows.into_iter().cloned().collect(), board);
-            fold_habit_log(&mut state, &logs.into_iter().cloned().collect());
+            fold_legacy_habit_log(&mut state, &logs.into_iter().cloned().collect());
             state
         };
         let one = fold(vec![&row_a, &row_b], vec![&log_a, &log_b]);
         let two = fold(vec![&row_b, &row_a], vec![&log_b, &log_a]);
-        assert_eq!(one, two, "the fold totals are order-independent (LWW)");
-    } // ---- The habit-time-entries fold (#1305 D-6) --------------------------
+        assert_eq!(one, two, "the fold totals are order-independent");
+    }
+    // ---- The habit-time-entries fold (#1305 D-6) --------------------------
 
     fn habit_time_row(habit: &str, clock: i64) -> crate::appdata::HabitTimeRecord {
         crate::appdata::HabitTimeRecord::Entry {
@@ -7919,52 +8390,6 @@ mod author_duel_tests {
             );
         }
 
-        /// Habit log: content leg = count.
-        #[test]
-        fn habit_log_fold_converges_on_the_higher_author() {
-            let (a, b, t) = writers();
-            let log_key = crate::habit::HabitLogKey::parse_wire_form(
-                "00000000-0000-0000-0000-000000000606|2026-01-01",
-            )
-            .unwrap();
-            let fold = |own: u32, own_author: AuthorId, foreign: u32, foreign_author: AuthorId| {
-                let mut state = crate::habit::HabitState {
-                    habits: std::collections::BTreeMap::new(),
-                    log: [(
-                        log_key,
-                        crate::habit::HabitLogEntry {
-                            count: own,
-                            clock: t,
-                            by: Some(own_author),
-
-                            skip: false,
-                        },
-                    )]
-                    .into_iter()
-                    .collect(),
-                    day_log: std::collections::BTreeMap::default(),
-                    time_log: std::collections::BTreeMap::default(),
-                    events: std::collections::BTreeMap::default(),
-                };
-                let rows = [(
-                    log_key.wire_form(),
-                    crate::appdata::HabitLogRecord::Entry {
-                        count: foreign,
-                        clock: t,
-                        by: Some(foreign_author),
-
-                        skip: false,
-                    },
-                )]
-                .into_iter()
-                .collect();
-                fold_habit_log(&mut state, &rows);
-                (state.log[&log_key].count, state.log[&log_key].by)
-            };
-            assert_eq!(fold(1, a, 2, b), (2, Some(b)));
-            assert_eq!(fold(2, b, 1, a), (2, Some(b)));
-        }
-
         // T-TIE-1 (the unified direction, design §4.2): a full-tuple
         // tie — the same `(clock, by)` on both legs — keeps local in
         // every fold. The stored slot makes a full tie mean "the same
@@ -8174,48 +8599,11 @@ mod author_duel_tests {
             );
         }
 
-        /// T-TIE-1, habit log (already strict — the canary): a
-        /// full-tuple tie keeps local count.
-        #[test]
-        fn habit_log_full_tuple_tie_keeps_local() {
-            let (a, _b, t) = writers();
-            let log_key = crate::habit::HabitLogKey::parse_wire_form(
-                "00000000-0000-0000-0000-000000000706|2026-01-01",
-            )
-            .unwrap();
-            let mut state = crate::habit::HabitState {
-                habits: std::collections::BTreeMap::new(),
-                log: [(
-                    log_key,
-                    crate::habit::HabitLogEntry {
-                        count: 1,
-                        clock: t,
-                        by: Some(a),
-
-                        skip: false,
-                    },
-                )]
-                .into_iter()
-                .collect(),
-                day_log: std::collections::BTreeMap::default(),
-                time_log: std::collections::BTreeMap::default(),
-                events: std::collections::BTreeMap::default(),
-            };
-            let rows = [(
-                log_key.wire_form(),
-                crate::appdata::HabitLogRecord::Entry {
-                    count: 2,
-                    clock: t,
-                    by: Some(a),
-
-                    skip: false,
-                },
-            )]
-            .into_iter()
-            .collect();
-            fold_habit_log(&mut state, &rows);
-            assert_eq!(state.log[&log_key].count, 1, "full-tuple tie keeps local");
-        }
+        // T-TIE-1's habit-log canary is retired with the legacy
+        // section's `(clock, by)` duel (D-4): the shim's only
+        // competition is the tombstone slot, and its tie behavior is
+        // pinned by `fold_habit_events_tombstone_is_idempotent_under_refold`.
+        // The habits leg above still canaries the unification.
 
         // T-ADOPT-1 (the amnesia cell, evidence report §4): the
         // reader's adoption must stamp the *document row's* author
@@ -8431,10 +8819,13 @@ mod author_duel_tests {
             );
         }
 
-        /// T-ADOPT-1, habit log.
+        /// T-ADOPT-1, habit log (re-pointed to the shim, D-6): the
+        /// document row's author rides the synthesized event, so the
+        /// reader converges with the writer on (fact, by).
         #[test]
         fn habit_log_adoption_stamps_the_document_author() {
             let (b, d, _c, t1, t2) = band();
+            let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x806));
             let log_key = crate::habit::HabitLogKey::parse_wire_form(
                 "00000000-0000-0000-0000-000000000806|2026-01-01",
             )
@@ -8469,14 +8860,22 @@ mod author_duel_tests {
                 time_log: std::collections::BTreeMap::default(),
                 events: std::collections::BTreeMap::default(),
             };
-            fold_habit_log(&mut state, &rows);
-            fold_habit_log(&mut state, &rows);
-            let survivor = &state.log[&log_key];
-            assert_eq!(
-                (survivor.count, survivor.by),
-                (5, Some(d)),
-                "the reader converges with the writer on (content, by)"
-            );
+            fold_legacy_habit_log(&mut state, &rows);
+            fold_legacy_habit_log(&mut state, &rows);
+            assert_eq!(state.events.len(), 5, "five ordinals, deterministically");
+            for ordinal in 0..5_u32 {
+                let id = crate::habit_event::legacy_habit_event_id(
+                    habit_id,
+                    log_key.window.as_date(),
+                    t2,
+                    Some(ordinal),
+                );
+                assert_eq!(
+                    state.events[&id].by,
+                    Some(d),
+                    "the author leg rides the event"
+                );
+            }
         }
     }
 }
@@ -8496,8 +8895,7 @@ mod sidecar_convergence_prop {
     use proptest::prelude::*;
 
     use super::{
-        effective_clock, fold_break_rules, fold_habit_log, fold_habits, fold_reminder_rules,
-        fold_time_entries,
+        effective_clock, fold_break_rules, fold_habits, fold_reminder_rules, fold_time_entries,
     };
 
     fn author(hex: u128) -> AuthorId {
@@ -8830,49 +9228,16 @@ mod sidecar_convergence_prop {
                 );
             }
 
-            // ---- habit log -----------------------------------------
-            {
-                let log_key = crate::habit::HabitLogKey::parse_wire_form(
-                    "00000000-0000-0000-0000-000000000906|2026-01-01",
-                )
-                .unwrap();
-                let local = |fact: &Fact| crate::habit::HabitLogEntry {
-                    count: fact.content,
-                    clock: ts(fact.clock),
-                    by: fact.by,
-
-        skip: false,
-    };
-                let doc = |fact: &Fact| {
-                    (
-                        log_key.wire_form(),
-                        crate::appdata::HabitLogRecord::Entry {
-                            count: fact.content,
-                            clock: ts(fact.clock),
-                            by: fact.by,
-
-        skip: false,
-    },
-                    )
-                };
-                let mut state = crate::habit::HabitState {
-                    habits: std::collections::BTreeMap::new(),
-                    log: map(seeded.iter().map(|fact| (log_key, local(fact)))),
-            day_log: std::collections::BTreeMap::default(),
-            time_log: std::collections::BTreeMap::default(),
-            events: std::collections::BTreeMap::default(),
-        };
-                for c in 0..cycles {
-                    let rows = map(std::iter::once(doc(&facts[arrival[c] % n])));
-                    fold_habit_log(&mut state, &rows);
-                    state = restart(&state);
-                }
-                let survivor = &state.log[&log_key];
-                prop_assert_eq!(
-                    (survivor.count, survivor.by, survivor.clock),
-                    (want.content, want_by, want_clock)
-                );
-            }
+            // ---- habit log (retired) ---------------------------------
+            // The legacy section's `(clock, by)`-max convergence leg is
+            // retired with the duel itself (D-4): the shim mints
+            // deterministic ids, so *identical* facts converge by
+            // construction (`legacy_shim_synthesizes_the_same_ids_as_
+            // the_chunk3_remap`), and *clock-drifted* copies of "the
+            // same" facts keep both events until the ≤ 180 d age-out —
+            // the R2 transitional semantics, pinned by
+            // `r2_legacy_clock_drift_currently_pins_count_inflation_
+            // until_age_out` rather than propped by a survivor law.
         }
     }
 }

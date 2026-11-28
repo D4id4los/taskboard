@@ -6923,10 +6923,9 @@ mod author_by_tests {
         // is byte-identical to the old reader's (both omit the key).
         assert_eq!(serde_json::to_value(&relayed).unwrap(), old_reader_reemit);
 
-        // Fold: the relayed (authorless) leg competes against the
-        // authored row — at equal clocks `None < Some` gives the
-        // authored row the win; the `None`-vs-`None` tie keeps the
-        // pinned strictly-newer direction.
+        // Fold (the legacy shim): the relayed (authorless) row
+        // synthesizes an authorless event; the authored row's event
+        // carries the author leg through (F1's `by` display leg).
         let mut state = crate::habit::HabitState::default();
         let key = crate::habit::HabitLogKey::parse_wire_form(
             "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b5a|2026-01-01",
@@ -6944,8 +6943,14 @@ mod author_by_tests {
         )]
         .into_iter()
         .collect();
-        crate::merge::fold_habit_log(&mut state, &relayed_rows);
-        assert_eq!(state.log.get(&key).map(|e| e.count), Some(3));
+        crate::merge::fold_legacy_habit_log(&mut state, &relayed_rows);
+        let id = crate::habit_event::legacy_habit_event_id(
+            key.habit,
+            key.window.as_date(),
+            ts(1_000),
+            Some(0),
+        );
+        assert_eq!(state.events[&id].by, None);
         let authored_rows = [(
             key.wire_form(),
             HabitLogRecord::Entry {
@@ -6958,12 +6963,22 @@ mod author_by_tests {
         )]
         .into_iter()
         .collect();
-        crate::merge::fold_habit_log(&mut state, &authored_rows);
-        assert_eq!(
-            state.log.get(&key).map(|e| e.count),
-            Some(4),
-            "the authored equal-clock row outranks the relayed authorless one"
+        crate::merge::fold_legacy_habit_log(&mut state, &authored_rows);
+        // The identical-uuid re-fold adopts nothing (D-4: `by` is
+        // display-only, never arbitration metadata) — the relayed
+        // ordinals stay authorless.
+        assert_eq!(state.events[&id].by, None);
+        assert_eq!(state.events[&id].at, ts(1_000));
+        // The authored row's *new* ordinal (count 4 > 3) mints a fresh
+        // id that does carry the author leg.
+        let fourth = crate::habit_event::legacy_habit_event_id(
+            key.habit,
+            key.window.as_date(),
+            ts(1_000),
+            Some(3),
         );
+        assert_eq!(state.events[&fourth].by, Some(a));
+        assert_eq!(state.events.len(), 4);
     }
     // ---- The habit-time-entries lane (#1305 D-6) --------------------------
 
