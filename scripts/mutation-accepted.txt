@@ -1,0 +1,22 @@
+# Accepted surviving mutants — the mutation-testing lane's baseline.
+#
+# One exact mutant name per line, byte-equal to the line cargo-mutants
+# writes into mutants.out/missed.txt (the same form `cargo mutants
+# --list` prints). Blank lines and #-comments are allowed; the reason
+# and owning reference live in the trailing comment on the same line.
+# Checked by scripts/mutation-accepted-check.sh: a survivor ON this
+# list does not fail the lane; a survivor OFF it fails the shard
+# loudly (the operator's 2026-11-28 ruling on #1480, point 3).
+#
+# Real coverage gaps are NEVER accepted to make the lane green —
+# they get a backlog: issue and stay off this list until fixed.
+# A stale entry (the mutant got killed) is reported informationally
+# by the checker and should be pruned editorially.
+
+# Unkillable by design: the caption constants are producing text, and
+# AGENTS.md §5's no-text-assertions rule forbids asserting it. Any
+# other mutant of these two constants must still be killed by the
+# structural tests (the caption is *wired*, the exact string is not
+# asserted).
+crates/taskboard-ui-slint/src/presentation.rs:110:5: replace files_sync_chip_caption -> &'static str with "" # unkillable: text-producing constant under AGENTS §5 no-text-assertions; #1480
+crates/taskboard-ui-slint/src/presentation.rs:110:5: replace files_sync_chip_caption -> &'static str with "xyzzy" # unkillable: text-producing constant under AGENTS §5 no-text-assertions; #1480
