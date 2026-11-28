@@ -4108,6 +4108,26 @@ mod habit_event_migration_tests {
         db.repo().load().await.expect("load").habits.events
     }
 
+    fn habit_id(raw: uuid::Uuid) -> taskboard_domain::ids::HabitId {
+        taskboard_domain::ids::HabitId::from(raw)
+    }
+
+    /// The shared recipe assertion (tests 1, 2, 9): the ordinal's
+    /// completion exists under the v5 id over the recorded facts and
+    /// stamps at `clock`.
+    fn assert_completion_at(
+        events: &std::collections::BTreeMap<HabitEventId, HabitEvent>,
+        habit: uuid::Uuid,
+        window: chrono::NaiveDate,
+        clock: &str,
+        ordinal: u32,
+    ) {
+        let event =
+            &events[&legacy_habit_event_id(habit_id(habit), window, instant(clock), Some(ordinal))];
+        assert!(matches!(event.kind, HabitEventKind::Completion));
+        assert_eq!(event.at, instant(clock));
+    }
+
     /// Fixture story 1 (`us4_s2` token): a legacy Week row of count 3
     /// at clock C with author A synthesizes exactly 3 live
     /// `Completion` events at C, `by` = A, ordinals 0–2, ids = the v5
@@ -4133,14 +4153,13 @@ mod habit_event_migration_tests {
         let events = load_events(&db).await;
         assert_eq!(events.len(), 3);
         for ordinal in 0..3_u32 {
+            assert_completion_at(&events, habit_uuid(), window, &clock, ordinal);
             let event = &events[&legacy_habit_event_id(
-                taskboard_domain::ids::HabitId::from(habit_uuid()),
+                habit_id(habit_uuid()),
                 window,
                 instant(&clock),
                 Some(ordinal),
             )];
-            assert!(matches!(event.kind, HabitEventKind::Completion));
-            assert_eq!(event.at, instant(&clock));
             assert_eq!(event.by, Some(AuthorId::from_uuid(author_uuid())));
             assert!(event.is_live());
         }
@@ -4180,21 +4199,9 @@ mod habit_event_migration_tests {
 
         let events = load_events(&db).await;
         // The twin'd habit stamps at the twin clock…
-        let twinful = &events[&legacy_habit_event_id(
-            taskboard_domain::ids::HabitId::from(habit_uuid()),
-            day,
-            instant(&twin_clock),
-            Some(0),
-        )];
-        assert_eq!(twinful.at, instant(&twin_clock));
+        assert_completion_at(&events, habit_uuid(), day, &twin_clock, 0);
         // …the twin-less one at its row clock.
-        let twinless = &events[&legacy_habit_event_id(
-            taskboard_domain::ids::HabitId::from(other_habit_uuid()),
-            day,
-            instant(&row_clock),
-            Some(0),
-        )];
-        assert_eq!(twinless.at, instant(&row_clock));
+        assert_completion_at(&events, other_habit_uuid(), day, &row_clock, 0);
         db.close().await;
     }
 
@@ -4303,7 +4310,6 @@ mod habit_event_migration_tests {
         )
         .await
         .expect("post-marker mirror row");
-        let _ = load_events(&db).await;
         let one_completion = load_events(&db).await;
         assert_eq!(one_completion.len(), 1);
         // Only the pre-marker synthesized event is on disk: exactly
@@ -4334,6 +4340,50 @@ mod habit_event_migration_tests {
         let events = load_events(&db).await;
         assert_eq!(events.len(), 2);
         assert!(events.contains_key(&logged.id));
+        db.close().await;
+    }
+
+    /// Fixture story 6b (D-REM step 6): the event inserts and the
+    /// marker insert share one transaction — a failure after some
+    /// events were inserted (here: a second legacy row the fold
+    /// rejects, count out of range) rolls the already-inserted events
+    /// AND the marker back: the persisted state is neither
+    /// events-without-marker nor partially remapped, and the next
+    /// successful open re-runs the pass from scratch.
+    #[tokio::test]
+    async fn remap_failure_after_event_inserts_rolls_back_atomically() {
+        let mut db = FixtureDb::new().await;
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("valid date");
+        write_legacy_habit_rows(
+            db.pool(),
+            &[
+                // A valid row whose event insert happens first…
+                legacy_row(habit_uuid(), day, 1, clock_text(10, 0)),
+                // …then a row the fold rejects (count < 0 cannot mint
+                // an ordinal range) — a different window: habit_log's
+                // primary key is (habit_id, window_start).
+                legacy_row(
+                    habit_uuid(),
+                    chrono::NaiveDate::from_ymd_opt(2026, 11, 24).expect("valid date"),
+                    -1,
+                    clock_text(11, 0),
+                ),
+            ],
+        )
+        .await
+        .expect("fixture rows");
+
+        let err = db.repo().load().await.expect_err("remap failure");
+        assert!(
+            matches!(err, RepositoryError::Corrupted(_)),
+            "the rejected row fails closed, typed"
+        );
+
+        // The rollback: no events persisted, no marker — the pass
+        // re-runs on the next open (which fails the same way, but a
+        // repaired row set would remap fully).
+        assert_eq!(event_table_dump(db.pool()).await, [] as [u8; 0]);
+        assert!(!marker_present(db.pool()).await);
         db.close().await;
     }
 
@@ -4439,13 +4489,7 @@ mod habit_event_migration_tests {
         // by nothing, the orphan twin mints nothing.
         assert_eq!(events.len(), 2);
         for ordinal in 0..2_u32 {
-            let event = &events[&legacy_habit_event_id(
-                taskboard_domain::ids::HabitId::from(habit_uuid()),
-                day,
-                instant(&clock),
-                Some(ordinal),
-            )];
-            assert_eq!(event.at, instant(&clock));
+            assert_completion_at(&events, habit_uuid(), day, &clock, ordinal);
         }
         db.close().await;
     }
