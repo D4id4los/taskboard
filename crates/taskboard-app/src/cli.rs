@@ -1695,7 +1695,10 @@ pub enum HabitsCmd {
     /// Explicit count correction for one window (`YYYY-MM-DD`, the
     /// canonical period start of the habit's current target kind). A
     /// non-canonical window is the typed `invalid-habit-window`
-    /// refusal, never a clap refusal.
+    /// refusal, never a clap refusal. An audited count above the quota
+    /// is capped by the attribution rule when the predecessor window
+    /// is unmet — the receipt reports the events actually minted
+    /// (#1549: the limit is accepted; the receipt is the typed truth).
     Adjust {
         /// The habit (uuid | prefix | exact live title).
         habit: String,
