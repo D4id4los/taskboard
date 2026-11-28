@@ -1670,9 +1670,13 @@ fn sections_document(
     );
     let habits =
         taskboard_domain::appdata::habits_for(&persisted.habits.habits, board, Some(author));
-    let habit_log = taskboard_domain::appdata::habit_log_for(
+    // The events cut-over (D-7 / Ruling D1's writer half): this build
+    // emits the `habit-events` section and never the legacy
+    // `habit-log` one (the slot stays `None`; the field survives
+    // until chunk 5, #1542).
+    let habit_events = taskboard_domain::appdata::habit_events_for(
+        &persisted.habits.events,
         &persisted.habits.habits,
-        &persisted.habits.log,
         board,
         today,
         Some(author),
@@ -1704,14 +1708,14 @@ fn sections_document(
         } else {
             Some(habits)
         },
-        habit_log: if habit_log.is_empty() {
+        // The legacy slot stays None — never emitted since the D-7
+        // cut-over; the field survives until chunk 5 (#1542).
+        habit_log: None,
+        habit_events: if habit_events.is_empty() {
             None
         } else {
-            Some(habit_log)
+            Some(habit_events)
         },
-        // The emission cut-over (D-7) lands in the connector commit;
-        // until then the new section never emits.
-        habit_events: None,
         break_rules: if break_rules.is_empty() {
             None
         } else {
@@ -1894,6 +1898,72 @@ mod tests {
             )]),
             cancel: crate::cycle::CycleCancel::new(),
         }
+    }
+
+    /// Test 26 (the D-7 cut-over at the files connector): the
+    /// sections document emits `habit-events` — rows keyed by the
+    /// event uuid, the habit riding the row — and never the legacy
+    /// `habit-log` lane; the `habit-time-entries` None boundary
+    /// (#1363) is untouched.
+    #[test]
+    fn the_files_sections_emit_habit_events_and_never_the_legacy_log() {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut state = PersistedState::default();
+        state.boards.insert(board(), files_bound_board());
+        let habit = taskboard_domain::Habit {
+            id: taskboard_domain::ids::HabitId::from_uuid(uuid::Uuid::from_u128(0x42)),
+            board: board(),
+            title: "water".into(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: taskboard_domain::HabitClocks::all(chrono::DateTime::<chrono::Utc>::MIN_UTC),
+            continued_from: None,
+            deleted: false,
+            by: None,
+
+            paused_until: None,
+        };
+        state.habits.habits.insert(habit.id, habit);
+        let event = taskboard_domain::habit_event::HabitEvent {
+            id: taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0xE1)),
+            habit: taskboard_domain::ids::HabitId::from_uuid(uuid::Uuid::from_u128(0x42)),
+            kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+            // The frozen test clock's instant — in retention.
+            at: chrono::DateTime::from_timestamp(1_000_000, 0).unwrap(),
+            by: None,
+            deleted: None,
+        };
+        state.habits.events.insert(event.id, event);
+        let persisted = state.clone();
+        let ctx = ctx(Arc::new(FixedState(state)), tx);
+        let document = sections_document(&ctx, &persisted, board());
+        let sections = document.sections;
+        assert_eq!(sections.habit_log, None, "the legacy lane never emits");
+        let events = sections.habit_events.expect("the events lane emits");
+        let row = &events[&uuid::Uuid::from_u128(0xE1).to_string()];
+        let taskboard_domain::appdata::HabitEventRecord::Event {
+            habit: row_habit,
+            kind,
+            ..
+        } = row
+        else {
+            panic!("the emitted row is an Event");
+        };
+        assert_eq!(row_habit.as_uuid(), uuid::Uuid::from_u128(0x42));
+        assert!(matches!(
+            kind,
+            taskboard_domain::habit_event::HabitEventKind::Completion
+        ));
+        // The #1363 boundary: the files connector folds no habit-time
+        // lane — untouched by the cut-over.
+        assert_eq!(sections.habit_time_entries, None);
     }
 
     fn queued_update(op_uuid: u128, task: TaskId) -> PendingOp {

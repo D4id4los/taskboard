@@ -94,9 +94,9 @@ pub use appdata::{
     ModeledValue, RuleEntry, RulesEntry, TRACKING_SYNC_RETENTION_DAYS, TaskEntry, TaskFieldWrite,
     TimeEntryRecord, break_dismissal_wire_key, break_dismissals_entry_for, break_rules_for,
     derive_break_rule_tombstones, derive_rule_tombstones, derive_time_entry_tombstones,
-    dismissal_wire_key, dismissals_entry_for, habit_log_for, habits_for, lane_gc_old_habit_log,
-    lane_gc_old_time_entries, lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for,
-    task_entry_for, time_entries_for, union,
+    dismissal_wire_key, dismissals_entry_for, habit_events_for, habits_for,
+    lane_gc_old_habit_events, lane_gc_old_habit_log, lane_gc_old_time_entries, lane_gc_scheduled,
+    modeled_key, prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
 };
 pub use appdata::{HabitTimeRecord, habit_time_entries_for, lane_gc_old_habit_time_entries};
 pub use calibration::{CalibrationAggregate, CalibrationReport, CalibrationRow, calibrate};
