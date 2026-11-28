@@ -467,7 +467,7 @@ fn us2_s2_restore_habit_dispatches_log_untouched() {
         let row = snapshot.habits.habits.get(&gone).expect("the habit row");
         assert!(!row.deleted, "the habit flipped live verbatim");
         assert!(
-            snapshot.habits.log.is_empty(),
+            snapshot.habits.events.is_empty(),
             "the log is never touched (D26)"
         );
     });

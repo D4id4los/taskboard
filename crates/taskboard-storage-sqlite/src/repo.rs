@@ -4003,10 +4003,6 @@ mod habit_event_migration_tests {
 
         let state = db.repo().load().await.expect("load").habits;
         assert_eq!(state.events.len(), 2, "the remap synthesized the events");
-        assert!(
-            state.log.is_empty() && state.day_log.is_empty(),
-            "no path seeds the legacy rows into the state anymore"
-        );
         assert!(marker_present(db.pool()).await, "the remap marked its run");
     }
 

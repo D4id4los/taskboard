@@ -625,11 +625,12 @@ impl Habit {
     }
 }
 
-/// The log key: one habit's count in one canonical window. `BTreeMap`
-/// key — the derived order keeps serialization deterministic. On the
-/// wire (JSON map keys must be strings — the `ReminderSnoozeKey`
-/// precedent) the key serializes as the single string
-/// `"<habit uuid>|<window naive date>"` and parses strictly back.
+/// ---- Retired decode-only shapes (the #1519 event grammar; #1542's
+/// mirror deleted — no production writer or state reader remains).
+/// These two persisted shapes serve pre-#1520 journal entries' decode
+/// and their legacy undo legs (the undo substrate's retained row
+/// pre-image tails) and nothing else; no new reader may anchor to
+/// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HabitLogKey {
     /// The counted habit.
@@ -671,102 +672,19 @@ impl<'de> Deserialize<'de> for HabitLogKey {
     }
 }
 
-/// The per-day overlay key (US-8, #1144; the 2026-11-22 habit-surface
-/// journeys plan's recorded D-H12 amendment): one habit's activity
-/// attribution on one calendar day. `BTreeMap` key — the derived order
-/// keeps serialization deterministic. Same string wire form as
-/// [`HabitLogKey`] (`"<habit uuid>|<day naive date>"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HabitDayKey {
-    /// The attributed habit.
-    pub habit: HabitId,
-    /// The attributed calendar day (a plain date — never a window
-    /// start; the overlay's grain is the day, the log's is the
-    /// window).
-    pub day: NaiveDate,
-}
-
-impl HabitDayKey {
-    /// The string wire form (`"<habit uuid>|<day naive date>"`).
-    #[must_use]
-    pub fn wire_form(&self) -> String {
-        format!("{}|{}", self.habit.as_uuid(), self.day.format("%Y-%m-%d"))
-    }
-
-    /// The strict inverse of [`wire_form`]; `None` on any malformed
-    /// input (an undecodable key is corruption, not data).
-    #[must_use]
-    pub fn parse_wire_form(raw: &str) -> Option<Self> {
-        let (habit, day) = raw.split_once('|')?;
-        let habit = HabitId::from(uuid::Uuid::parse_str(habit).ok()?);
-        Some(Self {
-            habit,
-            day: chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?,
-        })
-    }
-}
-
-impl Serialize for HabitDayKey {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.wire_form())
-    }
-}
-
-impl<'de> Deserialize<'de> for HabitDayKey {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(deserializer)?;
-        Self::parse_wire_form(&raw).ok_or_else(|| serde::de::Error::custom("invalid habit day key"))
-    }
-}
-
-/// One day's overlay row (US-8, #1144): the attributed count plus a
-/// single LWW clock — the [`HabitLogEntry`] discipline at day grain.
-/// **Display data only** (R-2): the window log stays the adherence
-/// and stats oracle; the overlay never feeds a stats projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HabitDayLogEntry {
-    /// The day's attributed count (attribution at log time, D-H5's
-    /// spirit at day grain).
-    pub count: u32,
-    /// The row's LWW clock — the same `mint_log_clock` discipline as
-    /// the window rows (whole-second grammar downstream, #1095).
-    pub clock: DateTime<Utc>,
-}
-
-/// One window's count row: the payload is the count plus a single LWW
-/// clock (the normative shape — no per-completion instants, which is
-/// exactly why attribution happens at log time, D-H5).
+/// Retired decode-only shape: one window's count row (the pre-#1520
+/// log's payload; `skip` marks the deliberate planned skip).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HabitLogEntry {
-    /// The window's count (0 is legal — an audited correction may
-    /// empty a window; the row stays, honestly clocked).
+    /// The window's count.
     pub count: u32,
-    /// The row's LWW clock: the writing planner's `now`, monotonically
-    /// advanced past any stored same-key log row (#986) — it may exceed
-    /// `now` by whole seconds after a same-second burst. Documented
-    /// leniency: a row clock ahead of the wall `now` is a legitimate
-    /// value, not corruption.
+    /// The row's LWW clock (#986's grammar; whole-second downstream).
     pub clock: DateTime<Utc>,
-    /// The row's author (F1's `by` leg, the stored duel rank): the
-    /// document's `by` when adopted, the device identity when created
-    /// locally, `None` for rows that predate the slot (never privileged —
-    /// the `None < Some` leg keeps them honest). Documented leniency:
-    /// `None` here means "author unknown", not "authored by nobody".
+    /// The row's author (`None` = author unknown, the `None < Some`
+    /// rank).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<crate::ids::AuthorId>,
-    /// The typed planned-skip mark (the 2026-11-21 HF1 field family,
-    /// issue #955): `true` marks the window a **deliberate skip** — the
-    /// window is transparent in the streak walk regardless of quota or
-    /// grace (neither counts nor breaks), and the row renders the typed
-    /// skip state rather than the miss posture. `skip == false` (or an
-    /// absent mark) leaves every behavior untouched.
-    ///
-    /// Deliberate decode leniency (the mint-strict/decode-lenient
-    /// posture): rows written before HF1 carry no `skip` key and decode
-    /// `false` — the additive default-absent law, never a decode
-    /// failure. Consultation order in the walk: quota-met counts;
-    /// else `skip` makes the window transparent; else pending/missed
-    /// as before.
+    /// The typed planned-skip mark (`true` = deliberate skip).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skip: bool,
 }
@@ -796,20 +714,13 @@ pub fn pause_covers_window(kind: PeriodKind, start: NaiveDate, until: NaiveDate)
 /// after a kind change (they sync as facts; deleting them would forge
 /// history). Every projection reads canonical windows of the *current*
 /// kind only, so such rows are analytically inert — pinned by test.
+/// The habit sub-state, nested in [`crate::state::AppState`] like
+/// `TrackingState`. `BTreeMap` keeps serialization deterministic (the
+/// state.rs determinism contract).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HabitState {
     /// All habits, keyed by id (live rows and tombstones alike).
     pub habits: BTreeMap<HabitId, Habit>,
-    /// The count log, keyed `(habit, window)`; ≤ 1 row per key.
-    pub log: BTreeMap<HabitLogKey, HabitLogEntry>,
-    /// The per-day activity overlay (US-8, #1144; the plan's recorded
-    /// D-H12 amendment), keyed `(habit, day)`; ≤ 1 row per key.
-    /// Display data only (R-2) — the window `log` stays the stats
-    /// oracle. `serde(default)`: states persisted before the overlay
-    /// decode with an empty map — the additive default-absent law,
-    /// never a decode failure.
-    #[serde(default)]
-    pub day_log: BTreeMap<HabitDayKey, HabitDayLogEntry>,
     /// The habit time entries (journey plan 2026-11-24 D-1, #1305 —
     /// the additive fact family; the open entry IS the running timer,
     /// the task tracker's grammar verbatim). `serde(default)`: states
@@ -819,14 +730,12 @@ pub struct HabitState {
     #[serde(default)]
     pub time_log: BTreeMap<crate::ids::HabitTimeEntryId, crate::habit_time::HabitTimeEntry>,
     /// The per-completion event log (the #1519 event-log design): the
-    /// future sole source of truth. Additive this chunk — `log` /
-    /// `day_log` stay and every existing reader is untouched (the
-    /// next chunk rewires the writers; the final chunk deletes the
-    /// maps). `BTreeMap` keyed by mint-instant-ordered v7 ids:
-    /// deterministic serialization, and the `(at, id)` iteration
+    /// sole source of truth — the legacy mirror maps were deleted with
+    /// it (#1519 chunk 5). `BTreeMap` keyed by mint-instant-ordered v7
+    /// ids: deterministic serialization, and the `(at, id)` iteration
     /// order the derivations' tie-breaks rely on. `serde(default)`:
-    /// the additive default-absent law — states persisted before the
-    /// map decode with an empty map, never a decode failure.
+    /// states persisted before the map decode with an empty map — the
+    /// additive default-absent law, never a decode failure.
     #[serde(default)]
     pub events: BTreeMap<crate::habit_event::HabitEventId, crate::habit_event::HabitEvent>,
 }
@@ -1794,23 +1703,19 @@ mod tests {
     }
 
     #[test]
-    fn habit_and_state_serde_roundtrip_including_the_log() {
+    fn habit_and_state_serde_roundtrip_including_the_events() {
         let mut state = HabitState::default();
         let h = habit(1, HabitTarget::PerDay(NonZeroCount::new(3).unwrap()));
         state.habits.insert(h.id, h.clone());
-        state.log.insert(
-            HabitLogKey {
-                habit: h.id,
-                window: WindowStart::of_period(PeriodKind::Day, date(2026, 10, 28)),
-            },
-            HabitLogEntry {
-                count: 2,
-                clock: Utc.timestamp_opt(500, 0).unwrap(),
-                by: None,
-
-                skip: false,
-            },
-        );
+        let event = crate::habit_event::HabitEvent {
+            id: crate::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0xE1)),
+            habit: h.id,
+            kind: crate::habit_event::HabitEventKind::Completion,
+            at: Utc.timestamp_opt(500, 0).unwrap(),
+            by: None,
+            deleted: None,
+        };
+        state.events.insert(event.id, event);
         let json = serde_json::to_string(&state).unwrap();
         let back: HabitState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, state);

@@ -1488,8 +1488,6 @@ mod tests {
         }
         state.habits = HabitState {
             habits: std::collections::BTreeMap::from([(h.id, h.clone())]),
-            log: std::collections::BTreeMap::default(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events,
         };
@@ -1519,8 +1517,6 @@ mod tests {
         let id = h.id;
         state.habits = HabitState {
             habits: std::collections::BTreeMap::from([(id, h)]),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };

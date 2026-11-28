@@ -19,8 +19,7 @@ use std::time::Duration;
 
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    CommandOutcome, HabitLogKey, NotifierMessage, StateCommand, SyncCommand, SystemEvent,
-    WindowStart,
+    CommandOutcome, NotifierMessage, StateCommand, SyncCommand, SystemEvent, WindowStart,
 };
 use taskboard_state::{EngineHandle, ExecuteError, spawn_state_engine};
 
@@ -102,10 +101,36 @@ fn window(day_offset: i64) -> WindowStart {
     )
 }
 
-fn key(habit: taskboard_domain::HabitId, day_offset: i64) -> HabitLogKey {
-    HabitLogKey {
-        habit,
-        window: window(day_offset),
+/// The chunk-5 C7 oracle: the derived count/posture of one window
+/// (the mirror maps are gone — the events are the truth).
+fn derived_count(
+    view: &taskboard_domain::HabitState,
+    habit: taskboard_domain::HabitId,
+    window: WindowStart,
+) -> u32 {
+    let row = view.habits.get(&habit).expect("habit row");
+    taskboard_domain::habit_event::derive_window_counts(row, view.events.values(), day_cal())
+        .get(&window)
+        .copied()
+        .unwrap_or(0)
+}
+
+fn derived_skip(
+    view: &taskboard_domain::HabitState,
+    habit: taskboard_domain::HabitId,
+    window: WindowStart,
+) -> bool {
+    let row = view.habits.get(&habit).expect("habit row");
+    taskboard_domain::habit_event::derive_skip_posture(row, view.events.values(), day_cal())
+        .get(&window)
+        .copied()
+        .unwrap_or(false)
+}
+
+fn day_cal() -> taskboard_domain::DayCalendar {
+    taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).unwrap(),
     }
 }
 
@@ -173,7 +198,7 @@ async fn h1_habit_journey_create_log_adjust_delete() {
     };
     assert_eq!(count2, 2);
     let published = h.published();
-    assert_eq!(published.log[&key(habit, 0)].count, 2);
+    assert_eq!(derived_count(&published, habit, window(0)), 2);
     // Memory ≡ disk at the receipt.
     let persisted = h.repo.snapshot();
     assert_eq!(persisted.habits, published, "memory ≡ disk: habits");
@@ -198,12 +223,7 @@ async fn h1_habit_journey_create_log_adjust_delete() {
     };
     assert_eq!(w3, window(0));
     let published = h.published();
-    assert_eq!(published.log[&key(habit, 0)].count, 5);
-    assert_eq!(
-        published.log[&key(habit, 0)].clock,
-        common::ts(T0 + 120),
-        "the correction's fresh stamp"
-    );
+    assert_eq!(derived_count(&published, habit, window(0)), 5);
     assert_eq!(h.repo.snapshot().habits, published);
 
     // Delete: the tombstone lands, the log survives everywhere.
@@ -221,15 +241,19 @@ async fn h1_habit_journey_create_log_adjust_delete() {
         common::ts(T0 + 180)
     );
     assert_eq!(
-        published.log[&key(habit, 0)].count,
+        derived_count(&published, habit, window(0)),
         5,
         "history outlives the tracker"
     );
     let persisted = h.repo.snapshot();
     assert_eq!(persisted.habits, published, "memory ≡ disk: habits");
     assert!(
-        persisted.habits.log.contains_key(&key(habit, 0)),
-        "the log row is durable"
+        persisted
+            .habits
+            .events
+            .values()
+            .any(|e| e.habit == habit && e.is_live()),
+        "the events are durable"
     );
 
     // The repeat is the accepted no-op; nothing persisted.
@@ -290,11 +314,11 @@ async fn h2_fresh_engine_over_the_same_repo_sees_the_log() {
     let published = engine2.published();
     assert_eq!(published.habits.len(), 1, "the habit hydrated");
     assert_eq!(published.habits[&habit].title, "stretch");
-    let resumed_key = HabitLogKey {
-        habit,
-        window: logged_window,
-    };
-    assert_eq!(published.log[&resumed_key].count, 1, "the log row intact");
+    assert_eq!(
+        derived_count(&published, habit, logged_window),
+        1,
+        "the count intact"
+    );
     // And commandable across the restart: the next increment continues
     // the same window's count.
     let CommandOutcome::HabitLogged { count: 2, .. } = engine2
@@ -305,7 +329,10 @@ async fn h2_fresh_engine_over_the_same_repo_sees_the_log() {
     else {
         panic!("wrong receipt");
     };
-    assert_eq!(engine2.repo.snapshot().habits.log[&resumed_key].count, 2);
+    assert_eq!(
+        derived_count(&engine2.repo.snapshot().habits, habit, logged_window),
+        2
+    );
     engine2.shutdown().await;
 }
 
@@ -655,9 +682,15 @@ async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
     };
     assert_eq!(skipped, window(0), "the current canonical window");
     let published = h.published();
-    let row = &published.log[&key(habit, 0)];
-    assert!(row.skip, "the typed mark landed");
-    assert_eq!(row.count, 1, "the count is untouched by the mark");
+    assert!(
+        derived_skip(&published, habit, window(0)),
+        "the typed mark landed"
+    );
+    assert_eq!(
+        derived_count(&published, habit, window(0)),
+        1,
+        "the count is untouched by the mark"
+    );
     assert_eq!(h.repo.snapshot().habits, published, "memory ≡ disk");
 
     // The repeat is the accepted no-op; nothing persisted.
@@ -679,10 +712,10 @@ async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
         .expect("accepted");
     let published = h.published();
     assert!(
-        !published.log[&key(habit, 0)].skip,
+        !derived_skip(&published, habit, window(0)),
         "the mark cleared (badge hygiene)"
     );
-    assert_eq!(published.log[&key(habit, 0)].count, 1);
+    assert_eq!(derived_count(&published, habit, window(0)), 1);
     // Unskipping an unmarked window is the accepted no-op.
     clock.advance_secs(60);
     let before = h.repo.snapshot();

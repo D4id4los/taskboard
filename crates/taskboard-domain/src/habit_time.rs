@@ -208,7 +208,7 @@ mod tests {
         let now = fixture.now;
         let day = fixture.day;
         let habit = state.habits.values().next().expect("fixture habit");
-        let (counts, posture) = crate::habit::derived_views_from_log(habit, &state.log);
+        let (counts, posture) = crate::habit::derived_views_from_log(habit, &fixture.log);
         let streak = crate::habit::streak(habit, &counts, &posture, now, day);
         let adherence = crate::habit::adherence(habit, &counts, &posture, now, day);
         let horizon = crate::habit::statistics_horizon(habit, &counts, now, day)
@@ -265,7 +265,7 @@ mod tests {
             // Byte-identical through the serde face: the projections'
             // values — not just their equality — are unchanged.
             let habit = perturbed.habits.values().next().expect("fixture habit");
-            let (counts, posture) = crate::habit::derived_views_from_log(habit, &perturbed.log);
+            let (counts, posture) = crate::habit::derived_views_from_log(habit, &fixture.log);
             let streak = crate::habit::streak(habit, &counts, &posture, fixture.now, fixture.day);
             let adherence =
                 crate::habit::adherence(habit, &counts, &posture, fixture.now, fixture.day);

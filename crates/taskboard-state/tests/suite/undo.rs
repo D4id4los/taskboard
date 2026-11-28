@@ -737,15 +737,30 @@ async fn adjust_habit_log_round_trips_through_the_engine() {
     rig.run(StateCommand::LogHabit { habit })
         .await
         .expect("accepted");
-    let key = *rig
-        .repo
-        .snapshot()
-        .habits
-        .log
-        .keys()
-        .next()
-        .expect("log row");
-    let pre = rig.repo.snapshot().habits.log[&key];
+    let key = taskboard_domain::HabitLogKey {
+        habit,
+        window: taskboard_domain::WindowStart::of_period(
+            taskboard_domain::PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch"),
+        ),
+    };
+    // The chunk-5 C7 oracle: the derived count (the mirror maps are
+    // gone).
+    let derived = |view: &taskboard_domain::HabitState| -> u32 {
+        let row = view.habits.get(&habit).expect("habit row");
+        taskboard_domain::habit_event::derive_window_counts(
+            row,
+            view.events.values(),
+            taskboard_domain::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).unwrap(),
+            },
+        )
+        .get(&key.window)
+        .copied()
+        .unwrap_or(0)
+    };
+    let pre = derived(&rig.repo.snapshot().habits);
     rig.run(StateCommand::AdjustHabitLog {
         habit,
         window: key.window,
@@ -753,18 +768,14 @@ async fn adjust_habit_log_round_trips_through_the_engine() {
     })
     .await
     .expect("accepted");
-    // Undo: the pre count restored, the row kept.
+    // Undo: the pre count restored.
     rig.run(StateCommand::Undo).await.expect("accepted");
     let app = rig.state();
-    assert_eq!(app.habits.log[&key].count, pre.count);
-    assert_eq!(
-        rig.repo.snapshot().habits.log[&key].count,
-        pre.count,
-        "memory ≡ disk"
-    );
+    assert_eq!(derived(&app.habits), pre);
+    assert_eq!(derived(&rig.repo.snapshot().habits), pre, "memory ≡ disk");
     // Redo: the audited correction re-applied.
     rig.run(StateCommand::Redo).await.expect("accepted");
-    assert_eq!(rig.state().habits.log[&key].count, 5);
+    assert_eq!(derived(&rig.state().habits), 5);
 }
 
 /// The pushed-boundary case over a widened arm: a completed push flips
@@ -1239,20 +1250,27 @@ async fn us1_s4_undo_clears_the_skip_mark_through_the_global_line() {
         ),
     };
     assert!(
-        app.habits.log[&key].skip,
-        "the mark is on the published row"
+        derived_skip_of(&app.habits, habit, key.window),
+        "the mark derives on the published state"
     );
     drop(app);
     // The global undo pops the skip (the LogHabit below it stays).
     let outcome = rig.run(StateCommand::Undo).await.expect("accepted");
     assert!(matches!(outcome, CommandOutcome::Undone { .. }));
     let app = rig.state();
-    assert!(!app.habits.log[&key].skip, "the skip undo cleared the mark");
-    assert_eq!(app.habits.log[&key].count, 1, "the count survived");
+    assert!(
+        !derived_skip_of(&app.habits, habit, key.window),
+        "the skip undo cleared the mark"
+    );
+    assert_eq!(
+        derived_count_of(&app.habits, habit, key.window),
+        1,
+        "the count survived"
+    );
     drop(app);
     let persisted = rig.repo.snapshot();
     assert!(
-        !persisted.habits.log[&key].skip,
+        !derived_skip_of(&persisted.habits, habit, key.window),
         "memory ≡ disk: the cleared mark persisted"
     );
     // Redo re-applies the skip intent (the forward re-plan re-mints the
@@ -1262,10 +1280,16 @@ async fn us1_s4_undo_clears_the_skip_mark_through_the_global_line() {
     // undo → redo pair is the pinned journey here.
     rig.run(StateCommand::Redo).await.expect("accepted");
     let app = rig.state();
-    assert!(app.habits.log[&key].skip, "redo re-applied the mark");
+    assert!(
+        derived_skip_of(&app.habits, habit, key.window),
+        "redo re-applied the mark"
+    );
     drop(app);
     let persisted = rig.repo.snapshot();
-    assert!(persisted.habits.log[&key].skip, "memory ≡ disk after redo");
+    assert!(
+        derived_skip_of(&persisted.habits, habit, key.window),
+        "memory ≡ disk after redo"
+    );
 }
 
 // ---- the habit-log undo widening (R-7, 2026-11-21; UX plan US-3) -------
@@ -1293,6 +1317,61 @@ async fn habit_fixture(rig: &mut Rig) -> taskboard_domain::HabitId {
         CommandOutcome::HabitCreated(id) => id,
         other => panic!("expected HabitCreated, got {other:?}"),
     }
+}
+
+/// The chunk-5 C7 oracle: the derived total count across all windows.
+fn derived_total(view: &taskboard_domain::HabitState) -> u64 {
+    let day = taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).unwrap(),
+    };
+    taskboard_domain::habit_event::derive_window_counts(
+        view.habits.values().next().expect("habit row"),
+        view.events.values(),
+        day,
+    )
+    .values()
+    .map(|count| u64::from(*count))
+    .sum()
+}
+
+/// The chunk-5 C7 oracles: the derived count/posture of one window.
+fn derived_count_of(
+    view: &taskboard_domain::HabitState,
+    habit: taskboard_domain::HabitId,
+    window: taskboard_domain::WindowStart,
+) -> u32 {
+    let row = view.habits.get(&habit).expect("habit row");
+    taskboard_domain::habit_event::derive_window_counts(
+        row,
+        view.events.values(),
+        taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        },
+    )
+    .get(&window)
+    .copied()
+    .unwrap_or(0)
+}
+
+fn derived_skip_of(
+    view: &taskboard_domain::HabitState,
+    habit: taskboard_domain::HabitId,
+    window: taskboard_domain::WindowStart,
+) -> bool {
+    let row = view.habits.get(&habit).expect("habit row");
+    taskboard_domain::habit_event::derive_skip_posture(
+        row,
+        view.events.values(),
+        taskboard_domain::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        },
+    )
+    .get(&window)
+    .copied()
+    .unwrap_or(false)
 }
 
 /// US-3/AC-1 (R-7 supersession, 2026-11-21): a `LogHabit` as the newest
@@ -1341,11 +1420,10 @@ async fn log_habit_journal_entry_inverts() {
         "the receipt names the habit surface entry: {undone_entry:?}"
     );
     let app = rig.state();
-    let key = taskboard_domain::HabitLogKey { habit, window };
     assert_eq!(
-        app.habits.log.get(&key).map(|entry| entry.count),
-        Some(0),
-        "the pre-image absence restores as the count-0 correction row"
+        derived_count_of(&app.habits, habit, window),
+        0,
+        "the pre-image absence restores as the derived count 0"
     );
 }
 
@@ -1368,12 +1446,7 @@ async fn undo_after_burst_pops_one_increment() {
         .await
         .expect("second log accepted");
     assert_eq!(
-        rig.state()
-            .habits
-            .log
-            .values()
-            .map(|entry| u64::from(entry.count))
-            .sum::<u64>(),
+        derived_total(&rig.state().habits),
         2,
         "the burst landed both increments"
     );
@@ -1393,24 +1466,14 @@ async fn undo_after_burst_pops_one_increment() {
         assert_eq!(persisted.journal.head, popped.parent, "one pop");
     }
     assert_eq!(
-        rig.state()
-            .habits
-            .log
-            .values()
-            .map(|entry| u64::from(entry.count))
-            .sum::<u64>(),
+        derived_total(&rig.state().habits),
         1,
         "one increment reverted"
     );
     // Second undo: the other increment.
     rig.run(StateCommand::Undo).await.expect("accepted");
     assert_eq!(
-        rig.state()
-            .habits
-            .log
-            .values()
-            .map(|entry| u64::from(entry.count))
-            .sum::<u64>(),
+        derived_total(&rig.state().habits),
         0,
         "the second undo pops the other increment"
     );

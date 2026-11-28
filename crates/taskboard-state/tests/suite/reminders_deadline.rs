@@ -18,11 +18,11 @@ use std::time::Duration;
 use taskboard_domain::persistence::{PersistedState, TaskRepository};
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AdhocWhen, CommandOutcome, DeckFeatures, Habit, HabitClocks, HabitLogEntry, HabitLogKey,
-    HabitState, HabitTarget, Insistence, NonZeroCount, NotifierMessage, PeriodKind, ReminderOffset,
-    RemoteBoard, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteStack, RemoteStackId,
-    RemoteStackRef, RemoteTask, SettingsSnapshot, StateCommand, SyncCommand, SyncReport,
-    SystemEvent, TickSecs, WindowStart,
+    AdhocWhen, CommandOutcome, DeckFeatures, Habit, HabitClocks, HabitState, HabitTarget,
+    Insistence, NonZeroCount, NotifierMessage, PeriodKind, ReminderOffset, RemoteBoard,
+    RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteStack, RemoteStackId, RemoteStackRef,
+    RemoteTask, SettingsSnapshot, StateCommand, SyncCommand, SyncReport, SystemEvent, TickSecs,
+    WindowStart,
 };
 use taskboard_state::{DayRollConfig, EngineHandle, spawn_state_engine};
 
@@ -77,17 +77,25 @@ fn anchored_habit_met_today() -> (Habit, HabitState) {
     };
     let mut habits = HabitState::default();
     habits.habits.insert(habit.id, habit.clone());
-    habits.log.insert(
-        HabitLogKey {
+    // The event-grammar seed: one completion in today's window (the
+    // derived count the tracker gate reads).
+    let window = WindowStart::of_period(PeriodKind::Day, ts(T0).date_naive());
+    let at = ts(T0);
+    let id = taskboard_domain::habit_event::legacy_habit_event_id(
+        habit.id,
+        window.as_date(),
+        at,
+        Some(0),
+    );
+    habits.events.insert(
+        id,
+        taskboard_domain::habit_event::HabitEvent {
+            id,
             habit: habit.id,
-            window: WindowStart::of_period(PeriodKind::Day, ts(T0).date_naive()),
-        },
-        HabitLogEntry {
-            count: 1,
-            clock: ts(T0),
+            kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+            at,
             by: None,
-
-            skip: false,
+            deleted: None,
         },
     );
     (habit, habits)

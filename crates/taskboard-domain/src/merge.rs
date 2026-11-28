@@ -7128,8 +7128,6 @@ mod habit_fold_tests {
         let local = habit(1, 800, 100, false);
         let mut state = HabitState {
             habits: [(local.id, local.clone())].into_iter().collect(),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
@@ -7169,8 +7167,6 @@ mod habit_fold_tests {
         // competition data, not display garnish).
         let mut state = HabitState {
             habits: [(id, local.clone())].into_iter().collect(),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
@@ -7210,8 +7206,6 @@ mod habit_fold_tests {
         // An equal-clock tie keeps local (the tuple-duel law extends).
         let mut state = HabitState {
             habits: [(id, local.clone())].into_iter().collect(),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
@@ -7267,8 +7261,6 @@ mod habit_fold_tests {
         // Newer tombstone over a live habit: deleted, stamped.
         let mut state = HabitState {
             habits: [(local.id, local.clone())].into_iter().collect(),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
@@ -7290,8 +7282,6 @@ mod habit_fold_tests {
             habits: [(local.id, habit(1, 800, 500, false))]
                 .into_iter()
                 .collect(),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
@@ -7310,8 +7300,6 @@ mod habit_fold_tests {
         // An already-deleted local never re-stamps.
         let mut state = HabitState {
             habits: [(local.id, habit(1, 800, 100, true))].into_iter().collect(),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
@@ -7343,8 +7331,6 @@ mod habit_fold_tests {
         let local = habit(1, 800, 100, true);
         let mut state = HabitState {
             habits: [(local.id, local)].into_iter().collect(),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
@@ -7367,8 +7353,6 @@ mod habit_fold_tests {
         let deleted_local = habit(1, 800, 400, true);
         let mut state = HabitState {
             habits: [(deleted_local.id, deleted_local)].into_iter().collect(),
-            log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
@@ -7538,8 +7522,8 @@ mod habit_fold_tests {
         assert_eq!(changes.upserts.len(), 1, "the orphan fact persists");
         assert_eq!(state.events.len(), 1);
         // No projection reads it: the fold never touched a habit
-        // definition, and nothing else in the state changed.
-        assert!(state.habits.is_empty() && state.log.is_empty());
+        // definition, and nothing else in the state changed (the
+        // event map holds exactly the orphan fact).
     }
 
     /// Test 7: `Verbatim` rows and unparseable keys never fold.
@@ -7847,19 +7831,6 @@ mod habit_fold_tests {
     }
 
     /// Test 12: the shim is the legacy section's *reader* only —
-    /// `habits.log` is never written by it (Ruling D1's read half).
-    #[test]
-    fn legacy_shim_never_writes_habits_log() {
-        let mut state = HabitState::default();
-        let rows: BTreeMap<_, _> = [legacy_entry(9, date(2026, 10, 26), 4, 500, false)]
-            .into_iter()
-            .collect();
-        let _ = fold_legacy_habit_log(&mut state, &rows);
-        assert!(
-            state.log.is_empty(),
-            "the shim synthesizes events, never log rows"
-        );
-    }
 
     #[test]
     fn both_folds_are_invariant_under_row_order_and_converge() {
@@ -7875,8 +7846,6 @@ mod habit_fold_tests {
                     logs: Vec<&(String, crate::appdata::HabitLogRecord)>| {
             let mut state = HabitState {
                 habits: [(a.id, a.clone()), (b.id, b.clone())].into_iter().collect(),
-                log: std::collections::BTreeMap::new(),
-                day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
                 events: std::collections::BTreeMap::default(),
             };
@@ -8361,8 +8330,6 @@ mod author_duel_tests {
                         habits: [(habit_id, habit(own, Some(own_author)))]
                             .into_iter()
                             .collect(),
-                        log: std::collections::BTreeMap::new(),
-                        day_log: std::collections::BTreeMap::default(),
                         time_log: std::collections::BTreeMap::default(),
                         events: std::collections::BTreeMap::default(),
                     };
@@ -8567,8 +8534,6 @@ mod author_duel_tests {
             };
             let mut state = crate::habit::HabitState {
                 habits: [(habit_id, habit("a-habit"))].into_iter().collect(),
-                log: std::collections::BTreeMap::new(),
-                day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
                 events: std::collections::BTreeMap::default(),
             };
@@ -8804,8 +8769,6 @@ mod author_duel_tests {
             .collect();
             let mut state = crate::habit::HabitState {
                 habits: [(habit_id, local)].into_iter().collect(),
-                log: std::collections::BTreeMap::new(),
-                day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
                 events: std::collections::BTreeMap::default(),
             };
@@ -8820,11 +8783,12 @@ mod author_duel_tests {
         }
 
         /// T-ADOPT-1, habit log (re-pointed to the shim, D-6): the
-        /// document row's author rides the synthesized event, so the
-        /// reader converges with the writer on (fact, by).
+        /// document row's author rides the synthesized event; the
+        /// chunk-5 C7 map deletion removed the local duel twin — the
+        /// synthesized events ARE the converged facts.
         #[test]
         fn habit_log_adoption_stamps_the_document_author() {
-            let (b, d, _c, t1, t2) = band();
+            let (_b, d, _c, _t1, t2) = band();
             let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x806));
             let log_key = crate::habit::HabitLogKey::parse_wire_form(
                 "00000000-0000-0000-0000-000000000806|2026-01-01",
@@ -8844,19 +8808,6 @@ mod author_duel_tests {
             .collect();
             let mut state = crate::habit::HabitState {
                 habits: std::collections::BTreeMap::new(),
-                log: [(
-                    log_key,
-                    crate::habit::HabitLogEntry {
-                        count: 1,
-                        clock: t1,
-                        by: Some(b),
-
-                        skip: false,
-                    },
-                )]
-                .into_iter()
-                .collect(),
-                day_log: std::collections::BTreeMap::default(),
                 time_log: std::collections::BTreeMap::default(),
                 events: std::collections::BTreeMap::default(),
             };
@@ -9209,8 +9160,6 @@ mod sidecar_convergence_prop {
                 };
                 let mut state = crate::habit::HabitState {
                     habits: map(seeded.iter().map(|fact| (habit_id, local(fact)))),
-                    log: std::collections::BTreeMap::new(),
-            day_log: std::collections::BTreeMap::default(),
             time_log: std::collections::BTreeMap::default(),
             events: std::collections::BTreeMap::default(),
         };
