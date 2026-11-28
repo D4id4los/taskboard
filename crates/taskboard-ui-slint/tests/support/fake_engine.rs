@@ -26,30 +26,31 @@ pub struct FakeEngine {
     /// snapshot (assertions drain the channel first; `settle`
     /// applies from the log, not the channel).
     applied: usize,
-    /// The rule rows the settle removed, newest last — the undo
-    /// line's continuity source (UF1's journeys: `Undo` after a rule
-    /// removal restores the row; fixture continuity, not an oracle).
-    removed_rules: Vec<taskboard_domain::ReminderRule>,
-    /// The rule ids the settle minted for an add, newest last — the
-    /// undo line's other continuity face (`Undo` after an add deletes
-    /// the added rule).
-    added_rules: Vec<taskboard_domain::ReminderRuleId>,
-    /// The tombstoned rows the settle restored, newest last — the
-    /// restore journeys' undo-line continuity face (`Undo` after a
-    /// restore re-tombstones; fixture continuity, not an oracle — the
-    /// domain fold suite owns the undo semantics).
-    restored_entities: Vec<RestoredEntity>,
-    /// The cleared-rule batches, newest last — the clear-all's undo
-    /// face (W-7: one undo step restores all n).
-    cleared_batches: Vec<Vec<taskboard_domain::ReminderRule>>,
-    /// The cleared-rule batches, newest last — the clear-all's undo
-    /// face (W-7: one undo step restores all n).
-    /// The habit sections' pre-reorder orders, newest last — the
-    /// reorder undo line's continuity face (#1198 chunk A1 D1:
-    /// `Undo` after a reorder restores the section; fixture
-    /// continuity, not an oracle — the domain's inverse suite owns
-    /// undo semantics).
-    habit_sections: Vec<Vec<(taskboard_domain::HabitId, i64)>>,
+    /// The chronological undo ledger (oldest first): every
+    /// continuity-bearing mutating command pushes exactly one face;
+    /// `Undo` pops the newest and applies its inverse — one level
+    /// per command, across families (#1219). Fixture continuity,
+    /// not an oracle.
+    ledger: Vec<UndoFace>,
+}
+
+/// One continuity-bearing mutation's inverse (the ledger's entry,
+/// #1219): the face an `Undo` pops, in the order the mutations
+/// landed.
+enum UndoFace {
+    /// A removed rule row, restored verbatim (UF1's journeys).
+    RemovedRule(taskboard_domain::ReminderRule),
+    /// An add's minted id, deleted on the undo.
+    AddedRule(taskboard_domain::ReminderRuleId),
+    /// A restored entity, re-tombstoned (the #1187 law; the domain
+    /// fold suite owns the undo semantics).
+    RestoredEntity(RestoredEntity),
+    /// A cleared batch, restored verbatim (W-7: one undo step
+    /// restores all n).
+    ClearedBatch(Vec<taskboard_domain::ReminderRule>),
+    /// A habit reorder's pre-move section order (#1198 chunk A1 D1;
+    /// the domain's inverse suite owns undo semantics).
+    ReorderedSections(Vec<(taskboard_domain::HabitId, i64)>),
 }
 
 /// One restored entity's continuity fact (the fake's undo face).
@@ -139,7 +140,7 @@ fn apply_habit_reorder(
     state: &mut AppState,
     habit: taskboard_domain::HabitId,
     target: usize,
-    sections: &mut Vec<Vec<(taskboard_domain::HabitId, i64)>>,
+    ledger: &mut Vec<UndoFace>,
 ) {
     let Some(subject) = state.habits.habits.get(&habit).cloned() else {
         return;
@@ -159,7 +160,9 @@ fn apply_habit_reorder(
     if target == position || target == position + 1 {
         return;
     }
-    sections.push(rows.iter().map(|h| (h.id, h.order)).collect());
+    ledger.push(UndoFace::ReorderedSections(
+        rows.iter().map(|h| (h.id, h.order)).collect(),
+    ));
     let moved = rows.remove(position);
     let insert_at = if target <= position {
         target
@@ -196,11 +199,7 @@ impl FakeEngine {
                 state,
                 received: Vec::new(),
                 applied: 0,
-                removed_rules: Vec::new(),
-                added_rules: Vec::new(),
-                habit_sections: Vec::new(),
-                restored_entities: Vec::new(),
-                cleared_batches: Vec::new(),
+                ledger: Vec::new(),
             },
         )
     }
@@ -467,7 +466,7 @@ impl FakeEngine {
                 // renumber) and the pre-move section kept for the
                 // `Undo` face.
                 StateCommand::HabitReorder { habit, target } => {
-                    apply_habit_reorder(&mut state, habit, target, &mut self.habit_sections);
+                    apply_habit_reorder(&mut state, habit, target, &mut self.ledger);
                 }
                 StateCommand::MoveStack { id, order } => {
                     if let Some(stack) = state.stacks.get_mut(&id) {
@@ -494,7 +493,7 @@ impl FakeEngine {
                 // continuity face can restore it verbatim.
                 StateCommand::RemoveReminderRule { rule } => {
                     if let Some(row) = state.reminders.rules.get(&rule) {
-                        self.removed_rules.push(row.clone());
+                        self.ledger.push(UndoFace::RemovedRule(row.clone()));
                     }
                     state.reminders.rules.remove(&rule);
                 }
@@ -530,7 +529,7 @@ impl FakeEngine {
                         updated_at: now,
                         by: None,
                     };
-                    self.added_rules.push(id);
+                    self.ledger.push(UndoFace::AddedRule(id));
                     state.reminders.rules.insert(id, row);
                 }
                 // The UF1 undo-line continuity (fixture continuity,
@@ -539,38 +538,47 @@ impl FakeEngine {
                 // add deletes the minted rule; neither touches the
                 // delivery records.
                 StateCommand::Undo => {
-                    // The clear-all's undo face (W-7): one undo step
-                    // restores the whole cleared batch verbatim.
-                    if let Some(batch) = self.cleared_batches.pop() {
-                        for rule in batch {
-                            state.reminders.rules.insert(rule.id, rule);
+                    // The ledger's pop (the #1219 model — one level
+                    // per Undo, the newest face's inverse only;
+                    // fixture continuity, never an oracle — the
+                    // state engine's fold suite owns undo
+                    // semantics).
+                    match self.ledger.pop() {
+                        // The clear-all's undo face (W-7): one undo
+                        // step restores the whole cleared batch
+                        // verbatim.
+                        Some(UndoFace::ClearedBatch(batch)) => {
+                            for rule in batch {
+                                state.reminders.rules.insert(rule.id, rule);
+                            }
                         }
-                    }
-                    // The restore journeys' undo face (W-2/W-3):
-                    // a restored row re-tombstones (the #1187 law).
-                    match self.restored_entities.pop() {
-                        Some(RestoredEntity::Label(id)) => {
+                        // The restore journeys' undo face (W-2/W-3):
+                        // a restored row re-tombstones (the #1187
+                        // law).
+                        Some(UndoFace::RestoredEntity(RestoredEntity::Label(id))) => {
                             if let Some(label) = state.labels.get_mut(&id) {
                                 label.deleted = true;
                             }
                         }
-                        Some(RestoredEntity::Habit(id)) => {
+                        Some(UndoFace::RestoredEntity(RestoredEntity::Habit(id))) => {
                             if let Some(habit) = state.habits.habits.get_mut(&id) {
                                 habit.deleted = true;
                             }
                         }
-                        None => {}
-                    }
-                    if let Some(row) = self.removed_rules.pop() {
-                        state.reminders.rules.entry(row.id).or_insert(row);
-                    } else if let Some(added) = self.added_rules.pop() {
-                        state.reminders.rules.remove(&added);
-                    } else if let Some(section) = self.habit_sections.pop() {
-                        for (id, order) in section {
-                            if let Some(row) = state.habits.habits.get_mut(&id) {
-                                row.order = order;
+                        Some(UndoFace::RemovedRule(row)) => {
+                            state.reminders.rules.entry(row.id).or_insert(row);
+                        }
+                        Some(UndoFace::AddedRule(added)) => {
+                            state.reminders.rules.remove(&added);
+                        }
+                        Some(UndoFace::ReorderedSections(section)) => {
+                            for (id, order) in section {
+                                if let Some(row) = state.habits.habits.get_mut(&id) {
+                                    row.order = order;
+                                }
                             }
                         }
+                        None => {}
                     }
                 }
                 // The tracking verbs' continuity (round 9 chunk 11,
@@ -633,18 +641,20 @@ impl FakeEngine {
                     for rule in &cleared {
                         state.reminders.rules.remove(&rule.id);
                     }
-                    self.cleared_batches.push(cleared);
+                    self.ledger.push(UndoFace::ClearedBatch(cleared));
                 }
                 StateCommand::RestoreLabel { id } => {
                     if let Some(label) = state.labels.get_mut(&id) {
                         label.deleted = false;
-                        self.restored_entities.push(RestoredEntity::Label(id));
+                        self.ledger
+                            .push(UndoFace::RestoredEntity(RestoredEntity::Label(id)));
                     }
                 }
                 StateCommand::RestoreHabit { id } => {
                     if let Some(habit) = state.habits.habits.get_mut(&id) {
                         habit.deleted = false;
-                        self.restored_entities.push(RestoredEntity::Habit(id));
+                        self.ledger
+                            .push(UndoFace::RestoredEntity(RestoredEntity::Habit(id)));
                     }
                 }
                 // The journey session exercises only the task verbs
@@ -664,5 +674,188 @@ impl FakeEngine {
     pub fn replace_state(&mut self, state: AppState, ui: &UiHandle) {
         self.state.store(Arc::new(state));
         ui.refresh();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::support::driver::DriverOptions;
+    use crate::support::driver::JourneyDriver as _;
+    use crate::support::fixture;
+
+    use taskboard_ui_slint::UiSettings;
+
+    /// The ledger self-tests' mount (the driver self-tests' shape,
+    /// once): the fake's channel over the shared `ArcSwap`, the UI
+    /// mounted on the journey driver so `settle`'s refresh lands. The
+    /// assertions address the fake's state snapshot directly — the
+    /// ledger's continuity, not the engine's undo semantics.
+    fn settle_journey<R>(
+        state: AppState,
+        job: impl FnOnce(&mut FakeEngine, &tokio::sync::mpsc::Sender<StateCommand>, &UiHandle) -> R
+        + Send
+        + 'static,
+    ) -> R
+    where
+        R: Send + 'static,
+    {
+        crate::support::driver::run(
+            DriverOptions {
+                headless_renderer: crate::HEADLESS_RENDERER,
+            },
+            move |driver| {
+                let state = Arc::new(ArcSwap::from_pointee(state));
+                let (tx, mut engine) = FakeEngine::channel(Arc::clone(&state));
+                let (requests_tx, _requests_rx) = mpsc::channel(16);
+                let (_system_tx, system_rx) = tokio::sync::broadcast::channel(4);
+                let (_signals_tx, signals_rx) = tokio::sync::broadcast::channel(4);
+                let (_htx, health) = tokio::sync::watch::channel(
+                    taskboard_ui_slint::presentation::DeliveryHealth::default(),
+                );
+                let handle = taskboard_ui_slint::mount(
+                    state,
+                    signals_rx,
+                    system_rx,
+                    tx.clone(),
+                    requests_tx,
+                    UiSettings::default(),
+                    health,
+                    None,
+                )
+                .expect("mount succeeds on the testing backend");
+                driver.bind(&handle);
+                driver.advance_time(0);
+                job(&mut engine, &tx, &handle)
+            },
+        )
+    }
+
+    /// Sends `command` over the fake's boundary and applies it (the
+    /// settle is the fake's application step).
+    fn send_and_settle(
+        tx: &tokio::sync::mpsc::Sender<StateCommand>,
+        engine: &mut FakeEngine,
+        ui: &UiHandle,
+        command: StateCommand,
+    ) {
+        tx.blocking_send(command).expect("the boundary is open");
+        engine.settle(ui);
+    }
+
+    /// The rules roster's typed ids (the ledger assertions' oracle
+    /// input — membership, never rendering).
+    fn rule_ids(state: &AppState) -> std::collections::BTreeSet<taskboard_domain::ReminderRuleId> {
+        state.reminders.rules.keys().copied().collect()
+    }
+
+    /// The #1219 regression pin: `Undo` pops exactly one face per
+    /// command. Remove → add → undo deletes only the added rule; the
+    /// second undo restores the removed row. The old multi-family pop
+    /// reverted both operations in one pass, so this interleaved
+    /// sequence is the discriminating shape.
+    #[test]
+    fn undo_pops_one_face_per_command_across_families() {
+        let (fx, mut state) = fixture::journey_state();
+        let removed = fixture::add_armed_rule(&mut state, fx.task0, 0xA10);
+        settle_journey(state, move |engine, tx, ui| {
+            let baseline = rule_ids(&engine.snapshot());
+            send_and_settle(
+                tx,
+                engine,
+                ui,
+                StateCommand::RemoveReminderRule { rule: removed },
+            );
+            send_and_settle(
+                tx,
+                engine,
+                ui,
+                StateCommand::AddReminderRule {
+                    task: fx.task0,
+                    offset: taskboard_domain::ReminderOffset::at_due(),
+                    at: None,
+                    insistence: taskboard_domain::Insistence::Normal,
+                },
+            );
+            let after_ops = rule_ids(&engine.snapshot());
+            assert!(
+                !after_ops.contains(&removed),
+                "the removal removed the seeded rule"
+            );
+            let mut added: Vec<_> = after_ops.difference(&baseline).copied().collect();
+            assert_eq!(added.len(), 1, "the add minted exactly one rule");
+            let added = added.pop().expect("one minted rule");
+
+            send_and_settle(tx, engine, ui, StateCommand::Undo);
+            let after_first_undo = rule_ids(&engine.snapshot());
+            assert!(
+                !after_first_undo.contains(&added),
+                "the first undo deletes only the added rule"
+            );
+            assert!(
+                !after_first_undo.contains(&removed),
+                "the first undo leaves the removal in place"
+            );
+
+            send_and_settle(tx, engine, ui, StateCommand::Undo);
+            assert_eq!(
+                rule_ids(&engine.snapshot()),
+                baseline,
+                "the second undo restores the removed row verbatim"
+            );
+        });
+    }
+
+    /// An `Undo` past the emptied ledger is a typed no-op — the state
+    /// snapshot is bit-identical (nothing restored, nothing removed).
+    #[test]
+    fn undo_past_the_empty_ledger_is_a_noop() {
+        let (fx, mut state) = fixture::journey_state();
+        let seeded = fixture::add_armed_rule(&mut state, fx.task0, 0xA20);
+        settle_journey(state, move |engine, tx, ui| {
+            send_and_settle(
+                tx,
+                engine,
+                ui,
+                StateCommand::RemoveReminderRule { rule: seeded },
+            );
+            send_and_settle(tx, engine, ui, StateCommand::Undo);
+            let restored = rule_ids(&engine.snapshot());
+            assert!(restored.contains(&seeded), "the one undo restored");
+
+            send_and_settle(tx, engine, ui, StateCommand::Undo);
+            send_and_settle(tx, engine, ui, StateCommand::Undo);
+            assert_eq!(
+                rule_ids(&engine.snapshot()),
+                restored,
+                "the ledger-empty undos changed nothing"
+            );
+        });
+    }
+
+    /// The W-7 face: one `Undo` after `ClearReminderRules` restores
+    /// the whole cleared batch — all n rows, as a single popped face.
+    #[test]
+    fn undo_after_a_clear_restores_the_whole_batch() {
+        let (fx, mut state) = fixture::journey_state();
+        let first = fixture::add_armed_rule(&mut state, fx.task0, 0xA30);
+        let second = fixture::add_armed_rule(&mut state, fx.task0, 0xA31);
+        settle_journey(state, move |engine, tx, ui| {
+            send_and_settle(
+                tx,
+                engine,
+                ui,
+                StateCommand::ClearReminderRules { task: fx.task0 },
+            );
+            let after_clear = rule_ids(&engine.snapshot());
+            assert!(!after_clear.contains(&first) && !after_clear.contains(&second));
+
+            send_and_settle(tx, engine, ui, StateCommand::Undo);
+            let restored = rule_ids(&engine.snapshot());
+            assert!(
+                restored.contains(&first) && restored.contains(&second),
+                "the single undo restored both cleared rows"
+            );
+        });
     }
 }
