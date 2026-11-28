@@ -700,3 +700,59 @@ You are the stage-3 REVIEW agent for chunk 3 of the habit event-log dispatch (br
 
 Report: verdict, findings (functional + data-safety + mandate), what you fixed, PR URL. Never merge; never touch main; do not remove the worktree.
 ```
+
+---
+
+## 10. Stage-2 landing note (2026-11-28)
+
+Implemented on `feat/storage-habit-event-migration`; the six RQ
+defaults (§0) were implemented as recommended, each cited at its
+code site:
+
+- **RQ-1** (dormant = mirror still written and read): the untouched
+  mirror flush arms and load decode in
+  `crates/taskboard-storage-sqlite/src/repo.rs`; no RQ-1 comment was
+  added there because the behavior is the pre-existing code (the
+  marker/remap is the only delta) — the ruling lives here and in the
+  remap doc comment.
+- **RQ-2** (marker set on every 0032-aware first load, legacy rows
+  or not): the gate in `remap_habit_events_if_needed` (`repo.rs`,
+  "RQ-2" comment); test `remap_sets_the_marker_even_without_legacy_rows`.
+- **RQ-3** (skip bit → one `Skip` mark, mark leg id, no `Unskip`):
+  the `skip` branch in `remap_habit_events_if_needed` ("RQ-3"
+  comment); test `remap_synthesizes_skip_marks_from_the_skip_bit`.
+- **RQ-4** (twin rows contribute instants, never counts): the
+  `twin_clocks` map in `remap_habit_events_if_needed` ("RQ-4"
+  comments); tests `remap_stamps_day_rows_at_the_twin_clock`,
+  `orphan_twin_and_mismatched_twin_contribute_nothing`.
+- **RQ-5** (no `habits` join): the pure row fold over `habit_log`
+  rows only ("RQ-5" comment in the remap doc);
+  test `deleted_habit_rows_still_migrate`.
+- **RQ-6** (#1549 consequence documented, not re-opened): migration
+  header, remap doc comment, this plan §1 D-1549; test
+  `over_quota_legacy_row_derives_capped_after_migration`.
+
+Recorded deviations from the plan's letter (behavior-preserving or
+forced by the domain types):
+
+1. **D-LD's "both tombstone legs present or both absent"** became:
+   the tombstone exists iff `deleted_at` is set; `deleted_by` is the
+   tombstone's optional author (the domain's `HabitEventTombstone.by`
+   is `Option<AuthorId>` — chunk 2's type law; the strict both-legs
+   rule would make every authorless tombstone undecodable). The
+   corrupt direction tested is `deleted_by` present with `deleted_at`
+   absent (`corrupt_event_rows_are_typed_rejections`).
+2. **§2 steps 3–7 share one repo.rs commit** (the decode, flush,
+   remap, and catalogue edits are interleaved in one file and the
+   pre-commit hook compiles the whole worktree, so partial-file
+   staging could not prove each intermediate state); steps 1, 2 (the
+   uuid-pin rule) and the rewind proof remained separate commits.
+3. The `connect.rs::reopening_applies_no_new_migrations` pinned
+   shipped-migration literal moved 31 → 32 (a planned consequence of
+   shipping 0032; the assertion's substance — reopen idempotence —
+   unchanged).
+
+D-UX steady state: `us4_s2_migration_synthesizes_a1_events` landed in
+`crates/taskboard-storage-sqlite/src/repo.rs`; W-10
+(`us4_s2_verbatim_never_folds` in `appdata.rs`) stays MISSING until
+chunk 4, as §1 D-UX records.
