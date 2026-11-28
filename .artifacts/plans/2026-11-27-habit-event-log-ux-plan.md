@@ -190,7 +190,7 @@ absent. Header row is a parser contract. -->
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-1/S1 | Today habit row log button | tap log | `StateCommand::LogHabit` | one Completion event minted; receipt carries the id; derived count/badge update | Habit deleted/not found: typed `CommandError`, row stays unchanged |
+| US-1/S1 | Today habit row log button | tap log | `StateCommand::LogHabit` | one Completion event minted; receipt carries the id; derived count/badge update. A window already skipped ignores new logs until unskipped (the skip is asserted intent — `UnskipHabit` is the recovery verb; #1550) | Habit deleted/not found: typed `CommandError`, row stays unchanged |
 | US-1/S2 | CLI `habits log` | run command | `StateCommand::LogHabit` | same event path; CLI names window + derived count | same typed rejection |
 | US-1/S3 | any surface (read) | observe | — display only | quota badge, streak, heatmap all re-derive from the event set | derived read is total; empty event set derives 0 |
 
@@ -198,7 +198,7 @@ absent. Header row is a parser contract. -->
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-2/S1 | Review / CLI adjust | set count | `StateCommand::AdjustHabitLog` | reconcile diff: tombstones newest-first / mints events to reach target | non-canonical window for current kind: typed `InvalidHabitWindow` rejection |
+| US-2/S1 | Review / CLI adjust | set count | `StateCommand::AdjustHabitLog` | reconcile diff: tombstones newest-first / mints events to reach target. An audited count above the quota is capped by the attribution rule when the predecessor window is unmet — the receipt reports the events actually minted (#1549: the limit is accepted) | non-canonical window for current kind: typed `InvalidHabitWindow` rejection |
 | US-2/S2 | undo affordance over the adjust | undo | inverse plan | pre-image tombstone state restored exactly | pre-image restore is total (event ids are stable facts) |
 
 ### US-3 — exact undo
@@ -218,7 +218,7 @@ absent. Header row is a parser contract. -->
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-5/S1 | Today habit row skip control | skip | `StateCommand::SkipHabit` | SkipMark event minted; derived posture transparent in streak | already-skipped: accepted no-op |
+| US-5/S1 | Today habit row skip control | skip | `StateCommand::SkipHabit` | SkipMark event minted; derived posture transparent in streak. A window already skipped ignores new logs until unskipped (the skip is asserted intent — `UnskipHabit` is the recovery verb; #1550) | already-skipped: accepted no-op |
 | US-5/S2 | Today habit row / CLI | unskip | `StateCommand::UnskipHabit` | UnskipMark event minted; posture clears | not-skipped: accepted no-op |
 | US-5/S3 | merge | — background | union fold | mark and log facts both survive | — (union is total) |
 
