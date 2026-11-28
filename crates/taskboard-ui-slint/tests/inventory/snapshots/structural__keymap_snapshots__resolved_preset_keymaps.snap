@@ -132,16 +132,28 @@ expression: rows
             - Shift+Up
           action: habit.move-up
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
             - Down
           action: nav.focus-down
         - sequence:
             - Shift+Down
           action: habit.move-down
         - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
             - Left
           action: nav.focus-left
         - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
             - Right
+          action: nav.focus-right
+        - sequence:
+            - Alt+Right
           action: nav.focus-right
         - sequence:
             - F9
@@ -242,13 +254,22 @@ expression: rows
             - Shift+Up
           action: nav.extend-prev
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
             - Down
           action: nav.focus-down
         - sequence:
             - Shift+Down
           action: nav.extend-next
         - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
             - Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Left
           action: nav.focus-left
         - sequence:
             - Ctrl+Left
@@ -258,6 +279,9 @@ expression: rows
           action: stack.prev
         - sequence:
             - Right
+          action: nav.focus-right
+        - sequence:
+            - Alt+Right
           action: nav.focus-right
         - sequence:
             - Ctrl+Right
@@ -322,13 +346,25 @@ expression: rows
             - Up
           action: nav.focus-up
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
             - Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Down
           action: nav.focus-down
         - sequence:
             - Left
           action: nav.focus-left
         - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
             - Right
+          action: nav.focus-right
+        - sequence:
+            - Alt+Right
           action: nav.focus-right
         - sequence:
             - F9
@@ -402,13 +438,25 @@ expression: rows
             - Up
           action: nav.focus-up
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
             - Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Down
           action: nav.focus-down
         - sequence:
             - Left
           action: nav.focus-left
         - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
             - Right
+          action: nav.focus-right
+        - sequence:
+            - Alt+Right
           action: nav.focus-right
         - sequence:
             - F2
@@ -470,6 +518,18 @@ expression: rows
             - Escape
           action: app.settings
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
+        - sequence:
             - PageUp
           action: view.scroll-up
         - sequence:
@@ -492,13 +552,25 @@ expression: rows
             - Shift+Up
           action: plan.box-earlier
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
             - Shift+Down
           action: plan.box-later
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
         - sequence:
             - Left
           action: nav.focus-left
         - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
             - Right
+          action: nav.focus-right
+        - sequence:
+            - Alt+Right
           action: nav.focus-right
     - context: menu
       bindings:
@@ -779,6 +851,9 @@ expression: rows
             - Alt+>
           action: nav.last-item
         - sequence:
+            - Alt+b
+          action: nav.focus-left
+        - sequence:
             - Ctrl+b
           action: nav.focus-left
         - sequence:
@@ -827,6 +902,9 @@ expression: rows
             - Ctrl+Shift+d
           action: habit.repair
         - sequence:
+            - Alt+f
+          action: nav.focus-right
+        - sequence:
             - Ctrl+f
           action: nav.focus-right
         - sequence:
@@ -839,11 +917,17 @@ expression: rows
             - Ctrl+Shift+l
           action: habit.log
         - sequence:
+            - Alt+n
+          action: nav.focus-down
+        - sequence:
             - Ctrl+n
           action: nav.focus-down
         - sequence:
             - Ctrl+Shift+o
           action: habit.skip
+        - sequence:
+            - Alt+p
+          action: nav.focus-up
         - sequence:
             - Ctrl+p
           action: nav.focus-up
@@ -869,8 +953,20 @@ expression: rows
             - Shift+Up
           action: habit.move-up
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
             - Shift+Down
           action: habit.move-down
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
         - sequence:
             - Shift+F10
           action: row.menu
@@ -894,6 +990,9 @@ expression: rows
         - sequence:
             - b
           action: board.next
+        - sequence:
+            - Alt+b
+          action: nav.focus-left
         - sequence:
             - Ctrl+b
           action: nav.focus-left
@@ -977,6 +1076,9 @@ expression: rows
             - Ctrl+d
           action: task.delete
         - sequence:
+            - Alt+f
+          action: nav.focus-right
+        - sequence:
             - Ctrl+f
           action: nav.focus-right
         - sequence:
@@ -986,6 +1088,9 @@ expression: rows
             - Ctrl+Shift+l
           action: label.manage
         - sequence:
+            - Alt+n
+          action: nav.focus-down
+        - sequence:
             - Ctrl+n
           action: nav.focus-down
         - sequence:
@@ -994,6 +1099,9 @@ expression: rows
         - sequence:
             - Ctrl+o
           action: task.create
+        - sequence:
+            - Alt+p
+          action: nav.focus-up
         - sequence:
             - Ctrl+p
           action: nav.focus-up
@@ -1007,8 +1115,20 @@ expression: rows
             - Ctrl+v
           action: view.scroll-down
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
             - Ctrl+Left
           action: stack.narrower
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
         - sequence:
             - Ctrl+Right
           action: stack.wider
@@ -1023,6 +1143,9 @@ expression: rows
         - sequence:
             - Alt+>
           action: nav.last-item
+        - sequence:
+            - Alt+b
+          action: nav.focus-left
         - sequence:
             - Ctrl+b
           action: nav.focus-left
@@ -1051,14 +1174,23 @@ expression: rows
             - Ctrl+y
           action: task.schedule-today
         - sequence:
+            - Alt+f
+          action: nav.focus-right
+        - sequence:
             - Ctrl+f
           action: nav.focus-right
+        - sequence:
+            - Alt+n
+          action: nav.focus-down
         - sequence:
             - Ctrl+n
           action: nav.focus-down
         - sequence:
             - Ctrl+o
           action: task.create
+        - sequence:
+            - Alt+p
+          action: nav.focus-up
         - sequence:
             - Ctrl+p
           action: nav.focus-up
@@ -1068,6 +1200,18 @@ expression: rows
         - sequence:
             - Ctrl+v
           action: view.scroll-down
+        - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
     - context: task-detail
       bindings:
         - sequence:
@@ -1079,6 +1223,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+a
           action: row.cursor-disarm
+        - sequence:
+            - Alt+b
+          action: nav.focus-left
         - sequence:
             - Ctrl+b
           action: nav.focus-left
@@ -1147,14 +1294,23 @@ expression: rows
             - Ctrl+y
           action: task.schedule-today
         - sequence:
+            - Alt+f
+          action: nav.focus-right
+        - sequence:
             - Ctrl+f
           action: nav.focus-right
         - sequence:
             - Ctrl+Shift+l
           action: label.manage
         - sequence:
+            - Alt+n
+          action: nav.focus-down
+        - sequence:
             - Ctrl+n
           action: nav.focus-down
+        - sequence:
+            - Alt+p
+          action: nav.focus-up
         - sequence:
             - Ctrl+p
           action: nav.focus-up
@@ -1171,6 +1327,18 @@ expression: rows
             - Ctrl+Shift+w
           action: series.pause
         - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
+        - sequence:
             - F3
           action: task.importance-edit
         - sequence:
@@ -1182,14 +1350,26 @@ expression: rows
             - Escape
           action: app.settings
         - sequence:
+            - Alt+b
+          action: nav.focus-left
+        - sequence:
             - Ctrl+b
           action: nav.focus-left
+        - sequence:
+            - Alt+f
+          action: nav.focus-right
         - sequence:
             - Ctrl+f
           action: nav.focus-right
         - sequence:
+            - Alt+n
+          action: nav.focus-down
+        - sequence:
             - Ctrl+n
           action: nav.focus-down
+        - sequence:
+            - Alt+p
+          action: nav.focus-up
         - sequence:
             - Ctrl+p
           action: nav.focus-up
@@ -1199,6 +1379,18 @@ expression: rows
         - sequence:
             - Ctrl+v
           action: view.scroll-down
+        - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
     - context: status-panel
       bindings:
         - sequence:
@@ -1207,20 +1399,44 @@ expression: rows
     - context: plan-next-day
       bindings:
         - sequence:
+            - Alt+b
+          action: nav.focus-left
+        - sequence:
             - Ctrl+b
           action: nav.focus-left
+        - sequence:
+            - Alt+f
+          action: nav.focus-right
         - sequence:
             - Ctrl+f
           action: nav.focus-right
         - sequence:
+            - Alt+n
+          action: nav.focus-down
+        - sequence:
             - Ctrl+Shift+n
           action: plan.box-later
+        - sequence:
+            - Alt+p
+          action: nav.focus-up
         - sequence:
             - Ctrl+Shift+p
           action: plan.box-earlier
         - sequence:
             - Delete
           action: plan.remove-box
+        - sequence:
+            - Alt+Up
+          action: nav.focus-up
+        - sequence:
+            - Alt+Down
+          action: nav.focus-down
+        - sequence:
+            - Alt+Left
+          action: nav.focus-left
+        - sequence:
+            - Alt+Right
+          action: nav.focus-right
     - context: menu
       bindings:
         - sequence:

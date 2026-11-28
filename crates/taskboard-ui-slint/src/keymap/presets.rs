@@ -52,6 +52,7 @@ impl Preset {
                 CONTROL_WALK_ROWS,
                 CONTROL_WALK_SETTINGS_ROWS,
                 STANDARD_S2,
+                ALT_AXIS_ROWS,
                 TRACK_ENTRIES_ROWS,
                 REVIEW_WALK_ROWS,
                 REVIEW_WALK_STAGE_ROWS,
@@ -66,6 +67,8 @@ impl Preset {
                 EMACS_S0B,
                 LABELS_CONTROL_WALK_ROWS,
                 EMACS_S1,
+                EMACS_ALT_QUARTET_ROWS,
+                ALT_AXIS_ROWS,
                 REVIEW_WALK_STAGE_ROWS,
                 ALARM_WINDOW_ROWS,
                 NOTIFICATION_ROWS,
@@ -899,6 +902,105 @@ static STANDARD_S2: &[(ActionId, ContextId, &[&str])] = &[
     // three rows — the Escape ladder + the panel walk (the per-view
     // row pattern; pointer-driven otherwise, no preset binding for
     // the panel verbs).
+];
+
+/// The field-departing walk axis (#1257, D3): `Alt+<direction>` — a
+/// parallel walk axis no text input ever consumes (no editor table
+/// binds an Alt+direction; Slint's `TextInput` caret behaviour
+/// consumes bare caret keys and printables only; every caret key
+/// keeps its in-field meaning). One shared table for the Standard and
+/// Emacs presets (the ladder's binding set is per preset — vi keeps
+/// the Escape contract, no rows). The rows join the six view contexts
+/// that carry directional rows; in those chains the context rows
+/// shadow the Global `Alt+Left` board-return alternate (the C-5/D-5
+/// shadow is the recorded cost — the primaries `Alt+1` / `C-x C-b` /
+/// `g g` stand).
+const ALT_AXIS_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::NavFocusLeft, ContextId::Today, &["Alt+Left"]),
+    (ActionId::NavFocusRight, ContextId::Today, &["Alt+Right"]),
+    (ActionId::NavFocusUp, ContextId::Today, &["Alt+Up"]),
+    (ActionId::NavFocusDown, ContextId::Today, &["Alt+Down"]),
+    (ActionId::NavFocusLeft, ContextId::Board, &["Alt+Left"]),
+    (ActionId::NavFocusRight, ContextId::Board, &["Alt+Right"]),
+    (ActionId::NavFocusUp, ContextId::Board, &["Alt+Up"]),
+    (ActionId::NavFocusDown, ContextId::Board, &["Alt+Down"]),
+    (
+        ActionId::NavFocusLeft,
+        ContextId::StackDetail,
+        &["Alt+Left"],
+    ),
+    (
+        ActionId::NavFocusRight,
+        ContextId::StackDetail,
+        &["Alt+Right"],
+    ),
+    (ActionId::NavFocusUp, ContextId::StackDetail, &["Alt+Up"]),
+    (
+        ActionId::NavFocusDown,
+        ContextId::StackDetail,
+        &["Alt+Down"],
+    ),
+    (ActionId::NavFocusLeft, ContextId::TaskDetail, &["Alt+Left"]),
+    (
+        ActionId::NavFocusRight,
+        ContextId::TaskDetail,
+        &["Alt+Right"],
+    ),
+    (ActionId::NavFocusUp, ContextId::TaskDetail, &["Alt+Up"]),
+    (ActionId::NavFocusDown, ContextId::TaskDetail, &["Alt+Down"]),
+    (ActionId::NavFocusLeft, ContextId::Settings, &["Alt+Left"]),
+    (ActionId::NavFocusRight, ContextId::Settings, &["Alt+Right"]),
+    (ActionId::NavFocusUp, ContextId::Settings, &["Alt+Up"]),
+    (ActionId::NavFocusDown, ContextId::Settings, &["Alt+Down"]),
+    (
+        ActionId::NavFocusLeft,
+        ContextId::PlanNextDay,
+        &["Alt+Left"],
+    ),
+    (
+        ActionId::NavFocusRight,
+        ContextId::PlanNextDay,
+        &["Alt+Right"],
+    ),
+    (ActionId::NavFocusUp, ContextId::PlanNextDay, &["Alt+Up"]),
+    (
+        ActionId::NavFocusDown,
+        ContextId::PlanNextDay,
+        &["Alt+Down"],
+    ),
+];
+
+/// The chords-only emacs departure quartet (#1257, D3): `Alt+f`/`b` =
+/// nav.focus-right/left, `Alt+n`/`p` = nav.focus-down/up — the
+/// home-row twin of the [`ALT_AXIS_ROWS`] axis, the same six view
+/// contexts, Emacs only (the source-editor-authentic preset gains the
+/// Alt axis it never had). All four spellings are free app-wide and
+/// in no editor table, so they depart focused text fields untouched.
+const EMACS_ALT_QUARTET_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::NavFocusRight, ContextId::Today, &["Alt+f"]),
+    (ActionId::NavFocusLeft, ContextId::Today, &["Alt+b"]),
+    (ActionId::NavFocusDown, ContextId::Today, &["Alt+n"]),
+    (ActionId::NavFocusUp, ContextId::Today, &["Alt+p"]),
+    (ActionId::NavFocusRight, ContextId::Board, &["Alt+f"]),
+    (ActionId::NavFocusLeft, ContextId::Board, &["Alt+b"]),
+    (ActionId::NavFocusDown, ContextId::Board, &["Alt+n"]),
+    (ActionId::NavFocusUp, ContextId::Board, &["Alt+p"]),
+    (ActionId::NavFocusRight, ContextId::StackDetail, &["Alt+f"]),
+    (ActionId::NavFocusLeft, ContextId::StackDetail, &["Alt+b"]),
+    (ActionId::NavFocusDown, ContextId::StackDetail, &["Alt+n"]),
+    (ActionId::NavFocusUp, ContextId::StackDetail, &["Alt+p"]),
+    (ActionId::NavFocusRight, ContextId::TaskDetail, &["Alt+f"]),
+    (ActionId::NavFocusLeft, ContextId::TaskDetail, &["Alt+b"]),
+    (ActionId::NavFocusDown, ContextId::TaskDetail, &["Alt+n"]),
+    (ActionId::NavFocusUp, ContextId::TaskDetail, &["Alt+p"]),
+    (ActionId::NavFocusRight, ContextId::Settings, &["Alt+f"]),
+    (ActionId::NavFocusLeft, ContextId::Settings, &["Alt+b"]),
+    (ActionId::NavFocusDown, ContextId::Settings, &["Alt+n"]),
+    (ActionId::NavFocusUp, ContextId::Settings, &["Alt+p"]),
+    (ActionId::NavFocusRight, ContextId::PlanNextDay, &["Alt+f"]),
+    (ActionId::NavFocusLeft, ContextId::PlanNextDay, &["Alt+b"]),
+    (ActionId::NavFocusDown, ContextId::PlanNextDay, &["Alt+n"]),
+    (ActionId::NavFocusUp, ContextId::PlanNextDay, &["Alt+p"]),
 ];
 
 static STANDARD_S4: &[(ActionId, ContextId, &[&str])] = &[
