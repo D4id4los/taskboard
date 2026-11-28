@@ -14,6 +14,7 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { TimerSetterFacts } from "../menu-facts.slint";
+import { Responsive, Breakpoint } from "../responsive.slint";
 import { StatusNotice } from "../widgets/status-notice.slint";
 import { ConfirmStrip } from "../widgets/confirm-strip.slint";
 import { SectionHeader } from "../widgets/section-header.slint";
@@ -385,46 +386,117 @@ export component TimersSection inherits Rectangle {
         // surface offers no creation).
         if (!root.absence-hint): VerticalLayout {
             spacing: Theme.space-1;
-            HorizontalLayout {
-            spacing: Theme.space-2;
-            label-field := TextField {
-                horizontal-stretch: 1;
-                placeholder: "Timer label";
-                label: "Timer label";
-                autofocus: false;
-            }
-            when-field := TextField {
-                horizontal-stretch: 1;
-                placeholder: "in 10m · at 09:30";
-                label: "Timer timing (in 10m or at 09:30)";
-                validity: root.when-validity;
-                autofocus: false;
-                accepted(text) => {
-                    if (root.create-accepted(label-field.text, text, root.insistence-index == 1)) {
-                        label-field.text = "";
-                        when-field.text = "";
-                        // The rung re-seats on its silent default — a
-                        // stale Alarm pick would silently escalate the
-                        // next timer (the fields' own reset convention).
-                        root.insistence-index = 0;
+            // #1491's width-fact branch (the pushed-facts pattern,
+            // docs D17): at the compact breakpoint the row's three
+            // children's min-content width (two labelled fields plus
+            // the segmented control's two labelled halves) exceeds
+            // the viewport, and slint has no measurement-conditional
+            // wrap — the row painted past the right canvas edge. The
+            // stacked arm re-flows placement-only: one field per row
+            // plus the insistence picker; every binding and the commit
+            // seams below are byte-identical between the arms. The
+            // stacked fact has two crowding sources, both pushed
+            // facts: the host window's `Responsive.current-breakpoint`
+            // (Rust owns the width mapping) and the theme's content
+            // scale — at kiosk `base-scale` the row's min-content
+            // grows 3x while the window's logical width stays at the
+            // regular breakpoint's band, so a regular window at kiosk
+            // scale crowds the same way a compact window does at any
+            // scale. Never a local px guess.
+            if (Responsive.current-breakpoint == Breakpoint.compact
+                || (Responsive.current-breakpoint == Breakpoint.regular
+                    && Theme.base-scale >= 2.0)): VerticalLayout {
+                spacing: Theme.space-1;
+                // Each field rides its own row (not a shared fields
+                // row): the TextField min-width floor is
+                // `Theme.space-15` (96px) x base-scale, so TWO fields
+                // side by side still overflow the ~333-logical-px
+                // kiosk viewport (min 576 + spacing at 3.0x). One
+                // field per row keeps every glyph readable at any
+                // scale.
+                stacked-label-field := TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "Timer label";
+                        label: "Timer label";
+                        autofocus: false;
                     }
+                    stacked-when-field := TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "in 10m · at 09:30";
+                        label: "Timer timing (in 10m or at 09:30)";
+                        validity: root.when-validity;
+                        autofocus: false;
+                        accepted(text) => {
+                            if (root.create-accepted(stacked-label-field.text, text, root.insistence-index == 1)) {
+                                stacked-label-field.text = "";
+                                stacked-when-field.text = "";
+                                // The rung re-seats on its silent default — a
+                                // stale Alarm pick would silently escalate the
+                                // next timer (the fields' own reset convention).
+                                root.insistence-index = 0;
+                            }
+                        }
+                        edited(text) => { root.when-edited(text); }
+                    }
+                // The insistence picker (r4 D-T7, the D-P1 drop-in
+                // spot): keyboard parity with the popover's picker —
+                // the rung rides the same commit seam's third
+                // parameter.
+                insistence-picker := SegmentedControl {
+                    options: ["Normal", "Alarm"];
+                    selected-index: root.insistence-index;
+                    group-label: "Insistence";
+                    picked(index) => { root.insistence-index = index; }
                 }
-                edited(text) => { root.when-edited(text); }
+                if (root.when-validity == FieldValidity.invalid && stacked-when-field.text != ""): RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.danger;
+                    text: root.when-error-hint;
+                }
             }
-            // The insistence picker (r4 D-T7, the D-P1 drop-in spot):
-            // keyboard parity with the popover's picker — the rung
-            // rides the same commit seam's third parameter.
-            SegmentedControl {
-                options: ["Normal", "Alarm"];
-                selected-index: root.insistence-index;
-                group-label: "Insistence";
-                picked(index) => { root.insistence-index = index; }
-            }
-            }
-            if (root.when-validity == FieldValidity.invalid && when-field.text != ""): RoleText {
-                role: Typography.caption;
-                text-color: Semantic.danger;
-                text: root.when-error-hint;
+            if (Responsive.current-breakpoint == Breakpoint.expansive
+                || (Responsive.current-breakpoint == Breakpoint.regular
+                    && Theme.base-scale < 2.0)): HorizontalLayout {
+                spacing: Theme.space-2;
+                label-field := TextField {
+                    horizontal-stretch: 1;
+                    placeholder: "Timer label";
+                    label: "Timer label";
+                    autofocus: false;
+                }
+                when-field := TextField {
+                    horizontal-stretch: 1;
+                    placeholder: "in 10m · at 09:30";
+                    label: "Timer timing (in 10m or at 09:30)";
+                    validity: root.when-validity;
+                    autofocus: false;
+                    accepted(text) => {
+                        if (root.create-accepted(label-field.text, text, root.insistence-index == 1)) {
+                            label-field.text = "";
+                            when-field.text = "";
+                            // The rung re-seats on its silent default — a
+                            // stale Alarm pick would silently escalate the
+                            // next timer (the fields' own reset convention).
+                            root.insistence-index = 0;
+                        }
+                    }
+                    edited(text) => { root.when-edited(text); }
+                }
+                // The insistence picker (r4 D-T7, the D-P1 drop-in
+                // spot): keyboard parity with the popover's picker —
+                // the rung rides the same commit seam's third
+                // parameter.
+                wide-insistence-picker := SegmentedControl {
+                    options: ["Normal", "Alarm"];
+                    selected-index: root.insistence-index;
+                    group-label: "Insistence";
+                    picked(index) => { root.insistence-index = index; }
+                }
+                if (root.when-validity == FieldValidity.invalid && when-field.text != ""): RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.danger;
+                    text: root.when-error-hint;
+                }
             }
         }
     }
