@@ -57,8 +57,63 @@ jobs:
   # cut short by the dev box's serialization discipline before it could
   # justify a change to the property budget, and changing it without a
   # fresh measurement would be guesswork.
+  # 2026-11-28 third triage (run 46079491657, #1479): the 526be42a two-way
+  # core re-slice still blew the 120-min cap on BOTH core jobs. The run's
+  # log is the measurement (libtest ran each module strictly sequentially,
+  # so module spans are additive): command 28 min, days 24 min, find 31
+  # min, habit 10.5 min, recur 4.5 min, everything-before-command ~9 min;
+  # the job died mid-reflection with reminders/tracking/settings never
+  # started. On the data side: everything except board_move + persistence
+  # finished in ~4.5 min; board_move took 54 min; persistence ran 20 of 41
+  # tests in 46 min (~2.3 min/test) and was killed mid-test; undo/push/
+  # reconcile (172 tests) never started. Re-sliced on those numbers into
+  # three behavioural + four data jobs, each with headroom against the
+  # 120-min cap; the cap is NOT raised. PROPTEST_CASES stays 16 everywhere.
+  # Filter lists are disjoint and easily edited — the first post-merge CI
+  # run is the true measurement; move tests between jobs by editing ONLY
+  # the filter lists.
+  miri-domain-core-command:
+    name: "cargo miri (domain — core: command)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-domain (core, command, capped)
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- \
+            command::
+
+  miri-domain-core-days-find:
+    name: "cargo miri (domain — core: days/find)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-domain (core, days/find, capped)
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- \
+            days:: find:: clock:: calibration::
+
   miri-domain-core-behavioural:
-    name: "cargo miri (domain — core: behavioural/property)"
+    name: "cargo miri (domain — core: behavioural)"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -75,9 +130,9 @@ jobs:
         run: |
           cargo +nightly miri setup
           cargo +nightly miri test -p taskboard-domain --lib --tests -- \
-            command:: reminders:: recur:: habit:: habit_time:: days:: time:: \
+            reminders:: recur:: habit:: habit_time:: \
             tracking:: tracking_stats:: reflection:: reflection_stats:: \
-            focus:: roster:: settings:: calibration:: clock:: find:: order::
+            focus:: roster:: settings:: time:: order::
 
   miri-domain-core-data:
     name: "cargo miri (domain — core: data/substrate)"
@@ -94,10 +149,11 @@ jobs:
         with:
           components: miri
       - name: Run Miri on taskboard-domain (core, data substrate, capped)
-        # The exact complement of the behavioural job's filter list:
+        # The exact complement of the other core jobs' filter lists:
         # every core test NOT matched above lands here, so the split is
         # disjoint AND complete by construction (no test can silently
-        # drop out of both jobs when a module is added).
+        # drop out of both jobs when a module is added) — the three
+        # dedicated data jobs below pull out the measured-slow modules.
         run: |
           cargo +nightly miri setup
           cargo +nightly miri test -p taskboard-domain --lib --tests -- \
@@ -108,7 +164,77 @@ jobs:
             --skip reflection:: --skip reflection_stats:: \
             --skip focus:: --skip roster:: --skip settings:: \
             --skip calibration:: --skip clock:: --skip find:: \
-            --skip order::
+            --skip order:: --skip board_move:: --skip persistence:: \
+            --skip undo:: --skip push:: --skip reconcile::
+
+  miri-domain-core-board-move:
+    name: "cargo miri (domain — core: board_move)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-domain (core, board_move, capped)
+        # Measured 54 min for 11 tests in run 46079491657 (the rekey
+        # property alone runs >16 min): its own job with headroom.
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- \
+            board_move::
+
+  miri-domain-core-persistence:
+    name: "cargo miri (domain — core: persistence)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-domain (core, persistence, capped)
+        # Measured ~2.3 min/test in run 46079491657 (20 of 41 done in 46
+        # min): ~94 min projected — fits, but the tightest job on the
+        # lane; lane-watch reports drift.
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- \
+            persistence::
+
+  miri-domain-core-undo-substrate:
+    name: "cargo miri (domain — core: undo substrate)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-domain (core, undo substrate, capped)
+        # Never started in run 46079491657 (172 tests: undo::, push::,
+        # reconcile::) — unmeasured; the sibling merge module (169 tests)
+        # ran in ~4.5 min, so this is expected to be cheap, but the first
+        # post-merge CI run is the true measurement.
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- \
+            undo:: push:: reconcile::
 
   miri-domain-pipeline:
     name: cargo miri (domain — pipeline)
