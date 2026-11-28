@@ -523,23 +523,6 @@ pub enum PersistenceAction {
     /// Storage writes this via a runtime-checked statement until
     /// migration 0022 lands (#637, the R-11 exception).
     UpsertReflectionEntry(crate::reflection::ReflectionEntry),
-    /// Record a habit window's count. Keyed set-union on the
-    /// `(habit, window)` key: insert when absent; on collision keep the
-    /// row with the **strictly newer** clock (count LWW under the row
-    /// clock); an equal clock keeps the stored row (deterministic tie —
-    /// sqlite-upsert parity note as `EnqueueOp`).
-    RecordHabitLog(crate::habit::HabitLogKey, crate::habit::HabitLogEntry),
-    /// Record a habit day's overlay count (US-8, #1144; the plan's
-    /// recorded D-H12 amendment). Keyed set-union on the `(habit, day)`
-    /// key with the same strictly-newer-clock LWW discipline as
-    /// [`PersistenceAction::RecordHabitLog`]. Always emitted in the
-    /// same command batch as the window row it attributes (the
-    /// transactional-twin law — a window row and its overlay
-    /// disagreeing by partial write is the pinned bug class). Display
-    /// data: the window log stays the stats oracle (R-2). Device-local
-    /// persistence; the overlay never enters a sync lane (the
-    /// `UpsertReflectionEntry` precedent).
-    RecordHabitDayLog(crate::habit::HabitDayKey, crate::habit::HabitDayLogEntry),
     /// Clear the local content of one board: stacks, tasks, labels,
     /// outbox entries, sync validators, and reminder facts (rules,
     /// deliveries, snooze links, mutes) of its tasks. The board row
@@ -706,37 +689,6 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::UpsertReflectionEntry(entry) => {
                 state.reflection.entries.insert(entry.id, entry.clone());
-            }
-            PersistenceAction::RecordHabitDayLog(key, entry) => {
-                match state.habits.day_log.get(key) {
-                    // Keyed set-union, strictly-newer-clock LWW; the
-                    // equal-clock tie keeps the stored row — the
-                    // `RecordHabitLog` arm's discipline at day grain
-                    // (the mint-side monotone bump guarantees freshly
-                    // minted overlay rows stamp strictly past the
-                    // stored same-key row, #986).
-                    Some(stored) if stored.clock >= entry.clock => {}
-                    _ => {
-                        state.habits.day_log.insert(*key, *entry);
-                    }
-                }
-            }
-            PersistenceAction::RecordHabitLog(key, entry) => {
-                match state.habits.log.get(key) {
-                    // Keyed set-union, strictly-newer-clock LWW; the
-                    // equal-clock tie keeps the stored row
-                    // (deterministic). Unchanged by #986: the mint-side
-                    // monotone clock bump (`habit::mint_log_clock`)
-                    // guarantees freshly minted rows stamp strictly
-                    // past the stored same-key row, so this tie only
-                    // fires for genuinely identical/replayed clocks —
-                    // uniqueness is the mint's premise now, not this
-                    // apply's.
-                    Some(stored) if stored.clock >= entry.clock => {}
-                    _ => {
-                        state.habits.log.insert(*key, *entry);
-                    }
-                }
             }
             PersistenceAction::RecordReminderDelivery(delivery) => {
                 if !state
@@ -1689,13 +1641,6 @@ mod tests {
         }
     }
 
-    fn log_key(raw: u128, day: chrono::NaiveDate) -> crate::habit::HabitLogKey {
-        crate::habit::HabitLogKey {
-            habit: crate::ids::HabitId::from(uuid::Uuid::from_u128(raw)),
-            window: crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, day),
-        }
-    }
-
     #[test]
     fn upsert_habit_replaces_by_id() {
         let mut state = PersistedState::default();
@@ -1755,69 +1700,6 @@ mod tests {
         let json = serde_json::to_string(&state).expect("serializes");
         let decoded: PersistedState = serde_json::from_str(&json).expect("decodes");
         assert_eq!(decoded.habits.events, state.habits.events);
-    }
-
-    #[test]
-    fn record_habit_log_is_keyed_union_with_strictly_newer_clock_lww() {
-        let mut state = PersistedState::default();
-        let key = log_key(1, chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap());
-        let first = crate::habit::HabitLogEntry {
-            count: 1,
-            clock: ts(1_000),
-            by: None,
-
-            skip: false,
-        };
-        apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, first)]);
-        // An older clock loses: the stored row stays.
-        let older = crate::habit::HabitLogEntry {
-            count: 9,
-            clock: ts(500),
-            by: None,
-
-            skip: false,
-        };
-        apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, older)]);
-        assert_eq!(state.habits.log[&key], first, "strictly-newer clock wins");
-        // An equal clock keeps the stored row (deterministic tie).
-        let equal = crate::habit::HabitLogEntry {
-            count: 9,
-            clock: ts(1_000),
-            by: None,
-
-            skip: false,
-        };
-        apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, equal)]);
-        assert_eq!(
-            state.habits.log[&key], first,
-            "the equal-clock tie keeps stored"
-        );
-        // A newer clock replaces.
-        let newer = crate::habit::HabitLogEntry {
-            count: 2,
-            clock: ts(2_000),
-            by: None,
-
-            skip: false,
-        };
-        apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, newer)]);
-        assert_eq!(state.habits.log[&key], newer);
-        // A foreign key is an independent row (set-union, not replace-all).
-        let other = log_key(1, chrono::NaiveDate::from_ymd_opt(2026, 10, 27).unwrap());
-        apply_actions(
-            &mut state,
-            &[PersistenceAction::RecordHabitLog(
-                other,
-                crate::habit::HabitLogEntry {
-                    count: 5,
-                    clock: ts(3_000),
-                    by: None,
-
-                    skip: false,
-                },
-            )],
-        );
-        assert_eq!(state.habits.log.len(), 2);
     }
 
     fn reminder_rule(raw: u128) -> crate::reminders::ReminderRule {
@@ -3142,26 +3024,18 @@ mod tests {
         );
         let mut state = PersistedState::default();
         apply_actions(&mut state, &[PersistenceAction::UpsertHabit(habit.clone())]);
-        let key = crate::habit::HabitLogKey {
+        let event = crate::habit_event::HabitEvent {
+            id: crate::habit_event::HabitEventId::from(uuid::Uuid::from_u128(11_001)),
             habit: habit.id,
-            window: crate::habit::WindowStart::of_period(
-                crate::habit::PeriodKind::Day,
-                chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
-            ),
+            kind: crate::habit_event::HabitEventKind::Completion,
+            at: ts(500),
+            by: None,
+            deleted: None,
         };
         apply_actions(
             &mut state,
             &[
-                PersistenceAction::RecordHabitLog(
-                    key,
-                    crate::habit::HabitLogEntry {
-                        count: 3,
-                        clock: ts(500),
-                        by: None,
-
-                        skip: false,
-                    },
-                ),
+                PersistenceAction::UpsertHabitEvent(event),
                 PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
                     reminder: crate::reminders::ReminderRef::Tracker(habit.id),
                     occurrence: ts(1_000_000),
@@ -3211,9 +3085,9 @@ mod tests {
             "no snooze link survives the tombstone"
         );
         assert_eq!(
-            state.habits.log.get(&key).map(|e| e.count),
-            Some(3),
-            "count facts are not receipts — the log outlives the tracker"
+            state.habits.events.len(),
+            1,
+            "count facts are not receipts — the event log outlives the tracker"
         );
     }
 

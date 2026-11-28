@@ -15,6 +15,33 @@ fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
     chrono::Utc.timestamp_opt(secs, 0).unwrap()
 }
 
+/// The chunk-5 C6 oracle: the derived count of one habit's window
+/// (the mirror rows are gone — the events are the truth).
+fn derived_count(
+    disk: &PersistedState,
+    habit: crate::ids::HabitId,
+    window: crate::habit::WindowStart,
+) -> u32 {
+    let row = disk.habits.habits.get(&habit).expect("habit row");
+    crate::habit_event::derive_window_counts(row, disk.habits.events.values(), Harness::day())
+        .get(&window)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// The derived skip posture of one habit's window.
+fn derived_skip(
+    disk: &PersistedState,
+    habit: crate::ids::HabitId,
+    window: crate::habit::WindowStart,
+) -> bool {
+    let row = disk.habits.habits.get(&habit).expect("habit row");
+    crate::habit_event::derive_skip_posture(row, disk.habits.events.values(), Harness::day())
+        .get(&window)
+        .copied()
+        .unwrap_or(false)
+}
+
 /// The pure harness: a `PersistedState` the batches apply to, an
 /// `AppState` view over it, a stepping clock (one step = 60s), and the
 /// journal. `exec` advances memory exactly the way the engine does
@@ -316,11 +343,17 @@ fn log_time_capture_journals_the_minted_entry_id_and_pre_absence() {
     );
 }
 
+/// The chunk-5 deletion-safety pin (plan D-3, ruling 3):
+/// `us3_legacy_row_preimage_still_undoes` — a PRE-#1520 journal entry
+/// carrying `PreImage::HabitLogRow` + `EntityStamps::HabitLog` still
+/// undoes through the retained legacy inverse legs after the mirror's
+/// deletion, with the guards re-keyed onto the derived views (the
+/// recorded honesty note: the whole-row compare downgrades to a
+/// count/posture-grain compare for these entries only). The entry is
+/// hand-built (that shape has no writer anymore) — decode-shaped
+/// fixtures, the journal's persisted grammar.
 #[test]
-fn record_habit_log_capture_carries_the_pre_row_and_post_stamp() {
-    // (The harness habit is quota 1; this test's audited target needs
-    // the target within quota so the touched window's mirror row
-    // actually moves — see the recorded over-quota grammar limit.)
+fn us3_legacy_row_preimage_still_undoes() {
     let mut h = Harness::new();
     let board = h.board();
     let habit = {
@@ -338,54 +371,91 @@ fn record_habit_log_capture_carries_the_pre_row_and_post_stamp() {
             other => panic!("expected HabitCreated, got {other:?}"),
         }
     };
-    // Seed the window row (via LogHabit — journal-invertible since
-    // 2026-11-21, habit-family UX plan R-7; the row it writes is the
-    // adjust's pre-image source).
-    h.exec(&StateCommand::LogHabit { habit })
-        .expect("seeded the row");
-    let key = *h.disk.habits.log.keys().next().expect("log row");
-    let pre_row = h.disk.habits.log[&key];
-    let seed_len = h.journal.entries.len();
-    // An adjust onto the existing window: undoable, capture walks
-    // `RecordHabitLog`.
-    h.exec(&StateCommand::AdjustHabitLog {
-        habit,
-        window: key.window,
-        count: 5,
-    })
-    .expect("adjusted");
-    let entry = h.journal.entries.last().unwrap();
-    assert_eq!(h.journal.entries.len(), seed_len + 1);
-    let UndoFacts::PreImages { images, watermark } = &entry.facts else {
-        panic!("an existing-window adjust journals PreImages");
+    let window = crate::habit::WindowStart::of_period(
+        crate::habit::PeriodKind::Day,
+        Harness::day().today(ts(1_000_000)),
+    );
+    let key = crate::habit::HabitLogKey { habit, window };
+    // The legacy pre row (count 0, the logged leg's `before: None`
+    // shape is the count-0/absent equivalence) and post row (count 3,
+    // skip true — the SKIP legacy leg's recorded post).
+    let pre_row = crate::habit::HabitLogEntry {
+        count: 0,
+        clock: ts(999_000),
+        by: None,
+
+        skip: false,
     };
-    // DELIBERATE DELTA (2026-11-27, #1519): the reconcile's minted
-    // events may repair into the previous window, so the batch's
-    // mirror rows can span two keys — the capture is asserted for the
-    // TOUCHED window's row.
-    assert_eq!(
-        images.iter().find_map(|image| match image {
-            PreImage::HabitLogRow { key: k, before } if *k == key => Some((*k, *before)),
-            _ => None,
-        }),
-        Some((key, Some(pre_row))),
-        "the touched window's pre row rides the entry"
+    let post_row = crate::habit::HabitLogEntry {
+        count: 3,
+        clock: ts(1_000_000),
+        by: None,
+
+        skip: true,
+    };
+    // The CURRENT state must show the recorded post truth through the
+    // derived views: three completions in the window and the skip mark.
+    for ordinal in 0..3_u32 {
+        let at = ts(1_000_000);
+        let id =
+            crate::habit_event::legacy_habit_event_id(habit, window.as_date(), at, Some(ordinal));
+        h.disk.habits.events.insert(
+            id,
+            crate::habit_event::HabitEvent {
+                id,
+                habit,
+                kind: crate::habit_event::HabitEventKind::Completion,
+                at,
+                by: None,
+                deleted: None,
+            },
+        );
+    }
+    let mark_at = ts(1_000_060);
+    let mark_id = crate::habit_event::legacy_habit_event_id(habit, window.as_date(), mark_at, None);
+    h.disk.habits.events.insert(
+        mark_id,
+        crate::habit_event::HabitEvent {
+            id: mark_id,
+            habit,
+            kind: crate::habit_event::HabitEventKind::Skip { window },
+            at: mark_at,
+            by: None,
+            deleted: None,
+        },
     );
-    let post_row = h.disk.habits.log[&key];
-    assert_eq!(
-        watermark.0.get(&JournalEntity::HabitLog(key)),
-        Some(&EntityStamps::HabitLog(post_row)),
-        "the post-write row is the watermark stamp"
-    );
-    // The no-op repeat (identical count) journals nothing.
-    let before_len = h.journal.entries.len();
-    h.exec(&StateCommand::AdjustHabitLog {
-        habit,
-        window: key.window,
-        count: 5,
-    })
-    .expect("accepted no-op");
-    assert_eq!(h.journal.entries.len(), before_len);
+    // The synthetic pre-#1520 entry: the legacy SkipHabit shape.
+    let entry = JournalEntry {
+        id: crate::ids::JournalId::from(uuid::Uuid::from_u128(0xF00)),
+        board: Some(board),
+        created_at: ts(1_000_000),
+        parent: None,
+        command: StateCommand::SkipHabit { habit },
+        facts: UndoFacts::PreImages {
+            images: vec![PreImage::HabitLogRow {
+                key,
+                before: Some(pre_row),
+            }],
+            watermark: UndoWatermark(
+                [(
+                    JournalEntity::HabitLog(key),
+                    EntityStamps::HabitLog(post_row),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        },
+        ops: Vec::new(),
+        pushed: false,
+    };
+    h.disk.journal.entries.push(entry);
+    h.disk.journal.head = Some(crate::ids::JournalId::from(uuid::Uuid::from_u128(0xF00)));
+    h.sync();
+    // The undo pops through the re-keyed legacy leg: the derived
+    // posture (skipped) matches the recorded post, so the inverse
+    // plans — the mirror's absence never refuses.
+    h.exec(&StateCommand::Undo)
+        .expect("the legacy row-preimage entry still undoes");
 }
 
 #[test]
@@ -770,31 +840,33 @@ fn adjust_habit_log_round_trips() {
         }
     };
     // Seed the window row (1) — the seeding verbs are excluded arms;
-    // they only lay the state the adjust under test edits.
+    // they only lay the state the adjust under test edits. The
+    // chunk-5 C6 oracle: the derived count (the mirror rows are gone).
     h.exec(&StateCommand::LogHabit { habit })
         .expect("seeded count 1");
-    let key = *h.disk.habits.log.keys().next().expect("log row");
-    let pre_row = h.disk.habits.log[&key];
+    let key = crate::habit::HabitLogKey {
+        habit,
+        window: crate::habit::WindowStart::of_period(
+            crate::habit::PeriodKind::Day,
+            Harness::day().today(ts(1_000_060)),
+        ),
+    };
+    assert_eq!(derived_count(&h.disk, habit, key.window), 1);
     h.exec(&StateCommand::AdjustHabitLog {
         habit,
         window: key.window,
         count: 5,
     })
     .expect("adjusted");
+    assert_eq!(derived_count(&h.disk, habit, key.window), 5);
     h.exec(&StateCommand::Undo).expect("undone");
-    let after = h.disk.habits.log[&key];
-    assert_eq!(after.count, pre_row.count, "the pre count restored");
-    // DELIBERATE DELTA (2026-11-27, #1519): the inverse is now the
-    // per-event snapshot restore; the mirror row is recomputed from
-    // the post-restore derivations, so the row clock is the monotone
-    // mint PAST the adjust's own stamp (per inverse in the batch),
-    // not exactly `now`. Structural fact asserted, not a pinned value.
-    assert!(
-        after.clock > pre_row.clock,
-        "the restored row stamps strictly past the adjust's write"
+    assert_eq!(
+        derived_count(&h.disk, habit, key.window),
+        1,
+        "the pre count restored"
     );
     h.exec(&StateCommand::Redo).expect("redone");
-    assert_eq!(h.disk.habits.log[&key].count, 5);
+    assert_eq!(derived_count(&h.disk, habit, key.window), 5);
 }
 
 #[test]
@@ -842,8 +914,8 @@ fn create_habit_undo_after_log_keeps_the_log() {
         }
     };
     h.exec(&StateCommand::LogHabit { habit })
-        .expect("logged (excluded arm — the row lands)");
-    assert_eq!(h.disk.habits.log.len(), 1);
+        .expect("logged (excluded arm — the fact lands)");
+    assert_eq!(h.disk.habits.events.len(), 1);
     // Park the head on the create entry — the line state a v2 branch
     // picker could produce (the tree is queryable, D-U4; the fixture
     // seam the occupancy test uses too).
@@ -860,12 +932,13 @@ fn create_habit_undo_after_log_keeps_the_log() {
     );
     h.sync();
     h.exec(&StateCommand::Undo).expect("the create undoes");
-    // D26: no occupancy guard — the log map outlives the tombstone.
+    // D26's successor: no occupancy guard — the event facts outlive
+    // the tombstone.
     assert!(h.disk.habits.habits[&habit].deleted);
     assert_eq!(
-        h.disk.habits.log.len(),
+        h.disk.habits.events.len(),
         1,
-        "the log row survives the create-undo untouched"
+        "the completion survives the create-undo untouched"
     );
 }
 
@@ -1132,7 +1205,13 @@ fn consecutive_adjust_undos_restore_exactly_in_the_event_grammar() {
     };
     h.exec(&StateCommand::LogHabit { habit })
         .expect("seeded count 1");
-    let key = *h.disk.habits.log.keys().next().expect("log row");
+    let key = crate::habit::HabitLogKey {
+        habit,
+        window: crate::habit::WindowStart::of_period(
+            crate::habit::PeriodKind::Day,
+            Harness::day().today(ts(1_000_060)),
+        ),
+    };
     h.exec(&StateCommand::AdjustHabitLog {
         habit,
         window: key.window,
@@ -1160,7 +1239,8 @@ fn consecutive_adjust_undos_restore_exactly_in_the_event_grammar() {
         .count();
     assert_eq!(live, 1, "the seed completion is the one live fact");
     assert_eq!(
-        h.disk.habits.log[&key].count, 1,
+        derived_count(&h.disk, habit, key.window),
+        1,
         "the window derives the seed count again"
     );
 }
@@ -1284,15 +1364,19 @@ fn us2_s2_adjust_preimage_restores_exactly() {
     };
     h.exec(&StateCommand::LogHabit { habit }).expect("log one");
     h.exec(&StateCommand::LogHabit { habit }).expect("log two");
+    let window = crate::habit::WindowStart::of_period(
+        crate::habit::PeriodKind::Day,
+        Harness::day().today(ts(1_000_060)),
+    );
     h.exec(&StateCommand::AdjustHabitLog {
         habit,
-        window: h.disk.habits.log.keys().next().expect("row").window,
+        window,
         count: 1,
     })
     .expect("audited down to one");
     h.exec(&StateCommand::AdjustHabitLog {
         habit,
-        window: h.disk.habits.log.keys().next().expect("row").window,
+        window,
         count: 3,
     })
     .expect("audited up to three");
@@ -5262,25 +5346,34 @@ fn a_skip_journal_entry_inverts_through_the_mirror_verb() {
     // window from the journal entry instead of hardcoding.
     let entry = h.journal.entries.last().expect("journaled").clone();
     let key = match &entry.command {
-        StateCommand::SkipHabit { .. } => h
-            .disk
-            .habits
-            .log
-            .keys()
-            .find(|k| k.habit == habit && h.disk.habits.log[k].skip)
-            .copied()
-            .expect("the marked window"),
+        StateCommand::SkipHabit { .. } => crate::habit::HabitLogKey {
+            habit,
+            window: crate::habit::WindowStart::of_period(
+                crate::habit::PeriodKind::Day,
+                Harness::day().today(ts(1_000_060)),
+            ),
+        },
         _ => panic!("expected the skip journaled"),
     };
-    assert!(h.disk.habits.log[&key].skip);
-    assert_eq!(h.disk.habits.log[&key].count, 1);
+    assert!(derived_skip(&h.disk, habit, key.window));
+    assert_eq!(derived_count(&h.disk, habit, key.window), 1);
     // Undo: the mirror verb flips the mark, keeps the count.
     h.exec(&StateCommand::Undo).expect("undone");
-    assert!(!h.disk.habits.log[&key].skip, "the mark cleared");
-    assert_eq!(h.disk.habits.log[&key].count, 1, "the count survived");
+    assert!(
+        !derived_skip(&h.disk, habit, key.window),
+        "the mark cleared"
+    );
+    assert_eq!(
+        derived_count(&h.disk, habit, key.window),
+        1,
+        "the count survived"
+    );
     // Redo re-applies the skip intent.
     h.exec(&StateCommand::Redo).expect("redone");
-    assert!(h.disk.habits.log[&key].skip, "redo re-applied the mark");
+    assert!(
+        derived_skip(&h.disk, habit, key.window),
+        "redo re-applied the mark"
+    );
     // The pre-image round-trips through the persisted journal.
     let persisted = h.disk.clone();
     let restored: JournalState =
@@ -5309,21 +5402,20 @@ fn a_skip_of_an_empty_window_inverts_to_the_unmarked_row() {
     };
     h.exec(&StateCommand::SkipHabit { habit })
         .expect("accepted");
-    let key = h
-        .disk
-        .habits
-        .log
-        .keys()
-        .find(|k| k.habit == habit)
-        .copied()
-        .expect("the marked window");
-    assert!(h.disk.habits.log[&key].skip);
+    let key = crate::habit::HabitLogKey {
+        habit,
+        window: crate::habit::WindowStart::of_period(
+            crate::habit::PeriodKind::Day,
+            Harness::day().today(ts(1_000_060)),
+        ),
+    };
+    assert!(derived_skip(&h.disk, habit, key.window));
     h.exec(&StateCommand::Undo).expect("undone");
     assert!(
-        !h.disk.habits.log[&key].skip,
+        !derived_skip(&h.disk, habit, key.window),
         "the mark cleared on the none-pre-image shape too"
     );
-    assert_eq!(h.disk.habits.log[&key].count, 0);
+    assert_eq!(derived_count(&h.disk, habit, key.window), 0);
 }
 
 // ---- UF2: the UndoTo/RedoTo walk planners (#353) -----------------------
