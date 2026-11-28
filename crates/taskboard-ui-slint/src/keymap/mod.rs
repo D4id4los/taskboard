@@ -1658,6 +1658,50 @@ mod tests {
         }
     }
 
+    /// T2 — the review walk's stage verbs (#1393, D2): the picker
+    /// twins, the stage-back, the planner jump, and the abort arm
+    /// resolve at exactly the D2 spellings over the `[ReviewWalk,
+    /// Global]` chain in every preset (the context masks — the Global
+    /// rows beneath are unreachable by construction). `ReviewAbort
+    /// Accept`/`ReviewAbortDismiss` keep the armed grammar: every row
+    /// they carry (today none) is a bare named key — never an
+    /// Alt/Ctrl address.
+    #[test]
+    fn the_review_walk_stage_verbs_resolve_in_every_preset() {
+        let chain = [ContextId::ReviewWalk, ContextId::Global];
+        let expected: &[(&[&str], ActionId)] = &[
+            (&["Left"], ActionId::ReviewFileTargetPrev),
+            (&["Right"], ActionId::ReviewFileTargetNext),
+            (&["Alt+Left"], ActionId::ReviewWalkPrev),
+            (&["Ctrl+Shift+p"], ActionId::ReviewWalkPlanner),
+            (&["Alt+a"], ActionId::ReviewAbortArm),
+        ];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for (spellings, verb) in expected {
+                assert_eq!(
+                    keymap.first_binding_display(*verb, &chain),
+                    Some(spellings.iter().map(ToString::to_string).collect()),
+                    "{preset:?}: {verb}'s D2 spelling"
+                );
+            }
+            for verb in [ActionId::ReviewAbortAccept, ActionId::ReviewAbortDismiss] {
+                for (action, _, spellings) in preset.rows() {
+                    if action != verb {
+                        continue;
+                    }
+                    for spelling in spellings {
+                        let stroke = stroke::parse(spelling).expect("preset spelling parses");
+                        assert!(
+                            !stroke.ctrl && !stroke.alt && !stroke.meta,
+                            "{preset:?}: {verb} must never gain a chorded address"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// The R-2 mis-stroke contract (round 9 chunk 11): the emacs bare
     /// second stroke `C-c i` resolves the smart toggle while the
     /// chorded `C-c C-i` resolves the start verb — distinct bindings
