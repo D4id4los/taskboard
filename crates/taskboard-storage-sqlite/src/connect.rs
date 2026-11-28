@@ -205,9 +205,10 @@ mod tests {
             .await
             .expect("migration bookkeeping");
         // The shipped-migration count (one literal per shipped file —
-        // 0031 is the habit time-entry table, #1305; the assertion's
-        // substance is idempotence: reopening records no new row).
-        assert_eq!(applied, 31, "each shipped migration recorded exactly once");
+        // 0032 is the habit event + remap-marker tables, #1519 chunk
+        // 3; the assertion's substance is idempotence: reopening
+        // records no new row).
+        assert_eq!(applied, 32, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }

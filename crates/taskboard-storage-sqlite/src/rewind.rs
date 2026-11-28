@@ -340,10 +340,23 @@ mod tests {
         // The known unstrippable carriers, pinned so a grammar widening
         // that silently stops flagging them is visible: 0001's seed
         // row, 0003/0005/0009/0021's data backfills, 0016's head row,
-        // 0006's rename dance.
+        // 0006's rename dance, 0032's habit-event index (the stage-1
+        // plan's D-RW — a planned, cited edit; the CREATE INDEX
+        // classifies Unstrippable and rewinding fixtures need no
+        // ExtraStrip for it, the derived DROP TABLEs take the index
+        // with its table).
         assert_eq!(
             unstrippable,
-            vec![(1, 2), (3, 1), (5, 1), (6, 3), (9, 1), (16, 1), (21, 1)],
+            vec![
+                (1, 2),
+                (3, 1),
+                (5, 1),
+                (6, 3),
+                (9, 1),
+                (16, 1),
+                (21, 1),
+                (32, 1)
+            ],
             "the ledger's unstrippable-statement carriers changed; every \
              fixture rewinding past these versions needs its ExtraStrip \
              list re-checked"
