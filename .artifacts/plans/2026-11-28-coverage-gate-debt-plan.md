@@ -93,3 +93,67 @@ is re-pointed to the same live names.
 - No push, no PR, no coverage trio from this stage. The stage-3 prompt
   (appended below after implementation) restates the long-command
   discipline verbatim.
+
+## 6. Stage-3 REVIEW prompt (verbatim dispatch)
+
+You are the STAGE 3 (REVIEW) agent for the chunk "coverage-gate debt"
+in the taskboard repo (GitHub: D4id4los/taskboard). The implementation
+stage landed on branch `test/coverage-gate-debt` (worktree
+`/home/viktoria/src/taskboard-WT-test-coverage-gate-debt`; commits
+92f40da0 docs(plan), 488208cf fix(ci) #1577, 9503758c docs(plan)
+#1575, plus the #1583 commit on top). Review it and ship it.
+
+**Discipline (binding — docs/agent_dispatch.org)**: A subagent is killed after ~600s without observable activity. **Long-command discipline**: (1) *The coverage trio never runs inside a subagent*: a stage-2/stage-3 agent's gate is the pre-commit hooks (automatic) plus `scripts/run-quality-gates.sh cargo nextest run --workspace` (flock-safe; background + poll with useful work between polls if needed); the dispatcher runs the full AGENTS §10 suite between stage 2's landing and stage 3's ship. *Flock-deferral rule: when the gate lock is contended and no other useful work remains, never block — commit all landed work, report "gate deferred: lock held by <holder>", and end the stage; the dispatcher runs the gate.* (2) *Stage 3's scope ends at PR-open*: push, open the PR, report — the dispatcher owns `gh pr checks --watch`, `mergeStateStatus CLEAN`, teardown, and at-merge issue closures. (3) *Any command expected over ~5 minutes runs backgrounded* with short interleaved polls and useful work between polls — commit all landed work BEFORE any wait. Large scratch under /var/tmp, never /tmp. (4) **Every agent-launched cargo invocation routes through `scripts/memory-gate.sh`** — nothing bare. (5) *Stage prompts restate this discipline verbatim.* **Never commit with `--no-verify` or any hook bypass.** Never let a test or binary you run touch the user's real taskboard data (isolated config/data dir under /var/tmp; the helpers plant `TASKBOARD_TEST_SANDBOX`). **The required SonarCloud quality gate fails a PR whose NEW code has more than 3 % duplicated lines** (three PRs were blocked tonight). Out-of-scope findings become `backlog:` GitHub issues (or comments) immediately (AGENTS §7; search first).
+
+Verify, in order:
+
+1. **#1577 red→green**: check out the base commit 92f40da0's script
+   (`git show 92f40da0:scripts/ux-coverage.sh > /var/tmp/uxcov-before.sh`,
+   run it with `--self-test` AFTER temporarily placing the landed
+   fixtures, or simpler: `git stash`-free — run the landed tree's
+   self-test with the script file replaced by the pre-fix version and
+   confirm self-test 29 FAILS (the kebab cell reads MISSING) while
+   1–28, 30 pass; restore the landed script and confirm all 30 PASS.
+2. **1–28 byte-stability**: `bash scripts/ux-coverage.sh --self-test`
+   on the landed tree vs the base tree; the verdict lines for cases
+   1–28 must be byte-identical; 29/30 are the new PASSes.
+3. **The negative case**: self-test 30 — the `habit-edit-probe` kebab
+   cell resolves the kebab slint callback but must stay MISSING
+   (adapter seam differs by letters); read the fixture and the widened
+   `adapter_match`/inventory greps (sentinel two-pass, letters
+   load-bearing, first-hit, boundary-anchored).
+4. **#1575 nominations**: for each re-pointed row in
+   `.artifacts/plans/2026-11-16-keymap-parity-ux-plan.md`, open the
+   nominated test body and confirm it exercises the row:
+   `journeys/focus_law_journeys.rs::us1_s1_taskdetail_directional_rows_walk_the_ladder_subject_pinned`
+   (TaskDetail directional rows, subject pinned — the dated supersession
+   note sits at journeys.rs above `us1_ac2_settings_control_walk_rows_step`),
+   `journeys.rs::us1_ac2_settings_control_walk_rows_step` (Settings,
+   all four emacs chords, zero commands),
+   `journeys.rs::the_first_last_jumps_land_on_the_far_ends_and_stay`
+   (journeys.rs:5963), `journeys.rs::the_punctuation_partner_matches_only_the_held_shift`
+   (journeys.rs:5908), and the four `us3_s*` shortcut journeys
+   (journeys.rs:20813/20888/20937/20987). Re-run
+   `scripts/ux-coverage.sh .artifacts/plans/2026-11-16-keymap-parity-ux-plan.md --gate`
+   and confirm 0 MISSING, 0 AMBIGUOUS. Confirm the edits are cell/line
+   local (PR #1580 amends the same plan — the PR body must state this
+   PR merges before or after #1580 with a rebase).
+5. **#1583**: `DelayedBoards` carries no notify half; Case 2
+   (`tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes`)
+   mounts it; the notify-bearing `NotifyThenDelay` remains only for the
+   one-shot sibling (`tty_second_sigterm_during_the_drain_forces_143…`,
+   which blocks on `rx`) and `tests/services/ipc.rs` (tokio-native
+   `Notify`) — their semantics unchanged. Confirm ≥5 green
+   `scripts/memory-gate.sh cargo nextest run -p taskboard-app --test
+   cli_output` runs exist for the landed tree (rerun once yourself,
+   backgrounded).
+6. **Ship**: commit any review fixes on the branch (hooks on, no
+   bypasses); then push `test/coverage-gate-debt` and open the PR to
+   `main` titled `test(coverage): the ux-coverage gate + plan nominations + tty test debt (#1577 #1575 #1583)`,
+   body summarizing the three fixes, the self-test matrix before/after
+   (28→30 cases, 1–28 byte-identical), the keymap gate before→after
+   (14 MISSING + 4 AMBIGUOUS → 0 + 0), the re-pointing table, the
+   cli_output reliability runs, the #1580/#1581 merge-order notes
+   (#1581's W-8 flips FOUND when rebased after this merges), and
+   `Closes #1577, Closes #1575, Closes #1583`. Report the PR URL and
+   stop — the dispatcher owns CI watch and teardown.
