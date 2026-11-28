@@ -695,6 +695,7 @@ async fn it_nextcloud_docker_sync_over_ipc() {
         .await;
 
         let mut daemon = std::process::Command::new(env!("CARGO_BIN_EXE_taskboard"))
+            .env(taskboard_app::config::SANDBOX_SENTINEL_ENV, "1")
             .args(["--config", config.to_str().expect("utf8 path"), "daemon"])
             .env("TASKBOARD_APP_PASSWORD", &cfg.token)
             .stdout(std::process::Stdio::null())
@@ -706,6 +707,7 @@ async fn it_nextcloud_docker_sync_over_ipc() {
         let ready = std::time::Instant::now() + LIVE_DEADLINE;
         loop {
             let output = tokio::process::Command::new(binary)
+                .env(taskboard_app::config::SANDBOX_SENTINEL_ENV, "1")
                 .args([
                     "--config",
                     config.to_str().expect("utf8"),
@@ -749,6 +751,7 @@ async fn it_nextcloud_docker_sync_over_ipc() {
         let deadline = std::time::Instant::now() + LIVE_DEADLINE;
         loop {
             let output = tokio::process::Command::new(binary)
+                .env(taskboard_app::config::SANDBOX_SENTINEL_ENV, "1")
                 .args(["--config", config.to_str().expect("utf8"), "sync"])
                 .env("TASKBOARD_APP_PASSWORD", &cfg.token)
                 .output()
@@ -761,6 +764,7 @@ async fn it_nextcloud_docker_sync_over_ipc() {
                 String::from_utf8_lossy(&output.stderr)
             );
             let list = tokio::process::Command::new(binary)
+                .env(taskboard_app::config::SANDBOX_SENTINEL_ENV, "1")
                 .args(["--config", config.to_str().expect("utf8"), "tasks", "list"])
                 .env("TASKBOARD_APP_PASSWORD", &cfg.token)
                 .output()
@@ -778,6 +782,7 @@ async fn it_nextcloud_docker_sync_over_ipc() {
 
         // Graceful remote stop.
         let stop = tokio::process::Command::new(binary)
+            .env(taskboard_app::config::SANDBOX_SENTINEL_ENV, "1")
             .args(["--config", config.to_str().expect("utf8"), "daemon", "stop"])
             .env("TASKBOARD_APP_PASSWORD", &cfg.token)
             .output()

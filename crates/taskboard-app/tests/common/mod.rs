@@ -588,11 +588,24 @@ pub fn live_config(cfg: &LiveCfg, db_path: &Path) -> taskboard_app::config::AppC
     config
 }
 
+/// Plants the #1554 sandbox sentinel on `command` (after any
+/// `TASKBOARD_*` scrub): armed, the binary fail-fasts — typed
+/// `sandboxed-real-home-path` — instead of resolving any config or db
+/// path under the real home, so a bare or under-configured child can
+/// never open the operator's live store. Every helper that spawns the
+/// `taskboard` binary must call this (or route through
+/// [`binary_command`], which does).
+pub fn plant_sandbox_sentinel(command: &mut std::process::Command) {
+    command.env(taskboard_app::config::SANDBOX_SENTINEL_ENV, "1");
+}
+
 /// A `taskboard` binary command with per-child env hygiene: every
 /// `TASKBOARD_*` variable of the *test* process is removed so children
 /// cannot inherit foreign config; the caller re-sets exactly what the
 /// child needs (`--config` names the config file; the password, when
-/// used, travels via `TASKBOARD_APP_PASSWORD`).
+/// used, travels via `TASKBOARD_APP_PASSWORD`). The #1554 sandbox
+/// sentinel is planted after the scrub, so a child that under-specifies
+/// its config refuses typed instead of touching the real home.
 #[must_use]
 pub fn binary_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_taskboard"));
@@ -602,6 +615,7 @@ pub fn binary_command() -> std::process::Command {
             cmd.env_remove(&key);
         }
     }
+    plant_sandbox_sentinel(&mut cmd);
     cmd
 }
 

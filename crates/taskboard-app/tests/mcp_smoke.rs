@@ -46,6 +46,7 @@ fn the_mcp_lane_boots_screenshots_and_exits_clean() {
 
     let port = free_port();
     let mut child = Command::new(env!("CARGO_BIN_EXE_taskboard"))
+        .env(taskboard_app::config::SANDBOX_SENTINEL_ENV, "1")
         .env("TASKBOARD_CONFIG", &config_path)
         .env("SLINT_BACKEND", "headless-software")
         .env("SLINT_EMIT_DEBUG_INFO", "1")
