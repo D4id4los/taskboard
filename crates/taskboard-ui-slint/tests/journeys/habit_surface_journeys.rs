@@ -1146,19 +1146,18 @@ fn us8_state(board: taskboard_domain::BoardId) -> (AppState, HabitId) {
     };
     let id = habit.id;
     state.habits.habits.insert(id, habit);
-    // Two overlay facts: the 3rd and the 5th carry activity; the rest
-    // of the month carries none.
+    // Two activity facts: the 3rd and the 5th carry completions (the
+    // event-grammar fixture shape — the day cells derive); the rest of
+    // the month carries none.
+    let calendar = fixture::harness_calendar();
     for (day, count) in [(3u32, 2u32), (5, 1)] {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 11, day).expect("calendar date");
-        state.habits.day_log.insert(
-            taskboard_domain::HabitDayKey {
-                habit: id,
-                day: date,
-            },
-            taskboard_domain::HabitDayLogEntry {
-                count,
-                clock: fixture::PINNED_NOW,
-            },
+        fixture::seed_completions(
+            &mut state,
+            id,
+            fixture::at_in_window(&calendar, date),
+            date,
+            count,
         );
     }
     (state, id)
@@ -1193,8 +1192,10 @@ fn us8_s1_day_cells_render_overlay_facts() {
     });
 }
 
-/// US-8/AC-3 (W-12, R-2): the stats oracle stays window-canonical —
-/// overlay facts alone never credit adherence.
+/// US-8/AC-3 (W-12; the chunk-5 successor of the R-2 pin): the stats
+/// oracle stays window-canonical over the same events the day grid
+/// derives — the week's three completions credit ONE met window, never
+/// a per-day sum (three days would read 3).
 #[test]
 fn us8_s2_window_adherence_oracle_unregressed() {
     let board = *fixture::journey_state()
@@ -1212,9 +1213,10 @@ fn us8_s2_window_adherence_oracle_unregressed() {
         harness.driver.advance_time(0);
         let numbers = window.get_habit_history().stats;
         assert_eq!(
-            numbers.adherence_met, 0,
-            "day overlay facts never feed the window-canonical oracle"
+            numbers.adherence_met, 1,
+            "three day-spread completions credit ONE window, not a day sum"
         );
+        assert_eq!(numbers.adherence_scheduled, 1);
     });
 }
 

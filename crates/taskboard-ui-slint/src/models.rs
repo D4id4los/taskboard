@@ -7579,8 +7579,16 @@ fn push_habit_history(
     // Day-kind habit renders as landed (its windows ARE days). A day
     // with no overlay fact renders empty (`count: 0` → no badge, the
     // dimmest neutral state — no invention).
-    let day_cells = (habit.target.kind() != taskboard_domain::PeriodKind::Day)
-        .then(|| crate::presentation::habit_history_day_cells(habit, &state.habits.day_log, month));
+    let day_cells = (habit.target.kind() != taskboard_domain::PeriodKind::Day).then(|| {
+        // The heatmap derives from the synced event log (#1519 C2):
+        // cross-device day parity falls out of event sync (#1340).
+        let day_counts = taskboard_domain::habit_event::derive_day_counts(
+            habit,
+            state.habits.events.values(),
+            calendar,
+        );
+        crate::presentation::habit_history_day_cells(&day_counts, month)
+    });
     let cells: Vec<crate::HabitCellModel> = if let Some(day_cells) = &day_cells {
         day_cells
             .iter()
