@@ -443,6 +443,13 @@ Mechanics that make the binary tests safe to run in a shared suite:
   every parent =TASKBOARD_*= variable before spawning and re-sets
   exactly what the child needs (=TASKBOARD_APP_PASSWORD= = the tier
   token) — a sibling test's override cannot leak into a journey.
+- *The sandbox sentinel (#1554).* After the scrub,
+  =binary_command()= (and every other binary-spawning helper) plants
+  =TASKBOARD_TEST_SANDBOX=1=; the binary fail-fasts with the typed
+  =sandboxed-real-home-path= config error whenever a sandboxed
+  invocation resolves any config or db path under the real home
+  directory — a bare or under-configured child can never open the
+  operator's live board store.
 - *The docker-tier serialization covers them.* The =it_nextcloud_docker=
   filter and the =docker-tier= nextest group (=max-threads = 1=)
   include the CLI journeys automatically; the existing
