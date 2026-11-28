@@ -90,7 +90,7 @@ pub(crate) mod merge_testutil;
 pub use appdata::{
     ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections,
     BREAK_DISMISSALS_ENTRY_KEY, BreakRuleEntry, DismissalEntry, DismissalsEntry,
-    HABIT_LOG_SYNC_RETENTION_DAYS, HabitLogRecord, HabitRecord, MODELED_TASK_FIELD_KEYS,
+    HABIT_EVENT_SYNC_RETENTION_DAYS, HabitLogRecord, HabitRecord, MODELED_TASK_FIELD_KEYS,
     ModeledValue, RuleEntry, RulesEntry, TRACKING_SYNC_RETENTION_DAYS, TaskEntry, TaskFieldWrite,
     TimeEntryRecord, break_dismissal_wire_key, break_dismissals_entry_for, break_rules_for,
     derive_break_rule_tombstones, derive_rule_tombstones, derive_time_entry_tombstones,

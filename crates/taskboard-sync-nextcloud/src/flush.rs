@@ -1608,7 +1608,7 @@ mod habit_gate_tests {
         // An aged log row alone does not hold the anchor up.
         let aged_date = today
             .checked_sub_days(chrono::Days::new(
-                taskboard_domain::HABIT_LOG_SYNC_RETENTION_DAYS as u64 + 1,
+                taskboard_domain::HABIT_EVENT_SYNC_RETENTION_DAYS as u64 + 1,
             ))
             .unwrap();
         let mut aged_only = HabitState::default();
