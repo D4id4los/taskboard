@@ -397,25 +397,19 @@ mod tests {
 
             paused_until: None,
         };
-        let key = taskboard_domain::HabitLogKey {
+        // The write-back leg rides the EVENT lane (the chunk-5 C5
+        // re-key: the legacy log tables have no writer).
+        let event = taskboard_domain::habit_event::HabitEvent {
+            id: taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(9)),
             habit: habit.id,
-            window: taskboard_domain::WindowStart::of_period(
-                taskboard_domain::PeriodKind::Day,
-                chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(),
-            ),
+            kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+            at: chrono::TimeZone::timestamp_opt(&chrono::Utc, 200, 0).unwrap(),
+            by: None,
+            deleted: None,
         };
         repo.apply(vec![
             taskboard_domain::PersistenceAction::UpsertHabit(habit.clone()),
-            taskboard_domain::PersistenceAction::RecordHabitLog(
-                key,
-                taskboard_domain::HabitLogEntry {
-                    count: 2,
-                    clock: chrono::TimeZone::timestamp_opt(&chrono::Utc, 200, 0).unwrap(),
-                    by: None,
-
-                    skip: false,
-                },
-            ),
+            taskboard_domain::PersistenceAction::UpsertHabitEvent(event),
         ])
         .await
         .expect("apply on the upgraded line");
@@ -424,7 +418,10 @@ mod tests {
         let reopened = open(file.path(), test_connector()).await.expect("reopen");
         let state = reopened.load().await.expect("load");
         assert_eq!(state.habits.habits[&habit.id], habit);
-        assert_eq!(state.habits.log[&key].count, 2, "the log row round-trips");
+        assert_eq!(
+            state.habits.events[&event.id], event,
+            "the event round-trips"
+        );
         reopened.close().await;
     }
 

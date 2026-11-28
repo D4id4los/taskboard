@@ -147,45 +147,36 @@ async fn entity_abort_middle_habit_log_row_names_the_date_reason() {
 
         paused_until: None,
     };
-    let day = |d| taskboard_domain::HabitLogKey {
+    // The chunk-5 C5 re-key: the legacy log tables have no writer, so
+    // the entity-abort case rides the EVENT lane (the family's live
+    // decode surface).
+    let event = taskboard_domain::habit_event::HabitEvent {
+        id: taskboard_domain::habit_event::HabitEventId::from(uuid::Uuid::from_u128(0x00ab_0001)),
         habit: habit.id,
-        window: taskboard_domain::WindowStart::of_period(
-            taskboard_domain::habit::PeriodKind::Day,
-            chrono::NaiveDate::from_ymd_opt(2026, 11, d).unwrap(),
-        ),
-    };
-    let log = |d: i64| {
-        (
-            day(u32::try_from(d).expect("small")),
-            taskboard_domain::HabitLogEntry {
-                count: 1,
-                clock: ts(d),
-                by: None,
-
-                skip: false,
-            },
-        )
+        kind: taskboard_domain::habit_event::HabitEventKind::Completion,
+        at: ts(1_000),
+        by: None,
+        deleted: None,
     };
     db.repo()
         .apply(vec![
             PersistenceAction::UpsertHabit(habit.clone()),
-            PersistenceAction::RecordHabitLog(log(1).0, log(1).1),
-            PersistenceAction::RecordHabitLog(log(2).0, log(2).1),
+            PersistenceAction::UpsertHabitEvent(event),
         ])
         .await
-        .expect("seed habit log");
+        .expect("seed habit event");
     corrupt(
         &mut db,
-        "UPDATE habit_log SET window_start = 'not-a-date' WHERE habit_id = ?1 AND window_start = '2026-11-02'",
-        habit.id.as_uuid().to_string(),
+        "UPDATE habit_event SET at = 'not-a-clock' WHERE id = ?1",
+        format!("{}", uuid::Uuid::from_u128(0x00ab_0001)),
     )
     .await;
 
     let err = db.repo().load().await.expect_err("entity abort");
     let detail = detail_of(&err);
-    assert_eq!(detail.table, Some(PersistedTable::HabitLog));
-    assert_eq!(detail.row, Some(habit.id.as_uuid()));
-    assert_eq!(detail.reason, Some(DecodeReason::MalformedDate));
+    assert_eq!(detail.table, Some(PersistedTable::HabitEvent));
+    assert_eq!(detail.row, Some(uuid::Uuid::from_u128(0x00ab_0001)));
+    assert_eq!(detail.reason, Some(DecodeReason::MalformedClock));
     db.close().await;
 }
 
