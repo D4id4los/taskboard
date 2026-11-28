@@ -302,7 +302,17 @@ Append to the plan (dated 2026-11-28, citing this file and issues
 5. **UI purity**: the UI layer gains no logic — the adapter/router
    arms already dispatch these ids; stage 2 touches neither
    `router.rs` nor the adapter except where a journey test needs a
-   seam that already exists.
+   seam that already exists. **AMENDED 2026-11-28, stage 3** (the
+   #1394 half-delivery): invariant 1's rows without a target mint
+   shipped as dead keys — the box verbs' one-shot `plan_target`
+   existed only at the pointer seams — and a dead key is worse than
+   a slightly larger PR. The deviation is bounded to presentation
+   routing in the UI crate: `Adapter::route` gained a cursor
+   fallback mint for `PlanBoxEarlier`/`PlanBoxLater`/`PlanRemoveBox`
+   (the `effective_habit`/`SeriesResume` precedent; no new
+   `ActionId`/effect/domain type), and the US-4 journey drives the
+   real chords. #1574's proposed mint is this mint — the PR closes
+   it. The invariant's original text stands for everything else.
 6. **#875 is not re-implemented**: any diff touching the extend twins
    beyond reading them is a finding.
 7. **Dvorak/layout leniency is not addressed here** (the Alt+letter

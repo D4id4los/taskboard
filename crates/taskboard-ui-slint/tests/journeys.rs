@@ -17125,15 +17125,32 @@ fn us4_s1_box_family_keyboard_journey() {
                 "the committed box joined the surface"
             );
 
-            // The reorder: the box family's row verb (the AT default
-            // action is the click equivalence) routes the two honest
-            // swap writes; the fake engine folds them and the display
-            // order flips.
-            let row = harness
-                .driver
-                .find_by_label("Move box later")
-                .unwrap_or_else(|| panic!("the later affordance is mounted"));
-            row.invoke_default_action();
+            // The reorder, by chord (#1394's D1 path): Alt+Down (the
+            // departure axis — the planner's only Standard vertical)
+            // arms the planner cursor (US-15's K4 walk), pinned to the
+            // pane's head below; Shift+Down resolves the D1 spelling
+            // and the cursor fallback mints the one-shot box target
+            // exactly as the click seam does; the two honest swap
+            // writes follow, and the fake engine folds them into a
+            // flipped display order.
+            harness.stroke(parse("Alt+Down").expect("Alt+Down"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Alt+Down").expect("Alt+Down"));
+            harness.driver.advance_time(0);
+            // The commit seam may have left the cursor armed, so the
+            // walk is pinned to the pane head the clamping way: two
+            // Alt+Ups hold row 0 from any landing (the walk never
+            // wraps).
+            for _ in 0..2 {
+                harness.stroke(parse("Alt+Up").expect("Alt+Up"));
+                harness.driver.advance_time(0);
+            }
+            let boxes = harness.handle.window().get_plan_model().boxes;
+            assert!(
+                boxes.row_data(0).expect("box").cursor,
+                "the cursor pinned at the boxes pane's head"
+            );
+            harness.stroke(parse("Shift+Down").expect("Shift+Down"));
             harness.driver.advance_time(0);
             match harness.engine.drain().as_slice() {
                 [
@@ -17160,16 +17177,16 @@ fn us4_s1_box_family_keyboard_journey() {
                 title0,
             );
 
-            // The removal: one honest unplace write (the scheduled
-            // mask cleared); the box leaves the surface.
-            let row = harness
-                .driver
-                .find_by_label("Remove box")
-                .unwrap_or_else(|| panic!("the remove affordance is mounted"));
-            row.invoke_default_action();
+            // The removal, by chord: the cursor still lands the
+            // swapped-away task0 (the swap never retires it), so
+            // Delete resolves the D1 spelling, the same fallback mints
+            // the target, and one honest unplace write follows (the
+            // scheduled mask cleared); the box leaves the surface.
+            harness.stroke(parse("Delete").expect("Delete"));
             harness.driver.advance_time(0);
             match harness.engine.drain().as_slice() {
-                [StateCommand::UpdateTask { changes, .. }] => {
+                [StateCommand::UpdateTask { id, changes }] => {
+                    assert_eq!(*id, task0, "the cursor'd box is the removal's target");
                     assert_eq!(changes.scheduled, Some(None), "the unplace mask");
                 }
                 other => panic!("one unplace write, got {other:?}"),
