@@ -1687,9 +1687,23 @@ fn tty_ctrl_c_during_the_masked_read_fails_typed_and_the_session_survives() {
 
 /// Case 2: ^C during a stalled line cancels it — the typed `cancelled`
 /// envelope reports, the session continues, and the next line executes.
-/// The stall is a delayed wiremock boards route; the notify-responder
-/// gates the ^C on "the dispatch is in flight" (by then the editor's
-/// raw mode is long gone, so the ^C byte is a real SIGINT).
+/// The stall is a delayed wiremock boards route. The ^C gate is the
+/// session's own dispatch log (`session line … cmd: List`) read off the
+/// captured transcript: that line is printed inside `dispatch_line`,
+/// after the loop took the line from the editor — so readline has
+/// returned (cooked mode, ISIG on), the cancel select is armed, and the
+/// ^C byte is a real SIGINT to the session watcher's cancel watch (the
+/// watch holds the epoch, so a signal landing during the select's arming
+/// window is still observed). The wiremock's own arrival notification is
+/// NOT a usable gate (#697): the mock matches every GET, and the sync
+/// actor's boot-pull request satisfies it before the scripted line is
+/// even submitted — the ^C would then be written while `readline` still
+/// owns the tty in raw mode (ISIG off), land in the raw input queue, and
+/// be swallowed as line-editor input: no SIGINT, no cancellation, and
+/// the test passing vacuously on the line completing after its delay
+/// (the strace proof: the app read `"boards list --json\r\3"` in one
+/// raw-mode read; the former `kinds.iter().all(…)` assertion accepted
+/// the resulting empty envelope list).
 #[test]
 fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
     if std::process::Command::new("script")
@@ -1700,14 +1714,16 @@ fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
         return;
     }
 
-    let (server, in_flight) = tokio::runtime::Builder::new_current_thread()
+    let server = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
         .expect("runtime")
         .block_on(async {
             let server = wiremock::MockServer::start().await;
-            let (tx, rx) = std_mpsc::channel();
-            // Any request proves the sync actor is pulling.
+            let (tx, _rx) = std_mpsc::channel();
+            // The stalled route: every GET is answered after the
+            // designed silent window. The notify half is deliberately
+            // unused — see the test doc (#697).
             wiremock::Mock::given(wiremock::matchers::method("GET"))
                 .respond_with(NotifyThenDelay {
                     notify: tx,
@@ -1715,7 +1731,7 @@ fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
                 })
                 .mount(&server)
                 .await;
-            (server, rx)
+            server
         });
 
     let dir = tempdir();
@@ -1740,19 +1756,25 @@ fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
         &[("TASKBOARD_APP_PASSWORD", "tty-stall-pw")],
     );
     feed_at(&mut session, 1, "boards list --json");
-    // The in-flight gate: the wiremock notified on the request's
-    // arrival — the dispatch is parked in the delayed HTTP await, the
-    // editor's raw mode is long gone, and the ^C byte below is a real
-    // SIGINT where the environment delivers one. Budgeted recv, no
-    // sleeps.
-    in_flight
-        .recv_timeout(PTY_IDLE_BUDGET)
-        .expect("the stalled request arrived");
+    // The dispatch gate: the session's own `session line` log for the
+    // List command is on the wire — the loop owns the line, the editor's
+    // raw mode is long gone, and the ^C byte below is a real SIGINT
+    // where the environment delivers one (see the doc: the wiremock
+    // notify cannot gate this — the boot-pull GET steals it).
+    assert!(
+        session.wait_for(|seen| {
+            seen.windows(b"session line".len())
+                .any(|w| w == b"session line")
+                && seen.windows(b"cmd: List".len()).any(|w| w == b"cmd: List")
+        }),
+        "the List dispatch never started: {}",
+        session.transcript_lossy()
+    );
     session.stdin.write_all(b"\x03").expect("write the ^C byte");
-    // The editor re-arms either way: instantly when the SIGINT
-    // cancelled the line, or when the 10 s delay expires and the line
-    // completes (an environment that ignores SIGINT — the inherited
-    // dispositions of rust test harnesses vary). Bounded either way.
+    // The editor re-arms when the SIGINT cancelled the line (the typed
+    // `cancelled` envelope rides the same transcript). Bounded either
+    // way: a lost signal degrades to the delay-expiry completion, and
+    // the envelope assertion below fails it.
     feed_at(&mut session, 2, "boards create B --json");
     feed_at(&mut session, 3, "exit");
     let (status, seen, stderr) = finish_session(session);
@@ -1790,8 +1812,8 @@ fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
         .filter_map(|value| value["error"]["kind"].as_str().map(str::to_owned))
         .collect();
     assert!(
-        kinds.iter().all(|kind| kind == "cancelled"),
-        "the only permitted failure is the typed cancellation: {kinds:?} / {stderr:?}"
+        kinds.len() == 1 && kinds[0] == "cancelled",
+        "exactly one typed cancellation envelope: {kinds:?} / {stderr:?}"
     );
 }
 
