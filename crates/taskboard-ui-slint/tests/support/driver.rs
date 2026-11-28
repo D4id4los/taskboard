@@ -191,12 +191,20 @@ impl Element {
     }
 
     /// Whether the element is an accessible radio button — the
-    /// segmented-control pin's role read (r2 D26; `accessible-checked`
-    /// has no backend read, so the checked-state contract pins on the
-    /// model instead — the plan's recorded fallback).
+    /// segmented-control pin's role read (r2 D26).
     #[must_use]
     pub fn is_radio_button(&self) -> bool {
         self.handle.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::RadioButton)
+    }
+
+    /// The element's accessible-checked bit (the radio stop's typed
+    /// selected fact). The r2-era note that `accessible-checked` had
+    /// no backend read is stale: backend-testing 1.18 exposes
+    /// `accessible_checked`, so the segmented-control read moved from
+    /// the model fallback to the element itself.
+    #[must_use]
+    pub fn is_checked(&self) -> bool {
+        self.handle.accessible_checked() == Some(true)
     }
 
     /// Invokes the element's accessible default action (the click
