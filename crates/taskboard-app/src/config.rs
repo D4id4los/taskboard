@@ -32,6 +32,16 @@ pub const DEFAULT_CONFIG_PATH: &str = "./taskboard.toml";
 /// The prefix every environment override carries.
 pub const ENV_PREFIX: &str = "TASKBOARD_";
 
+/// The test-sandbox sentinel (#1554): every test helper that spawns
+/// the `taskboard` binary plants this variable after scrubbing the
+/// inherited `TASKBOARD_*` set, and config resolution then refuses —
+/// typed [`ConfigError::SandboxedRealHomePath`] — any consulted path
+/// under the real home directory, so a bare or under-configured
+/// sandboxed invocation can never open the operator's real board
+/// store. Presence (any value) arms the guard; operators, kiosk
+/// appliances, and deploys never set it.
+pub const SANDBOX_SENTINEL_ENV: &str = "TASKBOARD_TEST_SANDBOX";
+
 /// `[sync] poll_interval_secs`: idle wait between cycles after a success.
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
 /// `[sync] backoff_initial_secs`: first failure backoff.
@@ -1241,6 +1251,20 @@ pub enum ConfigError {
         /// The anchor name that named nothing.
         name: String,
     },
+    /// The test-sandbox sentinel ([`SANDBOX_SENTINEL_ENV`]) is armed
+    /// and config resolution consulted a path under the real home
+    /// directory — a sandboxed invocation (a test child, a worktree
+    /// shell) was about to touch the operator's live store (#1554;
+    /// the 2026-11-27 occurrence). The payload names the offending
+    /// config or db path. The guard only ever *refuses*: an operator,
+    /// a kiosk, or a deploy never sets the sentinel, so production
+    /// semantics are unchanged, and even a maliciously armed sentinel
+    /// can block, never unlock.
+    #[error("sandboxed invocation consulted a real-home path")]
+    SandboxedRealHomePath {
+        /// The config or db path under the real home directory.
+        path: PathBuf,
+    },
 }
 
 impl ConfigError {
@@ -1303,6 +1327,7 @@ impl ConfigError {
             Self::InvalidFocusTiming { .. } => "invalid-focus-timing",
             Self::FilesSyncWithoutNextcloud { .. } => "files-sync-without-nextcloud",
             Self::FilesSyncAnchorUnknown { .. } => "files-sync-anchor-unknown",
+            Self::SandboxedRealHomePath { .. } => "sandboxed-real-home-path",
         }
     }
 }
@@ -1383,6 +1408,14 @@ impl AppConfig {
             .map_err(ConfigError::Decode)?;
         if config.storage.db_path.is_none() {
             config.storage.db_path = default_db_path();
+        }
+        // The #1554 fail-fast: a sandboxed invocation that resolved to
+        // any real-home path (config or db) refuses here — before the
+        // store is opened or a config is written. Every route crosses
+        // this one point (`AppConfig::load` and `login` both decode
+        // through `extract_raw`).
+        if let Some(err) = sandbox_guard_refusal(&probe_path, config.storage.db_path.as_deref()) {
+            return Err(err);
         }
         Ok(config)
     }
@@ -2140,6 +2173,42 @@ fn warn_theme_env_near_miss() {
 /// no data dir (documented: `~` is not expanded).
 fn default_db_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("taskboard").join("taskboard.db"))
+}
+
+/// The real-home guard's pure core (#1554): when `sandboxed` (the
+/// [`SANDBOX_SENTINEL_ENV`] sentinel is armed) and any consulted path
+/// sits under `home`, the typed refusal names the first offender.
+/// Match is `Path::starts_with` — component-wise, so `<home>/x` is
+/// under `<home>` but `<home>-evil/x` is not; canonicalization is
+/// deliberately not attempted (documented leniency: a symlinked or
+/// `..`-laden path that escapes the prefix match is outside the
+/// guard's contract). Unarmed, or no home on the platform, the guard
+/// is inert — production semantics are unchanged.
+fn sandbox_real_home_refusal(
+    sandboxed: bool,
+    home: Option<&Path>,
+    consulted: impl IntoIterator<Item = PathBuf>,
+) -> Option<ConfigError> {
+    if !sandboxed {
+        return None;
+    }
+    let home = home?;
+    consulted
+        .into_iter()
+        .find(|path| path.starts_with(home))
+        .map(|path| ConfigError::SandboxedRealHomePath { path })
+}
+
+/// The guard's boot-time consumer (#1554), called from
+/// [`AppConfig::extract_raw`] after the db default is filled: reads
+/// the sentinel and the platform home dir and hands the pure core the
+/// two consulted paths — the config file actually used (the probe
+/// path, explicit or resolved) and the resolved db path.
+fn sandbox_guard_refusal(config_file: &Path, db_path: Option<&Path>) -> Option<ConfigError> {
+    let sandboxed = std::env::var_os(SANDBOX_SENTINEL_ENV).is_some();
+    let consulted =
+        std::iter::once(config_file.to_path_buf()).chain(db_path.map(Path::to_path_buf));
+    sandbox_real_home_refusal(sandboxed, dirs::home_dir().as_deref(), consulted)
 }
 
 /// The dotted-key leaf diff of two decoded config trees (the
@@ -4603,5 +4672,94 @@ mod tests {
                 .merge(Toml::string("[ui.keymap]\ntokens = 1"))
                 .extract();
         assert!(result.is_err(), "unknown keys are decode failures");
+    }
+
+    // -------------------------------------------------------------
+    // The real-home guard (#1554): the pure core's truth table, over
+    // injected sentinel/home/paths — never the process env, never the
+    // operator's real home.
+    // -------------------------------------------------------------
+
+    /// Armed + a consulted path under home → the typed refusal naming
+    /// it; the variant's stable kind joins the discriminant table.
+    #[test]
+    fn sandbox_guard_refuses_a_path_under_home() {
+        let home = Path::new("/home/operator");
+        let err = sandbox_real_home_refusal(
+            true,
+            Some(home),
+            [PathBuf::from("/var/tmp/sandbox/taskboard.toml")],
+        );
+        assert!(err.is_none(), "path outside home is not refused");
+        let err = sandbox_real_home_refusal(
+            true,
+            Some(home),
+            [
+                PathBuf::from("/var/tmp/sandbox/taskboard.toml"),
+                PathBuf::from("/home/operator/.local/share/taskboard/taskboard.db"),
+            ],
+        );
+        assert!(
+            matches!(err, Some(ConfigError::SandboxedRealHomePath { ref path }) if path == Path::new("/home/operator/.local/share/taskboard/taskboard.db")),
+            "the first consulted path under home is refused, named in the payload"
+        );
+        let err = err.expect("refusal present");
+        assert_eq!(err.kind(), "sandboxed-real-home-path");
+    }
+
+    /// The XDG config candidate under the real home (the bare
+    /// fall-through case from the 2026-11-27 occurrence) is refused.
+    #[test]
+    fn sandbox_guard_refuses_the_xdg_candidate_under_home() {
+        let home = Path::new("/home/operator");
+        let err = sandbox_real_home_refusal(
+            true,
+            Some(home),
+            [PathBuf::from(
+                "/home/operator/.config/taskboard/taskboard.toml",
+            )],
+        );
+        assert!(matches!(
+            err,
+            Some(ConfigError::SandboxedRealHomePath { .. })
+        ));
+    }
+
+    /// Unarmed (no sentinel) the guard is inert — production
+    /// semantics unchanged however the paths resolve.
+    #[test]
+    fn sandbox_guard_is_inert_without_the_sentinel() {
+        let home = Path::new("/home/operator");
+        let err = sandbox_real_home_refusal(
+            false,
+            Some(home),
+            [PathBuf::from(
+                "/home/operator/.config/taskboard/taskboard.toml",
+            )],
+        );
+        assert!(err.is_none(), "unarmed guard refuses nothing");
+    }
+
+    /// No home on the platform (documented `dirs` contract) and the
+    /// guard is inert even when armed.
+    #[test]
+    fn sandbox_guard_is_inert_without_a_home() {
+        let err =
+            sandbox_real_home_refusal(true, None, [PathBuf::from("/home/operator/taskboard.toml")]);
+        assert!(err.is_none());
+    }
+
+    /// `starts_with` is component-wise: a sibling whose name extends
+    /// the home's leaf is NOT under home (documented leniency — the
+    /// guard over-refuses, never under-refuses, on literal prefixes).
+    #[test]
+    fn sandbox_guard_prefix_match_is_component_wise() {
+        let home = Path::new("/home/operator");
+        let err = sandbox_real_home_refusal(
+            true,
+            Some(home),
+            [PathBuf::from("/home/operator-evil/taskboard.db")],
+        );
+        assert!(err.is_none(), "a name-prefix sibling is not under home");
     }
 }
