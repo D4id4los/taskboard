@@ -114,12 +114,12 @@ ONLY the spec table in the workflow's matrix-setup step.
 | shard family | scope | mutants | s/mutant | jobs (slices) | mutants/job | expected per job | vs 240 cap |
 |---|---|---|---|---|---|---|---|
 | domain-behavioural | `-p taskboard-domain` + 17 `--file` (scheduling/habit/reflection cluster) | 1,408 | 90 | 12 | ~117 | 117×90 s = 176 min + 25 = **201 min** | headroom 39 min |
-| domain-data | `-p taskboard-domain` minus the 17 (exclude-list complement, as today) | 2,052 | 90 | 16 | ~128 | 128×90 s = 192 min + 25 = **217 min** | headroom 23 min |
+| domain-data | `-p taskboard-domain` minus the 17 (exclude-list complement, as today) | 2,052 | 90 | 18 | ~114 | 114×90 s = 171 min + 25 = **196 min** | headroom 44 min |
 | state | `-p taskboard-state` | 189 | 45 | 1 | 189 | 189×45 s = 142 min + 25 = **167 min** | headroom 73 min |
-| ui-pure | `-p taskboard-ui-slint` + 3 pure-module `--file` | 1,725 | 190 | 28 | ~62 | 62×190 s = 196 min + baseline ~9 + setup ~5 = **210 min** | headroom 30 min |
+| ui-pure | `-p taskboard-ui-slint` + 3 pure-module `--file` | 1,725 | 190 | 31 | ~56 | 56×190 s = 177 min + baseline ~9 + setup ~5 = **~201 min** | headroom 39 min |
 | app-pdf | `-p taskboard-app` + commands `--file` window + `--features pdf-export` | 124 | 80 | 1 | 124 | 124×80 s = 165 min + 25 = **190 min** (measured 135 min) | headroom 50 min |
 
-58 jobs in a monthly complete sweep. Weekly delta runs the same
+63 jobs in a monthly complete sweep (stage-3 re-slice 2026-11-28: domain-data 16→18, ui-pure 28→31 — the original counts left 9.4 % / 8.3 % headroom against the 240-min cap, under the 15 % sizing bar). Weekly delta runs the same
 matrix but every shard first runs the cheap `--list` pre-count with
 `--in-diff`; a shard with zero diff-mutants exits after ~2 min
 without building (see §6), so a typical weekly run costs minutes, not

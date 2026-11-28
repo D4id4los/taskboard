@@ -62,6 +62,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: shard jobs only ever need read; the one job that
+# pushes refs/mutation-baseline/main overrides to contents: write.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -78,13 +83,19 @@ jobs:
 
       - name: Resolve scope, diff, and shard matrix
         id: setup
+        env:
+          # env indirection, never shell interpolation (injection
+          # guidance): the dispatch input and cron string reach the
+          # step only as environment values.
+          DISPATCH_SCOPE: ${{ inputs.scope }}
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           set -euo pipefail
           # Scope resolution: explicit dispatch input wins; the weekly
           # cron is the delta, the monthly cron the complete sweep.
-          scope="${{ inputs.scope }}"
+          scope="$DISPATCH_SCOPE"
           if [ -z "$scope" ]; then
-            if [ "${{ github.event.schedule }}" = "0 4 1 * *" ]; then
+            if [ "$SCHEDULE" = "0 4 1 * *" ]; then
               scope=complete
             else
               scope=delta
@@ -113,10 +124,13 @@ jobs:
           # Slice counts come from the plan's §4 arithmetic
           # (mutants × s/mutant + 25 min overhead vs the 240-min cap):
           #   domain-behavioural 1408 × 90 s / 12 = ~201 min/job
-          #   domain-data        2052 × 90 s / 16 = ~217 min/job
+          #   domain-data        2052 × 90 s / 18 = ~196 min/job
           #   state               189 × 45 s /  1 = ~167 min/job
-          #   ui-pure            1725 × 190 s / 28 = ~210 min/job
+          #   ui-pure            1725 × 190 s / 31 = ~201 min/job
           #   app-pdf             124 × 80 s /  1 = ~190 min (measured)
+          # (Stage-3 re-slice, 2026-11-28: 16→18 and 28→31 — the old
+          # counts left 9.4 % and 8.3 % headroom against the 240-min
+          # cap, under the 15 % sizing bar; see the plan record.)
           # Slices use the tool's --shard k/n (--sharding slice, the
           # default: consecutive source-order ranges, disjoint and
           # complete by construction). The tool's k is ZERO-based
@@ -130,9 +144,9 @@ jobs:
           # without touching either list lands in domain-data.
           declare -a SPECS=(
             "domain-behavioural|12|minimal|-p taskboard-domain --file crates/taskboard-domain/src/reminders.rs --file crates/taskboard-domain/src/recur.rs --file crates/taskboard-domain/src/habit.rs --file crates/taskboard-domain/src/habit_time.rs --file crates/taskboard-domain/src/days.rs --file crates/taskboard-domain/src/time.rs --file crates/taskboard-domain/src/tracking.rs --file crates/taskboard-domain/src/tracking_stats.rs --file crates/taskboard-domain/src/reflection.rs --file crates/taskboard-domain/src/reflection_stats.rs --file crates/taskboard-domain/src/focus.rs --file crates/taskboard-domain/src/roster.rs --file crates/taskboard-domain/src/settings.rs --file crates/taskboard-domain/src/calibration.rs --file crates/taskboard-domain/src/find.rs --file crates/taskboard-domain/src/order.rs --file crates/taskboard-domain/src/clock.rs"
-            "domain-data|16|minimal|-p taskboard-domain --exclude crates/taskboard-domain/src/reminders.rs --exclude crates/taskboard-domain/src/recur.rs --exclude crates/taskboard-domain/src/habit.rs --exclude crates/taskboard-domain/src/habit_time.rs --exclude crates/taskboard-domain/src/days.rs --exclude crates/taskboard-domain/src/time.rs --exclude crates/taskboard-domain/src/tracking.rs --exclude crates/taskboard-domain/src/tracking_stats.rs --exclude crates/taskboard-domain/src/reflection.rs --exclude crates/taskboard-domain/src/reflection_stats.rs --exclude crates/taskboard-domain/src/focus.rs --exclude crates/taskboard-domain/src/roster.rs --exclude crates/taskboard-domain/src/settings.rs --exclude crates/taskboard-domain/src/calibration.rs --exclude crates/taskboard-domain/src/find.rs --exclude crates/taskboard-domain/src/order.rs --exclude crates/taskboard-domain/src/clock.rs"
+            "domain-data|18|minimal|-p taskboard-domain --exclude crates/taskboard-domain/src/reminders.rs --exclude crates/taskboard-domain/src/recur.rs --exclude crates/taskboard-domain/src/habit.rs --exclude crates/taskboard-domain/src/habit_time.rs --exclude crates/taskboard-domain/src/days.rs --exclude crates/taskboard-domain/src/time.rs --exclude crates/taskboard-domain/src/tracking.rs --exclude crates/taskboard-domain/src/tracking_stats.rs --exclude crates/taskboard-domain/src/reflection.rs --exclude crates/taskboard-domain/src/reflection_stats.rs --exclude crates/taskboard-domain/src/focus.rs --exclude crates/taskboard-domain/src/roster.rs --exclude crates/taskboard-domain/src/settings.rs --exclude crates/taskboard-domain/src/calibration.rs --exclude crates/taskboard-domain/src/find.rs --exclude crates/taskboard-domain/src/order.rs --exclude crates/taskboard-domain/src/clock.rs"
             "state|1|minimal|-p taskboard-state"
-            "ui-pure|28|full|-p taskboard-ui-slint --file crates/taskboard-ui-slint/src/resolver.rs --file crates/taskboard-ui-slint/src/view_state.rs --file crates/taskboard-ui-slint/src/presentation.rs"
+            "ui-pure|31|full|-p taskboard-ui-slint --file crates/taskboard-ui-slint/src/resolver.rs --file crates/taskboard-ui-slint/src/view_state.rs --file crates/taskboard-ui-slint/src/presentation.rs"
             "app-pdf|1|full|-p taskboard-app --file crates/taskboard-app/src/commands/mod.rs --file crates/taskboard-app/src/commands/output.rs --features pdf-export"
           )
 
@@ -239,7 +253,11 @@ jobs:
           if [ "$SCOPE" = delta ]; then
             count_args+=(--in-diff delta.diff)
           fi
-          count="$(cargo mutants "${count_args[@]}" | jq 'length' || true)"
+          # No `|| true` here on purpose: a REAL --list failure (bad
+          # args, broken toolchain) must fail the job loudly, while the
+          # tool's filter-empty conditions above exit SUCCESS with no
+          # list — jq then outputs nothing and count defaults to 0.
+          count="$(cargo mutants "${count_args[@]}" | jq 'length')"
           count="${count:-0}"
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "shard mutants: $count"
@@ -340,8 +358,10 @@ jobs:
     # Only a fully green complete sweep moves the baseline: the delta
     # of the NEXT week is then "changed since this sweep". A red or
     # cancelled complete sweep must not reset the baseline (the next
-    # delta would silently skip the un-swept changes).
-    if: needs.matrix-setup.outputs.scope == 'complete' && !failure() && !cancelled()
+    # delta would silently skip the un-swept changes). The main-ref
+    # guard keeps a workflow_dispatch on any other branch from moving
+    # the baseline to a non-main commit.
+    if: needs.matrix-setup.outputs.scope == 'complete' && github.ref == 'refs/heads/main' && !failure() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
