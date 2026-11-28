@@ -1559,7 +1559,7 @@ impl<'a> SectionFolds<'a> {
     }
 
     /// The board-level legacy habit-log fold (D-6's shim: synthesizes
-    /// events under the chunk-3 recipe, never writes `habits.log`).
+    /// events under the chunk-3 recipe, never writes log rows).
     fn fold_legacy_habit_log(
         &mut self,
         rows: Option<&std::collections::BTreeMap<String, crate::appdata::HabitLogRecord>>,
