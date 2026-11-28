@@ -148,22 +148,35 @@ fn us4_s2_smart_toggle_routes_both_halves_over_the_target() {
 }
 
 /// The back verb (J3 US-4, round 9 chunk 11 — the D-table's Back
-/// ruling): `Alt+Left` closes the detail for the board in every
-/// preset (the Global alternate; emacs' ONLY board-return row before
-/// this chunk was none — the gap fix), and zero commands dispatch
-/// (pure view intent).
+/// ruling): the board-return closes the detail in every preset, and
+/// zero commands dispatch (pure view intent). DATED SUPERSESSION
+/// 2026-11-28 (#1257, the keybinding-coverage plan D3): the
+/// field-departing Alt axis bound `NavFocusLeft` at `Alt+Left` in the
+/// view contexts of Standard and Emacs, so the Global `Alt+Left`
+/// alternate is shadowed there by context precedence (the C-5/D-5
+/// shadow is the recorded cost) — the D-table's primaries carry the
+/// journey now: `Alt+1` (Standard), `C-x C-b` (Emacs), and vi's
+/// `Alt+Left` Global alternate, which stays unshadowed (vi carries no
+/// axis rows).
 #[test]
-fn the_alt_left_alternate_closes_the_detail_in_every_preset() {
+fn the_board_return_closes_the_detail_in_every_preset() {
     golden_state_journey(|state| {
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let mut harness = JourneyHarness::mount(state.clone(), preset);
             open_detail_first_card(&mut harness, preset);
-            harness.stroke(parse("Alt+Left").expect("Alt+Left"));
+            match preset {
+                Preset::Standard => harness.stroke(parse("Alt+1").expect("Alt+1")),
+                Preset::Emacs => {
+                    harness.stroke(parse("Ctrl+x").expect("Ctrl+x"));
+                    harness.stroke(parse("Ctrl+b").expect("Ctrl+b"));
+                }
+                Preset::Vi => harness.stroke(parse("Alt+Left").expect("Alt+Left")),
+            }
             harness.advance();
             assert_eq!(
                 harness.handle.window().get_current_view(),
                 View::Board,
-                "{preset:?}: the alternate returns to the board"
+                "{preset:?}: the board return closes the detail"
             );
             harness.assert_commands(&[]);
         }

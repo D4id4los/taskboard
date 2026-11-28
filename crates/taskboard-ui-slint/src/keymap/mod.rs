@@ -1702,6 +1702,87 @@ mod tests {
         }
     }
 
+    /// T3 — the departure axis is field-proof, structurally (#1257,
+    /// D3): (a) the Alt+direction rows resolve nav.focus over each of
+    /// the six view chains in Standard and Emacs, plus the emacs-only
+    /// Alt-letter quartet; (b) no editor table can consume the axis —
+    /// `editor_table` returns no exact binding for any departure
+    /// sequence, so a focused text field can never intercept it (the
+    /// caret keys' in-field meaning is untouched by construction).
+    #[test]
+    fn the_alt_departure_axis_is_field_proof() {
+        let contexts = [
+            ContextId::Today,
+            ContextId::Board,
+            ContextId::StackDetail,
+            ContextId::TaskDetail,
+            ContextId::Settings,
+            ContextId::PlanNextDay,
+        ];
+        let axis: &[(&str, ActionId)] = &[
+            ("Alt+Left", ActionId::NavFocusLeft),
+            ("Alt+Right", ActionId::NavFocusRight),
+            ("Alt+Up", ActionId::NavFocusUp),
+            ("Alt+Down", ActionId::NavFocusDown),
+        ];
+        let quartet: &[(&str, ActionId)] = &[
+            ("Alt+f", ActionId::NavFocusRight),
+            ("Alt+b", ActionId::NavFocusLeft),
+            ("Alt+n", ActionId::NavFocusDown),
+            ("Alt+p", ActionId::NavFocusUp),
+        ];
+        for preset in [Preset::Standard, Preset::Emacs] {
+            let keymap = Keymap::from_preset(preset);
+            for context in contexts {
+                // The view chain's shape: the always-present mode
+                // context, then Global (the harness's chain mirror).
+                let chain = [context, ContextId::ViNormal, ContextId::Global];
+                for (spelling, action) in axis {
+                    assert_eq!(
+                        keymap.resolve(&chain, &[stroke::parse(spelling).expect("parses")]),
+                        Some(*action),
+                        "{preset:?}: {spelling} walks {context}"
+                    );
+                }
+                if preset == Preset::Emacs {
+                    for (spelling, action) in quartet {
+                        assert_eq!(
+                            keymap.resolve(&chain, &[stroke::parse(spelling).expect("parses")]),
+                            Some(*action),
+                            "emacs: {spelling} walks {context}"
+                        );
+                    }
+                }
+            }
+        }
+        // The vi preset stays on the Escape contract: no axis rows.
+        let vi = Keymap::from_preset(Preset::Vi);
+        let vi_board = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        for (spelling, action) in axis.iter().chain(quartet) {
+            assert_ne!(
+                vi.resolve(&vi_board, &[stroke::parse(spelling).expect("parses")]),
+                Some(*action),
+                "vi must not carry the departure axis"
+            );
+        }
+        // The field-proof half: no departure sequence is an editor
+        // command, so the focused field can never intercept it.
+        let departures: Vec<Vec<crate::keymap::Stroke>> = axis
+            .iter()
+            .chain(quartet)
+            .map(|(spelling, _)| stroke::parse_sequence([*spelling]).expect("parses"))
+            .collect();
+        for preset in [Preset::Standard, Preset::Emacs] {
+            let table = crate::keyscope::editor_table(preset);
+            for seq in &departures {
+                assert!(
+                    table.exact(seq).is_none(),
+                    "{preset:?}: the editor table must not consume the departure axis"
+                );
+            }
+        }
+    }
+
     /// The R-2 mis-stroke contract (round 9 chunk 11): the emacs bare
     /// second stroke `C-c i` resolves the smart toggle while the
     /// chorded `C-c C-i` resolves the start verb — distinct bindings
