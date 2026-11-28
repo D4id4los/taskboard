@@ -696,6 +696,12 @@ async fn it_nextcloud_docker_sync_over_ipc() {
 
         let mut daemon = std::process::Command::new(env!("CARGO_BIN_EXE_taskboard"))
             .env(taskboard_app::config::SANDBOX_SENTINEL_ENV, "1")
+            // The boot mints `device.json` at the platform data seam:
+            // point it at the config's tempdir, never the real home.
+            .env(
+                "XDG_DATA_HOME",
+                config.parent().expect("config path has a parent"),
+            )
             .args(["--config", config.to_str().expect("utf8 path"), "daemon"])
             .env("TASKBOARD_APP_PASSWORD", &cfg.token)
             .stdout(std::process::Stdio::null())

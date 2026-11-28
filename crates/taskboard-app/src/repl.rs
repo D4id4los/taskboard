@@ -42,7 +42,7 @@ use clap::Parser as _;
 use crate::cli::Command;
 use crate::commands::{CommandError, CommandIo, CoreSession, connect, dispatch_line};
 use crate::completion;
-use crate::config::{AppConfig, SyncBackend};
+use crate::config::{AppConfig, SyncBackend, sandbox_path_refused};
 use crate::connector_ceremonies::{connect_line, logout_line};
 use crate::repl_history;
 use crate::secrets::CredentialStore;
@@ -264,7 +264,12 @@ pub fn spawn_line_reader(
             // unwritable history file never ends the session (see
             // [`repl_history`]). Prompted ceremony answers bypass this
             // by construction (the oneshot arm below).
-            let history = repl_history::SessionHistory::open(dirs::data_dir().as_deref());
+            // The #1554 guard at the history seam: under the test
+            // sandbox sentinel a real-home data dir degrades to
+            // in-memory recall — persistence never touches the
+            // operator's home (the module's infallible contract).
+            let data_dir = dirs::data_dir().filter(|dir| !sandbox_path_refused(dir));
+            let history = repl_history::SessionHistory::open(data_dir.as_deref());
             history.load(editor.history_mut());
             loop {
                 match editor.readline(PROMPT) {

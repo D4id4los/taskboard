@@ -553,6 +553,12 @@ fn spawn_headless(config: &Path, args: &[&str]) -> Child {
         .arg(binary)
         .arg("--config")
         .arg(config)
+        // The daemon boot mints `device.json` at the platform data
+        // seam: point it at the config's tempdir, never the real home.
+        .env(
+            "XDG_DATA_HOME",
+            config.parent().expect("config has a parent"),
+        )
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
